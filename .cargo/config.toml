@@ -1,0 +1,27 @@
+# 커널은 softfloat 타겟으로 빌드(seL4 식)
+[build]
+target = "aarch64-unknown-none-softfloat"
+
+# 링커 스크립트는 여기서 지정하지 않습니다.
+# virt와 apple이 같은 타겟 트리플이라 [target.*] rustflags로는 구분이 불가능하여
+# kernel/build.rs가 플랫폼 feature(plat-virt / plat-apple)를 보고 -T를 주입합니다.
+[target.aarch64-unknown-none-softfloat]
+rustflags = [
+    "-C", "relocation-model=static",
+]
+# `cargo run` = QEMU virt에서 즉시 부팅 테스트
+# 스크립트가 ELF -> raw Image 변환 후 부팅합니다. (x0=DTB 전달을 위해 필수)
+runner = "tools/qemu-virt-runner.sh"
+
+# 플랫폼별 빌드 진입점
+# cargo virt  -> QEMU virt 빌드 + 부팅
+# cargo apple -> Apple Silicon(m1n1) release 빌드
+[alias]
+virt = "run -p k0-kernel"
+apple = "build -p k0-kernel --release --no-default-features --features plat-apple"
+
+# vendor 디렉토리에서만 의존성을 해석
+# [source.crates-io]
+# replace-with = "vendored-sources"
+# [source.vendored-sources]
+# directory = "vendor"

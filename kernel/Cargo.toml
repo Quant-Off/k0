@@ -1,0 +1,18 @@
+[package]
+name = "k0-kernel"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+
+# 플랫폼 선택: build.rs가 링커 스크립트를 고르고 잘못된 조합은 빌드 실패
+# 같은 feature를 k0-arch에도 전달해 MMIO 주소를 가름
+[features]
+default = ["plat-virt"]
+plat-virt = ["k0-arch/plat-virt"]
+plat-apple = ["k0-arch/plat-apple"]
+
+# 커널 크레이트는 외부(third-party) 의존성 0, 워크스페이스 크레이트만 허용
+# 외부가 필요해진 경우: vendored + 해시 고정
+[dependencies]
+k0-arch = { path = "../crates/k0-arch", default-features = false }
+k0-boot = { path = "../crates/k0-boot" }

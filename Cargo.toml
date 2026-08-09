@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "kernel",
+    "crates/k0-arch",
+    "crates/k0-mm",
+    "crates/k0-cap",
+    "crates/k0-ipc",
+    "crates/k0-sched",
+    "crates/k0-task",
+    "crates/k0-boot",
+    "crates/k0-abi",
+    "userspace/root-task",
+]
+
+[workspace.package]
+edition = "2024"
+license = "AGPL-3"
+
+# 커널은 unwind 불가능
+[profile.dev]
+panic = "abort" # fail-secure 핸들러로
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = "fat"
+codegen-units = 1 # 재현 가능 빌드 + 최적화 일관성
+overflow-checks = true # release에서도 정수 오버플로는 panic
+debug-assertions = false
+strip = false # 감사(audit) 때메
