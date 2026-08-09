@@ -8,11 +8,13 @@
 #![no_main]
 
 use core::fmt::Write;
-use core::panic::PanicInfo;
 
 use k0_arch::earlycon::EarlyCon;
 
 mod boot; // arch/aarch64/boot.S를 global_asm! 으로 포함
+mod panic; // fail-secure panic 핸들러와 파킹 루프
+
+use panic::park;
 
 // 링커 스크립트가 export하는 심볼들
 unsafe extern "C" {
@@ -37,15 +39,18 @@ extern "C" fn kernel_init(dtb_phys: usize) -> ! {
     // 아래는 그냥 스케치임.
     //
     // let verified = k0_boot::verify_root_task(&bootinfo);
-    // let mmu      = k0_mm::enable_paging(&bootinfo);
-    // let traps    = k0_arch::install_vectors(&mmu);
     // let irq      = k0_arch::init_gic(&traps);
     // let caps     = k0_cap::bootstrap(&mmu, &bootinfo);
     // let root     = k0_task::spawn_root(&caps, verified);
     // k0_sched::start(root, irq)
 
+    // 예외 벡터 최우선 설치
+    // 이 전의 폴트는 진단 불가능한 행이 됨
+    let _traps = k0_arch::vectors::install();
+
     let mut con = EarlyCon;
     let _ = writeln!(con, "k0: entry phase 1 (pre-MMU)");
+    let _ = writeln!(con, "k0: vectors installed");
     let _ = writeln!(con, "k0: dtb = {dtb_phys:#x}");
 
     // 링커 스크립트가 정의한 심볼의 주소만 취하고 역참조하지 않음
@@ -123,18 +128,3 @@ fn enable_mmu(con: &mut EarlyCon, bootinfo: &k0_boot::BootInfo) -> k0_mm::Mmu {
     mmu
 }
 
-/// 고보안 시스템의 `panic`은 fail-secure 이어야 하기 때문에
-/// 인터럽트 마스크(interrupt mask) -> (필요 시 민감 상태 zeroize) -> 정지
-/// 와 같이 동작하며, 프로덕션 프로파일에서는 어떤 정보도 출력하지 않습니다.
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    unsafe { core::arch::asm!("msr DAIFSet, #0xf", options(nomem, nostack)) };
-    park()
-}
-
-#[inline(always)]
-fn park() -> ! {
-    loop {
-        unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };
-    }
-}
