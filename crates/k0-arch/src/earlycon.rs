@@ -14,10 +14,16 @@
 
 use core::fmt;
 
+/// earlycon MMIO 베이스(진입 페이즈 1의 디바이스 매핑에도 쓰임)
+#[cfg(feature = "plat-virt")]
+pub const MMIO_BASE: usize = 0x0900_0000;
+#[cfg(feature = "plat-apple")]
+pub const MMIO_BASE: usize = 0x2_3520_0000;
+
 #[cfg(feature = "plat-virt")]
 mod imp {
     /// QEMU virt의 PL011 UART 베이스 (virt 머신 고정 주소)
-    const UART_BASE: usize = 0x0900_0000;
+    use super::MMIO_BASE as UART_BASE;
     const DR: usize = 0x000;
     const FR: usize = 0x018;
     const FR_TXFF: u32 = 1 << 5;
@@ -41,7 +47,7 @@ mod imp {
 #[cfg(feature = "plat-apple")]
 mod imp {
     /// Apple Silicon(M1, t8103) 부트 UART 베이스, Samsung S5L 계열
-    const UART_BASE: usize = 0x2_3520_0000;
+    use super::MMIO_BASE as UART_BASE;
     const UTRSTAT: usize = 0x010;
     const UTXH: usize = 0x020;
     const TX_EMPTY: u32 = 1 << 1;

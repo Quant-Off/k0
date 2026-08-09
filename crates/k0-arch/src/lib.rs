@@ -11,6 +11,6 @@
 compile_error!("plat-virt와 plat-apple은 동시에 켤 수 없음");
 
 #[cfg(not(any(feature = "plat-virt", feature = "plat-apple")))]
-compile_error!("플랫폼 feature 없음(plat-virt 또는 plat-apple 중 하나를 켤 것)");
+compile_error!("플랫폼 feature 없음(plat-virt 또는 plat-apple 중 하나만 활성화할 것)");
 
 pub mod earlycon;

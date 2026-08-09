@@ -57,7 +57,8 @@ SECTIONS
         __bss_end = .;
 
         . = ALIGN(4K);
-        __boot_stack_bottom = .;    /* 이 아래에 가드 페이지 매핑 예정 */
+        . += 4K;                    /* 가드 페이지 전용 홀(.bss 꼬리와 분리) */
+        __boot_stack_bottom = .;    /* 이 아래 4KiB는 매핑하지 않음 */
         . += 64K;                   /* 부트 코어 커널 스택 64KiB */
         __boot_stack_top = .;
     } :data

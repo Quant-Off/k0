@@ -18,7 +18,10 @@ mod boot; // arch/aarch64/boot.S를 global_asm! 으로 포함
 unsafe extern "C" {
     static __kernel_start: u8;
     static __kernel_end: u8;
+    static __rodata_start: u8;
+    static __data_start: u8;
     static __boot_stack_bottom: u8;
+    static __boot_stack_top: u8;
 }
 
 /// 진입 페이즈 0(`boot.S`)에서 점프해 들어오는 유일한 Rust 진입점입니다.
@@ -53,6 +56,8 @@ extern "C" fn kernel_init(dtb_phys: usize) -> ! {
             for r in bootinfo.memory() {
                 let _ = writeln!(con, "k0: memory {:#x} + {:#x}", r.base, r.size);
             }
+            let _mmu = enable_mmu(&mut con, &bootinfo);
+            // TODO: 다음 작업에서 예외 벡터 설치(진입 페이즈 2), higher-half 점프
         }
         Err(e) => {
             // 부트 정보 없이는 진행할 수 없으므로 fail-secure 파킹
@@ -60,6 +65,62 @@ extern "C" fn kernel_init(dtb_phys: usize) -> ! {
         }
     }
     park()
+}
+
+/// 초기 페이지 테이블을 구성해 MMU를 켜고 W^X 상태를 자가 검증하는 함수입니다.
+///
+/// 검증은 AT S1E1R/S1E1W 명령으로 수행하므로 실제 폴트 없이 권한을 확인할 수
+/// 있습니다. (예외 벡터는 진입 페이즈 2에서 설치되기 때문에 지금 폴트는 곧 행)
+///
+/// # Errors
+/// 활성화 실패나 검증 불일치는 주소 공간을 신뢰할 수 없다는 의미이기 때문에
+/// fail-secure 파킹으로 이어집니다.
+fn enable_mmu(con: &mut EarlyCon, bootinfo: &k0_boot::BootInfo) -> k0_mm::Mmu {
+    let text_start = &raw const __kernel_start as u64;
+    let rodata_start = &raw const __rodata_start as u64;
+    let data_start = &raw const __data_start as u64;
+    let stack_bottom = &raw const __boot_stack_bottom as u64;
+    let stack_top = &raw const __boot_stack_top as u64;
+    let granule = k0_mm::GRANULE as u64;
+
+    let layout = k0_mm::KernelLayout {
+        text: text_start..rodata_start,
+        rodata: rodata_start..data_start,
+        // 두 구간 사이의 가드 페이지는 의도적으로 매핑안함
+        rw: [data_start..stack_bottom - granule, stack_bottom..stack_top],
+        dtb: bootinfo.dtb.start as u64..bootinfo.dtb.end as u64,
+        mmio: k0_arch::earlycon::MMIO_BASE as u64,
+    };
+
+    let mmu = match k0_mm::enable_paging(&layout) {
+        Ok(mmu) => mmu,
+        Err(e) => {
+            let _ = writeln!(con, "k0: mmu enable failed: {e:?}");
+            park()
+        }
+    };
+
+    // (이름, 실측, 기대) 형태의 W^X / 가드 / higher-half 검증표
+    let checks: [(&str, bool, bool); 6] = [
+        ("text+r", k0_mm::can_read(text_start), true),
+        ("text+w", k0_mm::can_write(text_start), false),
+        ("rodata+w", k0_mm::can_write(rodata_start), false),
+        ("guard+r", k0_mm::can_read(stack_bottom - granule), false),
+        ("stack+w", k0_mm::can_write(stack_top - granule), true),
+        ("hi+r", k0_mm::can_read(text_start + k0_mm::KERNEL_VA_OFFSET), true),
+    ];
+    let mut ok = true;
+    for (name, got, want) in checks {
+        if got != want {
+            ok = false;
+            let _ = writeln!(con, "k0: w^x check fail: {name} (got {got}, want {want})");
+        }
+    }
+    if !ok {
+        park()
+    }
+    let _ = writeln!(con, "k0: mmu on (granule {}K, wxn, w^x checks pass)", k0_mm::GRANULE / 1024);
+    mmu
 }
 
 /// 고보안 시스템의 `panic`은 fail-secure 이어야 하기 때문에

@@ -23,7 +23,7 @@ fn main() {
         (true, true) => {
             panic!("plat-virt와 plat-apple은 동시에 활성화 할 수 없음(--no-default-features 필요)")
         }
-        (false, false) => panic!("플랫폼 feature 없음(plat-virt 또는 plat-apple 중 하나를 켤 것)"),
+        (false, false) => panic!("플랫폼 feature 없음(plat-virt 또는 plat-apple 중 하나만 활성화 할 것)"),
     };
 
     let path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join(script);
