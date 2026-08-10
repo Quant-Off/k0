@@ -271,6 +271,33 @@ pub fn can_user_read(va: u64) -> bool {
     par & 1 == 0
 }
 
+/// AT S1E1RP로 PAN을 반영한 EL1 읽기 가능성을 확인하는 함수입니다.
+///
+/// 일반 AT S1E1R은 PSTATE.PAN을 무시하기 때문에 PAN 집행의 자가 검증에는
+/// 이 변형이 필요합니다. FEAT_PAN2 이상에서만 존재하므로 호출 전에 지원
+/// 여부를 확인해야 합니다(미지원 코어에서는 미정의 명령). mnemonic이
+/// 베이스라인(v8.0) 어셈블러에서 거부되기 때문에 generic sys 인코딩을
+/// 사용합니다.
+///
+/// # Arguments
+/// `va` - 검사할 가상 주소
+pub fn can_read_pan_checked(va: u64) -> bool {
+    let par: u64;
+    // SAFETY: AT는 변환 시도만 하고 폴트를 일으키지 않으며 결과는 PAR_EL1에
+    //         남음, 호출자가 FEAT_PAN2 지원을 확인한 뒤에만 도달함
+    unsafe {
+        asm!(
+            "sys #0, c7, c9, #0, {va}", // at s1e1rp
+            "isb",
+            "mrs {par}, par_el1",
+            va = in(reg) va,
+            par = out(reg) par,
+            options(nostack),
+        );
+    }
+    par & 1 == 0
+}
+
 /// AT S1E0W로 해당 VA가 EL0에서 쓰기 가능한지 확인하는 함수입니다.
 ///
 /// # Arguments

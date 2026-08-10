@@ -129,7 +129,9 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         let _ = writeln!(con, "k0: memory {:#x} + {:#x}", r.base, r.size);
     }
 
-    // 루트 태스크 무결성 검증: 신뢰 체인을 사용자 공간으로 잇는 관문
+    // 루트 태스크 무결성(손상) 검사: 빌드 및 적재 경로의 변형을 걸러내는 단계
+    // 커널 이미지 자체를 수정할 수 있는 공격자는 부트 체인의 커널 서명
+    // 검증만이 막을 수 있음(해시 기준값도 이 이미지의 일부이기 때문)
     let root_task = match k0_boot::verify_root_task() {
         Ok(rt) => rt,
         Err(e) => {
@@ -137,7 +139,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
             park()
         }
     };
-    let _ = write!(con, "k0: root task verified ({} bytes, sha256 ", root_task.image.len());
+    let _ = write!(con, "k0: root task integrity ok ({} bytes, sha256 ", root_task.image.len());
     for b in &root_task.sha256[..4] {
         let _ = write!(con, "{b:02x}");
     }
@@ -146,9 +148,10 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     let hard = k0_arch::hardening::enable();
     let _ = writeln!(
         con,
-        "k0: pac={} bti={}",
+        "k0: pac={} bti={} pan={}",
         if hard.pac { "on" } else { "absent" },
-        if hard.bti { "present" } else { "absent" }
+        if hard.bti { "present" } else { "absent" },
+        if hard.pan { "on" } else { "absent" }
     );
 
     match k0_arch::irq::init(&traps) {
@@ -272,7 +275,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     //         마쳤고, user_root는 spawn_root가 완성한 사용자 테이블임
     unsafe { k0_mm::install_user_ttbr0(user_root) };
 
-    check_user_wx(&mut con, segs);
+    check_user_wx(&mut con, segs, &hard);
 
     let _ = writeln!(con, "k0: entering root task (el0)");
     // SAFETY: 주소 공간 설치와 컨텍스트 준비가 끝난 발산 지점에서의 이양
@@ -400,15 +403,19 @@ fn pick_window(bootinfo: &k0_boot::BootInfo, kernel_image: &Range<usize>) -> Opt
 /// 사용자 매핑의 W^X / 가드 / 격리를 AT 명령으로 자가 검증하는 함수입니다.
 ///
 /// `install_user_ttbr0` 이후에 호출해야 합니다. 커널 텍스트가 EL0에서
-/// 보이지 않는 것과 identity 매핑이 회수된 것까지 함께 확인합니다.
+/// 보이지 않는 것, identity 매핑이 회수된 것, PAN이 켜졌으면 커널(EL1)의
+/// 사용자 페이지 접근이 거부되는 것까지 함께 확인합니다. PAN 집행 검사는
+/// PSTATE.PAN을 반영하는 AT S1E1RP가 있어야(FEAT_PAN2) 가능하고, 없으면
+/// 일반 AT S1E1R로 페이지 권한만 확인합니다.
 ///
 /// # Arguments
 /// `segs` - 스폰에 사용한 세그먼트 메타데이터
+/// `hard` - hardening 실측 결과(기대값 계산과 검사 방법 선택에 사용)
 ///
 /// # Errors
 /// 검증 불일치는 사용자 주소 공간을 신뢰할 수 없다는 의미이기 때문에
 /// fail-secure 파킹으로 이어집니다.
-fn check_user_wx(con: &mut EarlyCon, segs: &[k0_task::LoadSeg]) {
+fn check_user_wx(con: &mut EarlyCon, segs: &[k0_task::LoadSeg], hard: &k0_arch::hardening::Hardening) {
     let Some(text) = segs
         .iter()
         .find(|s| matches!(s.kind, k0_task::SegKind::Text))
@@ -422,13 +429,22 @@ fn check_user_wx(con: &mut EarlyCon, segs: &[k0_task::LoadSeg]) {
     let stack_top = k0_task::USER_STACK_TOP;
     let guard = stack_top - k0_task::USER_STACK_SIZE - g;
 
+    // PAN 집행 검사: S1E1RP가 있으면 PAN이 특권 접근을 실제로 거부하는지,
+    //              없으면 페이지 권한 그대로(EL1은 사용자 RO 페이지를 읽을 수 있음)
+    let utext_k = if hard.pan2 {
+        ("utext+kp", k0_mm::can_read_pan_checked(text), false)
+    } else {
+        ("utext+k", k0_mm::can_read(text), true)
+    };
+
     // (이름, 실측, 기대) 형태의 검증표
-    let checks: [(&str, bool, bool); 6] = [
+    let checks: [(&str, bool, bool); 7] = [
         ("utext+r", k0_mm::can_user_read(text), true),
         ("utext+w", k0_mm::can_user_write(text), false),
         ("ustack+w", k0_mm::can_user_write(stack_top - g), true),
         ("uguard+r", k0_mm::can_user_read(guard), false),
         ("ktext+u", k0_mm::can_user_read(ktext_va), false),
+        utext_k,
         ("id+r", k0_mm::can_read(ktext_va - k0_mm::KERNEL_VA_OFFSET), false),
     ];
     let mut ok = true;

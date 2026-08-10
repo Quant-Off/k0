@@ -77,11 +77,6 @@ el2_to_el1:
     msr     CPTR_EL2, x1
     msr     HSTR_EL2, xzr               // EL1 시스템 레지스터 트랩 없음
 
-    // SCTLR_EL1: RES1 비트만 세팅되고 MMU/캐시 OFF, little-endian
-    // (MMU/W^X 구성은 진입 페이즈 1의 Rust 코드가 명시적으로 수행)
-    ldr     x1, =0x30d00800
-    msr     SCTLR_EL1, x1
-
     // SPSR = DAIF 마스크(0x3C0) | EL1h(0x5)
     ldr     x1, =0x3c5
     msr     SPSR_EL2, x1
@@ -90,15 +85,27 @@ el2_to_el1:
     eret
 
     //
-    // 4. EL1: 부트 스택 설정
+    // 4. EL1: SCTLR_EL1 정규화
     //
+    // 진입 경로(EL1 직접 / EL2 강하)와 무관하게 부트로더가 남긴 상태를
+    // 신뢰하지 않고 기지(known) 상태로 통일합니다. RES1 비트만 세팅되고
+    // MMU/캐시 OFF, little-endian, EL0 WFx 트랩(nTWI/nTWE=0), EL0 DAIF
+    // 접근 차단(UMA=0). W^X와 MMU 구성은 진입 페이즈 1의 Rust 코드가
+    // 명시적으로 수행합니다.
 el1_entry:
+    ldr     x1, =0x30d00800
+    msr     SCTLR_EL1, x1
+    isb
+
+    //
+    // 5. 부트 스택 설정
+    //
     adrp    x1, __boot_stack_top
     add     x1, x1, :lo12:__boot_stack_top
     mov     sp, x1
 
     //
-    // 5. .bss 제로화
+    // 6. .bss 제로화
     //
     // Rust는 static 초기값 0을 가정하므로 kernel_init 진입 전 필수
     // 링커 스크립트가 __bss_start/__bss_end를 16바이트 정렬로 보장
@@ -112,7 +119,7 @@ el1_entry:
     b       2b
 
     //
-    // 6. Rust로 이양
+    // 7. Rust로 이양
     //
     // x0 = DTB 물리 주소
 3:  bl      kernel_init
