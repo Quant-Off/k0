@@ -38,8 +38,16 @@ phase0_entry:
     // 1. 부트 코어 선별: 세컨더리 코어는 파킹
     //
     // 단일 코어로 시작(검증 범위 최소화)하며, SMP는 이후 명시적 wake로 확장됩니다.
+    // 어피니티 전체(Aff3/Aff2/Aff1/Aff0)를 비교합니다. Apple Silicon은
+    // 클러스터 번호가 Aff1에 실리기 때문에 Aff0만 보면 다른 클러스터의
+    // 0번 코어를 부트 코어로 오인합니다. RES1(31)/U(30)/MT(24) 비트는
+    // 어피니티가 아니라서 제외합니다. (마스크는 논리 즉치로 인코딩되지
+    // 않아 movz/movk로 조립)
     mrs     x1, MPIDR_EL1
-    and     x1, x1, #0xff               // Aff0 (코어 번호)
+    mov     x2, #0xffff
+    movk    x2, #0x00ff, lsl #16
+    movk    x2, #0x00ff, lsl #32
+    and     x1, x1, x2
     cbz     x1, 1f
 0:  wfe                                 // fail-secure 파킹 루프
     b       0b
@@ -76,6 +84,13 @@ el2_to_el1:
     mov     x1, #0x33ff                 // CPTR_EL2: FP/SIMD 트랩 비활성
     msr     CPTR_EL2, x1
     msr     HSTR_EL2, xzr               // EL1 시스템 레지스터 트랩 없음
+
+    // MDCR_EL2: 디버그/PMU의 EL2 트랩과 라우팅 전부 해제
+    // 부트로더가 TDA/TDE 등을 남기면 EL1의 디버그 레지스터 접근이 벡터 없는
+    // EL2로 트랩되어 행이 됩니다. HPMN(4:0)은 0이 미정의 동작일 수 있어 보존
+    mrs     x1, MDCR_EL2
+    and     x1, x1, #0x1f
+    msr     MDCR_EL2, x1
 
     // SPSR = DAIF 마스크(0x3C0) | EL1h(0x5)
     ldr     x1, =0x3c5

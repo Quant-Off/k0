@@ -6,8 +6,10 @@
 
 #![no_std]
 
+mod entropy;
 mod fdt;
 mod roottask;
 
-pub use fdt::{dtb_span, parse, BootError, BootInfo, MemRegion, MAX_MEM_REGIONS};
+pub use entropy::derive_pac_keys;
+pub use fdt::{dtb_span, parse, BootError, BootInfo, MemRegion, MAX_ENTROPY, MAX_MEM_REGIONS};
 pub use roottask::{verify_root_task, RtSegKind, RtSegment, VerifiedRootTask, VerifyError};

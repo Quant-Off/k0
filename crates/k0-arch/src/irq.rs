@@ -180,14 +180,16 @@ pub fn init(_vectors: &Vectors) -> Result<Irq, IrqError> {
     {
         gicv3::init()?;
         timer_arm(timer_freq());
-        // SAFETY: 벡터와 GIC가 준비된 뒤의 IRQ 언마스크
-        unsafe { asm!("msr DAIFClr, #2", options(nomem, nostack)) };
+        // SAFETY: 벡터와 GIC가 준비된 뒤의 IRQ + SError(A) 언마스크
+        //         SError를 계속 마스크하면 커널 실행 중의 시스템 오류가 조용히
+        //         pending으로 쌓였다가 EL0 진입 후 엉뚱한 문맥에서 터짐
+        unsafe { asm!("msr DAIFClr, #6", options(nomem, nostack)) };
     }
     #[cfg(feature = "plat-apple")]
     {
         timer_arm(timer_freq());
-        // SAFETY: Apple 타이머는 코어 FIQ로 직접 전달되기 땜에 FIQ만 언마스크
-        unsafe { asm!("msr DAIFClr, #1", options(nomem, nostack)) };
+        // SAFETY: Apple 타이머는 코어 FIQ 직결이라 FIQ + SError(A)만 언마스크
+        unsafe { asm!("msr DAIFClr, #5", options(nomem, nostack)) };
     }
     Ok(Irq { _sealed: () })
 }

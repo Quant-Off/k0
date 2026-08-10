@@ -3,8 +3,11 @@
 //! # Features
 //! 부트로더가 넘긴 DTB를 신뢰하지 않는 입력으로 취급합니다. 헤더의 모든
 //! 오프셋과 길이를 검사 산술로 확인하고, 커널 이미지와 겹치는 DTB를 거부한
-//! 뒤, 루트의 #address-cells / #size-cells와 /memory 노드의 reg만 읽어
-//! 물리 메모리 맵을 만듭니다. 그 외 노드는 해석하지 않습니다.
+//! 뒤, 루트의 #address-cells / #size-cells와 /memory 노드의 reg, /chosen
+//! 노드의 엔트로피(rng-seed, kaslr-seed)만 읽습니다. 그 외 노드는 해석하지
+//! 않습니다. 엔트로피는 PAC 키 파생의 재료일 뿐이라 내용을 검증하지 않고
+//! 길이만 상한으로 자릅니다. (악의적 값이어도 다른 재료와 해시로 혼합되어
+//! 키를 약화시키지 못함, 단 제공되지 않으면 저엔트로피가 됨)
 //!
 //! # Errors
 //! 형식 위반은 전부 `BootError`로 반환하며, 어떤 경우에도 blob 바깥을 읽지
@@ -14,6 +17,9 @@ use core::ops::Range;
 
 /// 저장 가능한 물리 메모리 영역 수의 상한
 pub const MAX_MEM_REGIONS: usize = 8;
+
+/// /chosen에서 수집하는 엔트로피 바이트 상한 (rng-seed + kaslr-seed)
+pub const MAX_ENTROPY: usize = 72;
 
 const FDT_MAGIC: u32 = 0xd00d_feed;
 const HEADER_SIZE: u32 = 40;
@@ -43,11 +49,21 @@ pub struct BootInfo {
     pub dtb: Range<usize>,
     regions: [MemRegion; MAX_MEM_REGIONS],
     region_count: usize,
+    entropy: [u8; MAX_ENTROPY],
+    entropy_len: usize,
 }
 
 impl BootInfo {
     pub fn memory(&self) -> &[MemRegion] {
         &self.regions[..self.region_count]
+    }
+
+    /// /chosen이 제공한 엔트로피 바이트(rng-seed + kaslr-seed)를 주는 함수입니다.
+    ///
+    /// 비어 있을 수 있고, 그 경우 PAC 키 파생이 저엔트로피가 되므로 호출자는
+    /// 로그로 드러내야 합니다.
+    pub fn entropy(&self) -> &[u8] {
+        &self.entropy[..self.entropy_len]
     }
 }
 
@@ -189,6 +205,8 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
         dtb,
         regions: [MemRegion { base: 0, size: 0 }; MAX_MEM_REGIONS],
         region_count: 0,
+        entropy: [0; MAX_ENTROPY],
+        entropy_len: 0,
     };
 
     // 루트가 셀 크기를 생략하면 DT spec 기본값(2 / 1)을 쓴다
@@ -196,6 +214,7 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
     let mut size_cells: u32 = 1;
     let mut depth: u32 = 0;
     let mut memory_depth: Option<u32> = None;
+    let mut chosen_depth: Option<u32> = None;
     let mut off = off_struct;
 
     loop {
@@ -222,6 +241,9 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
                 if depth == 2 && (name == b"memory" || name.starts_with(b"memory@")) {
                     memory_depth = Some(depth);
                 }
+                if depth == 2 && name == b"chosen" {
+                    chosen_depth = Some(depth);
+                }
                 off = align4(off + rel + 1)?;
             }
             FDT_END_NODE => {
@@ -230,6 +252,9 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
                 }
                 if memory_depth == Some(depth) {
                     memory_depth = None;
+                }
+                if chosen_depth == Some(depth) {
+                    chosen_depth = None;
                 }
                 depth -= 1;
             }
@@ -255,6 +280,10 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
                     }
                 } else if memory_depth == Some(depth) && name == b"reg" {
                     push_regions(value, addr_cells, size_cells, &mut info)?;
+                } else if chosen_depth == Some(depth)
+                    && (name == b"rng-seed" || name == b"kaslr-seed")
+                {
+                    push_entropy(value, &mut info);
                 }
                 off = align4(val_end)?;
             }
@@ -332,4 +361,14 @@ fn push_regions(
 
 fn read_cells(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b))
+}
+
+/// /chosen의 엔트로피 프로퍼티를 상한까지 수집하는 함수입니다.
+///
+/// 내용은 검증하지 않고(해시 혼합 재료일 뿐) 넘치는 바이트는 버립니다.
+fn push_entropy(value: &[u8], info: &mut BootInfo) {
+    let cap = MAX_ENTROPY - info.entropy_len;
+    let n = value.len().min(cap);
+    info.entropy[info.entropy_len..info.entropy_len + n].copy_from_slice(&value[..n]);
+    info.entropy_len += n;
 }

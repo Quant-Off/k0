@@ -145,7 +145,24 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     }
     let _ = writeln!(con, "..)");
 
-    let hard = k0_arch::hardening::enable();
+    // PAC 부트 키 파생: DTB 엔트로피 + CNTPCT + RNDR(있으면)을 SHA-256으로 혼합
+    let cntpct: u64;
+    // SAFETY: CNTPCT_EL0 읽기는 부작용이 없음
+    unsafe { core::arch::asm!("mrs {}, cntpct_el0", out(reg) cntpct, options(nomem, nostack)) };
+    let rndr = k0_arch::hardening::rndr();
+    let pac_keys = k0_boot::derive_pac_keys(bootinfo.entropy(), &[cntpct, rndr.unwrap_or(0)]);
+    let _ = writeln!(
+        con,
+        "k0: entropy dtb={}B rndr={}",
+        bootinfo.entropy().len(),
+        if rndr.is_some() { "on" } else { "absent" }
+    );
+    if bootinfo.entropy().is_empty() && rndr.is_none() {
+        // 재료가 CNTPCT뿐이면 키가 추측 가능한 수준이라 명시적으로 드러냄
+        let _ = writeln!(con, "k0: WARNING pac key entropy low (cntpct only)");
+    }
+
+    let hard = k0_arch::hardening::enable(&pac_keys);
     let _ = writeln!(
         con,
         "k0: pac={} bti={} pan={}",
