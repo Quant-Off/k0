@@ -51,9 +51,13 @@ mod gicv3 {
     use super::{gic, IrqError, TIMER_INTID};
     use core::arch::asm;
 
-    const GICD_CTLR: u64 = gic::GICD_BASE;
-    const GICR_WAKER: u64 = gic::GICR_BASE + 0x14;
-    const SGI_BASE: u64 = gic::GICR_BASE + 0x1_0000;
+    // MMIO는 TTBR1 별칭 VA로 접근함.
+    // TTBR0이 사용자 테이블로 교체된 뒤에도 유효해야 하고 init은 
+    // higher-half 점프 이후에만 호출되기 때문
+    const KVA: u64 = k0_abi::KERNEL_VA_OFFSET;
+    const GICD_CTLR: u64 = gic::GICD_BASE + KVA;
+    const GICR_WAKER: u64 = gic::GICR_BASE + KVA + 0x14;
+    const SGI_BASE: u64 = gic::GICR_BASE + KVA + 0x1_0000;
     const GICR_IGROUPR0: u64 = SGI_BASE + 0x80;
     const GICR_ISENABLER0: u64 = SGI_BASE + 0x100;
     const POLL_LIMIT: u32 = 1_000_000;
@@ -204,9 +208,8 @@ fn unexpected(kind: &str, id: u64) -> ! {
     }
 }
 
-/// IRQ 벡터(`vectors.S`)가 부르는 디스패처 함수입니다.
-#[unsafe(no_mangle)]
-extern "C" fn irq_current() {
+/// EL1과 EL0 양쪽 IRQ 벡터가 공유하는 실제 분배 함수입니다.
+fn dispatch_irq() {
     #[cfg(feature = "plat-virt")]
     {
         let iar = gicv3::ack();
@@ -223,9 +226,8 @@ extern "C" fn irq_current() {
     unexpected("irq", 0); // AIC는 아직 초기화하지 않기 때문에 IRQ는 설계상 없음
 }
 
-/// FIQ 벡터(vectors.S)가 부르는 디스패처 함수입니다.
-#[unsafe(no_mangle)]
-extern "C" fn fiq_current() {
+/// EL1과 EL0 양쪽 FIQ 벡터가 공유하는 실제 분배 함수입니다.
+fn dispatch_fiq() {
     #[cfg(feature = "plat-apple")]
     {
         if timer_pending() {
@@ -236,4 +238,30 @@ extern "C" fn fiq_current() {
     }
     #[cfg(feature = "plat-virt")]
     unexpected("fiq", 0); // virt에서 FIQ는 설계상 없음
+}
+
+/// 커널(EL1) 실행 중 IRQ 벡터(`vectors.S`)가 사용하는 디스패처 함수입니다.
+#[unsafe(no_mangle)]
+extern "C" fn irq_current() {
+    dispatch_irq();
+}
+
+/// 커널(EL1) 실행 중 FIQ 벡터(`vectors.S`)가 사용하는 디스패처 함수입니다.
+#[unsafe(no_mangle)]
+extern "C" fn fiq_current() {
+    dispatch_fiq();
+}
+
+/// 사용자 공간(EL0) 실행 중 IRQ 벡터가 사용하는 디스패처 함수입니다.
+///
+/// 복귀는 벡터의 `__user_restore`가 컨텍스트 전체를 복원하며 수행합니다.
+#[unsafe(no_mangle)]
+extern "C" fn irq_lower(_ctx: &mut crate::usermode::Context) {
+    dispatch_irq();
+}
+
+/// 사용자 공간(EL0) 실행 중 FIQ 벡터가 사용하는 디스패처 함수입니다.
+#[unsafe(no_mangle)]
+extern "C" fn fiq_lower(_ctx: &mut crate::usermode::Context) {
+    dispatch_fiq();
 }

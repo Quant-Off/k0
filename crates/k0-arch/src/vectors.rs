@@ -79,7 +79,7 @@ fn ec_name(ec: u64) -> &'static str {
 /// # Arguments
 /// `kind` - 벡터 인덱스(0..16), 어느 엔트리로 진입했는지
 #[unsafe(no_mangle)]
-extern "C" fn exception_fatal(kind: u64) -> ! {
+pub(crate) extern "C" fn exception_fatal(kind: u64) -> ! {
     let (esr, elr, far, spsr): (u64, u64, u64, u64);
     // SAFETY: 예외 신드롬 레지스터 읽기는 부작용이 없다
     unsafe {
