@@ -11,3 +11,4 @@ plat-virt = []
 plat-apple = []
 
 [dependencies]
+k0-abi = { path = "../k0-abi" }
