@@ -11,7 +11,7 @@
 //! 해시 불일치는 이미지 변조나 적재 오류를 뜻하므로 호출자는 부팅을
 //! 중단해야 합니다(fail-secure).
 
-use crate::sha256;
+use sha2::{Digest, Sha256};
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/roottask_gen.rs"));
@@ -36,7 +36,7 @@ pub enum VerifyError {
 /// # Errors
 /// 재계산한 SHA-256이 빌드 시 고정된 기준 해시와 다르면 `HashMismatch`
 pub fn verify_root_task() -> Result<VerifiedRootTask, VerifyError> {
-    let hash = sha256::digest(generated::ROOT_TASK_IMAGE);
+    let hash: [u8; 32] = Sha256::digest(generated::ROOT_TASK_IMAGE).into();
     if hash != generated::ROOT_TASK_SHA256 {
         return Err(VerifyError::HashMismatch);
     }

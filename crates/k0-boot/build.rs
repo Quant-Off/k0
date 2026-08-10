@@ -3,11 +3,10 @@
 //! # Features
 //! root-task를 별도 타겟 디렉터리에서 빌드하고, 그 바이너리의 SHA-256을
 //! 계산해 임베드 경로와 기준 해시를 담은 생성 파일(roottask_gen.rs)을
-//! 만듭니다. 시작 시 SHA-256 구현 자체를 표준 테스트 벡터로 검증하므로
-//! 구현 오류는 빌드 실패로 즉시 드러납니다.
+//! 만듭니다. 시작 시 vendored sha2 크레이트를 표준 테스트 벡터로 교차
+//! 검증하기 때문에 vendor 변조나 구현 오류는 빌드 실패로 즉시 드러납니다.
 
-#[path = "src/sha256.rs"]
-mod sha256;
+use sha2::{Digest, Sha256};
 
 use std::env;
 use std::fs;
@@ -25,10 +24,18 @@ const EMPTY_DIGEST: [u8; 32] = [
     0xb8, 0x55,
 ];
 
+/// SHA-256 해시를 고정 크기 배열로 계산하는 함수입니다.
+///
+/// # Arguments
+/// `data` - 해시할 바이트열
+fn digest(data: &[u8]) -> [u8; 32] {
+    Sha256::digest(data).into()
+}
+
 fn main() {
-    // FIPS 180-4 테스트 벡터로 SHA-256 구현 자가 검증
-    assert_eq!(sha256::digest(b"abc"), ABC_DIGEST, "SHA-256 구현 오류");
-    assert_eq!(sha256::digest(b""), EMPTY_DIGEST, "SHA-256 구현 오류");
+    // FIPS 180-4 테스트 벡터로 vendored sha2를 교차 검증
+    assert_eq!(digest(b"abc"), ABC_DIGEST, "sha2 크레이트 검증 실패");
+    assert_eq!(digest(b""), EMPTY_DIGEST, "sha2 크레이트 검증 실패");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -54,7 +61,7 @@ fn main() {
 
     let elf = rt_target.join("aarch64-unknown-none-softfloat/release/root-task");
     let image = fs::read(&elf).expect("root-task 바이너리 읽기 실패");
-    let hash = sha256::digest(&image);
+    let hash = digest(&image);
 
     let generated = format!(
         "pub static ROOT_TASK_IMAGE: &[u8] = include_bytes!(\"{}\");\n\

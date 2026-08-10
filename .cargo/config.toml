@@ -21,7 +21,7 @@ virt = "run -p k0-kernel"
 apple = "build -p k0-kernel --release --no-default-features --features plat-apple"
 
 # vendor 디렉토리에서만 의존성을 해석
-# [source.crates-io]
-# replace-with = "vendored-sources"
-# [source.vendored-sources]
-# directory = "vendor"
+[source.crates-io]
+replace-with = "vendored-sources"
+[source.vendored-sources]
+directory = "vendor"
