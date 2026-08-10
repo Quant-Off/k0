@@ -7,7 +7,6 @@
 //! 최대한 일찍 설치해야 합니다. IRQ 분배는 GIC 초기화와 함께 확장됩니다.
 
 use core::arch::asm;
-use core::fmt::Write;
 
 use crate::earlycon::EarlyCon;
 
@@ -33,12 +32,27 @@ pub fn install() -> Vectors {
     Vectors { _sealed: () }
 }
 
-const KIND_NAMES: [&str; 16] = [
-    "sync-sp0", "irq-sp0", "fiq-sp0", "serror-sp0",
-    "sync-spx", "irq-spx", "fiq-spx", "serror-spx",
-    "sync-a64", "irq-a64", "fiq-a64", "serror-a64",
-    "sync-a32", "irq-a32", "fiq-a32", "serror-a32",
-];
+fn kind_name(kind: u64) -> &'static str {
+    match kind {
+        0 => "sync-sp0",
+        1 => "irq-sp0",
+        2 => "fiq-sp0",
+        3 => "serror-sp0",
+        4 => "sync-spx",
+        5 => "irq-spx",
+        6 => "fiq-spx",
+        7 => "serror-spx",
+        8 => "sync-a64",
+        9 => "irq-a64",
+        10 => "fiq-a64",
+        11 => "serror-a64",
+        12 => "sync-a32",
+        13 => "irq-a32",
+        14 => "fiq-a32",
+        15 => "serror-a32",
+        _ => "?",
+    }
+}
 
 fn ec_name(ec: u64) -> &'static str {
     match ec {
@@ -82,17 +96,22 @@ extern "C" fn exception_fatal(kind: u64) -> ! {
         );
     }
 
-    let name = KIND_NAMES.get(kind as usize).copied().unwrap_or("?");
+    // fmt를 쓰지 않는 raw 출력: higher-half 점프 전의 폴트에서도 동작해야 함
     let ec = (esr >> 26) & 0x3F;
     let mut con = EarlyCon;
-    let _ = writeln!(con, "k0: EXCEPTION {name}");
-    let _ = writeln!(
-        con,
-        "k0: esr={esr:#x} (ec={ec:#x} {}) iss={:#x}",
-        ec_name(ec),
-        esr & 0x1FF_FFFF
-    );
-    let _ = writeln!(con, "k0: elr={elr:#x} far={far:#x} spsr={spsr:#x}");
+    con.put_str("k0: EXCEPTION ");
+    con.put_str(kind_name(kind));
+    con.put_str("\nk0: esr = ");
+    con.put_hex(esr);
+    con.put_str(" ec ");
+    con.put_str(ec_name(ec));
+    con.put_str("\nk0: elr = ");
+    con.put_hex(elr);
+    con.put_str(" far = ");
+    con.put_hex(far);
+    con.put_str(" spsr = ");
+    con.put_hex(spsr);
+    con.put_str("\n");
 
     loop {
         // SAFETY: wfe는 대기만 함

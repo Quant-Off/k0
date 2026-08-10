@@ -17,7 +17,9 @@ pub const MAX_MEM_REGIONS: usize = 8;
 
 const FDT_MAGIC: u32 = 0xd00d_feed;
 const HEADER_SIZE: u32 = 40;
-const MAX_DTB_SIZE: u32 = 16 * 1024 * 1024;
+/// 수용 가능한 DTB 최대 크기입니다. 이 값이 곧 진입 페이즈 1에서 DTB에 할당하는
+/// 매핑 상한이라서 과대한 totalsize로 페이지 테이블 풀을 고갈시키지 못합니다.
+const MAX_DTB_SIZE: u32 = 2 * 1024 * 1024;
 const MAX_DEPTH: u32 = 32;
 const SUPPORTED_VERSION: u32 = 17;
 
@@ -68,15 +70,19 @@ pub enum BootError {
     NoMemory,
 }
 
-/// 물리 주소의 DTB를 검증하고 파싱하는 함수입니다.
+/// DTB 헤더만 검사해 blob이 차지하는 물리 범위를 얻는 함수입니다.
+///
+/// 진입 페이즈 1의 페이지 테이블 구성이 DTB를 매핑하려면 파싱 전에 크기를
+/// 알아야 하기 때문에 분리되어 있습니다. 정수 비교만 수행하고 재배치된 포인터를
+/// 담은 데이터를 일절 건드리지 않으므로 higher-half 점프 이전에도
+/// 안전합니다. (본 파싱은 점프 이후에 수행)
 ///
 /// # Arguments
 /// `dtb_phys` - 부트로더가 x0로 넘긴 DTB 물리 주소
-/// `kernel_image` - 커널 이미지가 차지하는 물리 범위(겹침 거부용)
 ///
 /// # Errors
-/// 헤더 형식 위반, 커널 이미지와의 겹침, 구조 블록 형식 위반 시 `BootError`
-pub fn parse(dtb_phys: usize, kernel_image: Range<usize>) -> Result<BootInfo, BootError> {
+/// null pointer, 정렬 위반, 매직 불일치, 크기 범위 위반 시 `BootError`
+pub fn dtb_span(dtb_phys: usize) -> Result<Range<usize>, BootError> {
     if dtb_phys == 0 {
         return Err(BootError::NullPointer);
     }
@@ -84,8 +90,8 @@ pub fn parse(dtb_phys: usize, kernel_image: Range<usize>) -> Result<BootInfo, Bo
         return Err(BootError::Misaligned);
     }
 
-    // SAFETY: MMU OFF 상태에서 부트로더가 넘긴 8바이트 정렬 주소의
-    // 첫 8바이트(magic, totalsize)만 읽는다
+    // SAFETY: 부트로더가 넘긴 8바이트 정렬 주소의 첫 8바이트(magic, totalsize)만
+    //         읽음. MMU OFF거나 해당 범위가 매핑된 상태에서만 호출해야 함
     let magic = unsafe { read_be32_phys(dtb_phys) };
     if magic != FDT_MAGIC {
         return Err(BootError::BadMagic);
@@ -99,15 +105,31 @@ pub fn parse(dtb_phys: usize, kernel_image: Range<usize>) -> Result<BootInfo, Bo
     let dtb_end = dtb_phys
         .checked_add(totalsize as usize)
         .ok_or(BootError::BadHeader)?;
-    if dtb_phys < kernel_image.end && kernel_image.start < dtb_end {
+    Ok(dtb_phys..dtb_end)
+}
+
+/// 물리 주소의 DTB를 검증하고 파싱하는 함수입니다.
+///
+/// 문자열 비교 등 재배치된 데이터를 사용하므로 higher-half 점프 이후에만
+/// 호출할 수 있습니다.
+///
+/// # Arguments
+/// `dtb_phys` - 부트로더가 x0로 넘긴 DTB 물리 주소
+/// `kernel_image` - 커널 이미지가 차지하는 물리 범위(겹침 거부용)
+///
+/// # Errors
+/// 헤더 형식 위반, 커널 이미지와의 겹침, 구조 블록 형식 위반 시 `BootError`
+pub fn parse(dtb_phys: usize, kernel_image: Range<usize>) -> Result<BootInfo, BootError> {
+    let dtb = dtb_span(dtb_phys)?;
+    if dtb.start < kernel_image.end && kernel_image.start < dtb.end {
         return Err(BootError::OverlapsKernel);
     }
 
-    // SAFETY: [dtb_phys, dtb_end)는 위에서 상한 검증을 통과했고 커널 이미지와
-    // 겹치지 않으며, MMU OFF라 물리 주소를 그대로 읽을 수 있다
-    let blob = unsafe { core::slice::from_raw_parts(dtb_phys as *const u8, totalsize as usize) };
+    // SAFETY: [dtb.start, dtb.end)는 dtb_span의 상한 검증을 통과했고 커널
+    //         이미지와 겹치지 않으며, 진입 페이즈 1이 이 범위를 RO로 매핑해둿음
+    let blob = unsafe { core::slice::from_raw_parts(dtb.start as *const u8, dtb.end - dtb.start) };
 
-    parse_blob(blob, dtb_phys..dtb_end)
+    parse_blob(blob, dtb)
 }
 
 /// 물리 주소에서 big-endian u32 하나를 읽는 함수입니다.

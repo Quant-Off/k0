@@ -71,16 +71,42 @@ mod imp {
 /// 초기 콘솔 핸들입니다.
 ///
 /// 상태가 없는 ZST이며 `core::fmt::Write`를 구현해 `writeln!`으로 쓸 수 있습니다.
+/// 단 fmt 경로는 절대 주소 재배치가 담긴 rodata를 읽기 때문에 higher-half 점프
+/// 이후에만 유효합니다. 점프 전 구간과 예외 진단은 `put_str` / `put_hex`만
+/// 사용해야 합니다.
 pub struct EarlyCon;
 
-impl fmt::Write for EarlyCon {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
+impl EarlyCon {
+    /// fmt 기계 없이 문자열을 그대로 출력하는 함수입니다.
+    ///
+    /// # Arguments
+    /// `s` - 출력할 문자열, `\n`은 `\r\n`으로 변환됨
+    pub fn put_str(&mut self, s: &str) {
         for b in s.bytes() {
             if b == b'\n' {
                 imp::putb(b'\r');
             }
             imp::putb(b);
         }
+    }
+
+    /// 64비트 값을 0x 접두사 16자리 16진수로 출력하는 함수입니다.
+    ///
+    /// # Arguments
+    /// `v` - 출력할 값
+    pub fn put_hex(&mut self, v: u64) {
+        self.put_str("0x");
+        for i in (0..16).rev() {
+            let d = ((v >> (i * 4)) & 0xF) as u8;
+            let c = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+            imp::putb(c);
+        }
+    }
+}
+
+impl fmt::Write for EarlyCon {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.put_str(s);
         Ok(())
     }
 }

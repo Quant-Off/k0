@@ -96,12 +96,13 @@ pub enum MmuError {
 ///
 /// 모든 경계는 링커 스크립트가 그래뉼 정렬을 보장하는 물리 주소입니다.
 /// `rw`의 두 구간 사이(가드 페이지)는 의도적으로 매핑되지 않습니다.
+/// `devices`는 그래뉼 정렬된 MMIO 범위이며 빈 범위(start == end)는 무시됩니다.
 pub struct KernelLayout {
     pub text: Range<u64>,
     pub rodata: Range<u64>,
     pub rw: [Range<u64>; 2],
     pub dtb: Range<u64>,
-    pub mmio: u64,
+    pub devices: [Range<u64>; 3],
 }
 
 /// MMU가 켜진 상태를 증명하는 typestate 토큰 구조체입니다.
@@ -267,15 +268,13 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
     let g = GRANULE as u64;
     let dtb_base = layout.dtb.start & !(g - 1);
     let dtb_end = layout.dtb.end.div_ceil(g) * g;
-    let mmio_base = layout.mmio & !(g - 1);
 
-    let segments: [(u64, u64, Perm); 6] = [
+    let segments: [(u64, u64, Perm); 5] = [
         (layout.text.start, layout.text.end, Perm::Text),
         (layout.rodata.start, layout.rodata.end, Perm::Ro),
         (layout.rw[0].start, layout.rw[0].end, Perm::Rw),
         (layout.rw[1].start, layout.rw[1].end, Perm::Rw),
         (dtb_base, dtb_end, Perm::Ro),
-        (mmio_base, mmio_base + g, Perm::Device),
     ];
     for (start, end, perm) in segments {
         if end < start {
@@ -287,6 +286,14 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
         }
         pool.map_range(root0, start, start, len, perm)?;
         pool.map_range(root1, start + KERNEL_VA_OFFSET, start, len, perm)?;
+    }
+    for dev in &layout.devices {
+        if dev.end <= dev.start {
+            continue;
+        }
+        let len = dev.end - dev.start;
+        pool.map_range(root0, dev.start, dev.start, len, Perm::Device)?;
+        pool.map_range(root1, dev.start + KERNEL_VA_OFFSET, dev.start, len, Perm::Device)?;
     }
 
     let ttbr0 = pool.pa(root0);

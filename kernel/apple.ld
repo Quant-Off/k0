@@ -16,10 +16,15 @@
 
 ENTRY(_start)
 
-__load_base = 0x810000000;
+/* 물리 로드 주소(m1n1에 지정할 주소). 진입 직후엔 identity로 실행됨 */
+__load_pa = 0x810000000;
+
+/* higher-half 가상 링크 오프셋 (k0-mm의 KERNEL_VA_OFFSET과 반드시 일치) */
+__virt_offset = 0xFFFF000000000000;
+__load_base = __virt_offset + __load_pa;
 
 /* Linux ARM64 Image 헤더(boot.S)가 참조하는 상수들 */
-__text_offset = __load_base - 0x800000000;  /* DRAM 시작 대비 로드 오프셋 */
+__text_offset = __load_pa - 0x800000000;    /* DRAM 시작 대비 로드 오프셋 */
 __image_flags = 4;                          /* LE, 16KiB 페이지 */
 
 /* ELF 프로그램 헤더 수준에서도 W^X를 명시합니다. */

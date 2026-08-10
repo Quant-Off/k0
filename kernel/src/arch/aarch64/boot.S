@@ -60,7 +60,13 @@ phase0_entry:
 el2_to_el1:
     mov     x1, xzr
     orr     x1, x1, #(1 << 31)          // HCR_EL2.RW=1: EL1은 AArch64 모드
-    msr     HCR_EL2, x1
+
+    // PAC 지원 코어면 EL1의 키 레지스터와 PAC 명령이 EL2로 트랩되지 않게 허용
+    mrs     x2, ID_AA64ISAR1_EL1
+    tst     x2, #0xFF0                  // APA | API
+    b.eq    5f
+    orr     x1, x1, #(3 << 40)          // HCR_EL2.APK | HCR_EL2.API
+5:  msr     HCR_EL2, x1
 
     mrs     x1, CNTHCTL_EL2             // EL1의 물리 타이머/카운터 접근 허용
     orr     x1, x1, #0b11               // EL1PCEN | EL1PCTEN
