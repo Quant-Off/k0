@@ -111,23 +111,33 @@ pub fn dtb_span(dtb_phys: usize) -> Result<Range<usize>, BootError> {
 /// 물리 주소의 DTB를 검증하고 파싱하는 함수입니다.
 ///
 /// 문자열 비교 등 재배치된 데이터를 사용하므로 higher-half 점프 이후에만
-/// 호출할 수 있습니다.
+/// 호출할 수 있습니다. 실제 읽기는 `dtb_phys + read_offset`으로 수행하기
+/// 때문에 TTBR1 별칭(VA)을 통해 읽으면 TTBR0(identity)이 회수된 뒤에도
+/// 동작합니다. 겹침 검사와 결과의 메모리 맵은 물리 주소 기준입니다.
 ///
 /// # Arguments
 /// `dtb_phys` - 부트로더가 x0로 넘긴 DTB 물리 주소
 /// `kernel_image` - 커널 이미지가 차지하는 물리 범위(겹침 거부용)
+/// `read_offset` - 읽기 주소에 더할 오프셋(TTBR1 별칭이면 `KERNEL_VA_OFFSET`)
 ///
 /// # Errors
 /// 헤더 형식 위반, 커널 이미지와의 겹침, 구조 블록 형식 위반 시 `BootError`
-pub fn parse(dtb_phys: usize, kernel_image: Range<usize>) -> Result<BootInfo, BootError> {
-    let dtb = dtb_span(dtb_phys)?;
+pub fn parse(
+    dtb_phys: usize,
+    kernel_image: Range<usize>,
+    read_offset: usize,
+) -> Result<BootInfo, BootError> {
+    let read_base = dtb_phys.checked_add(read_offset).ok_or(BootError::BadHeader)?;
+    let dtb_read = dtb_span(read_base)?;
+    let len = dtb_read.end - dtb_read.start;
+    let dtb = dtb_phys..dtb_phys.checked_add(len).ok_or(BootError::BadHeader)?;
     if dtb.start < kernel_image.end && kernel_image.start < dtb.end {
         return Err(BootError::OverlapsKernel);
     }
 
-    // SAFETY: [dtb.start, dtb.end)는 dtb_span의 상한 검증을 통과했고 커널
-    //         이미지와 겹치지 않으며, 진입 페이즈 1이 이 범위를 RO로 매핑해둿음
-    let blob = unsafe { core::slice::from_raw_parts(dtb.start as *const u8, dtb.end - dtb.start) };
+    // SAFETY: [dtb_read.start, dtb_read.end)는 dtb_span의 상한 검증을 통과했고
+    //         커널 이미지와 겹치지 않으며, 진입 페이즈 1이 이 범위를 RO로 매핑해둿음
+    let blob = unsafe { core::slice::from_raw_parts(dtb_read.start as *const u8, len) };
 
     parse_blob(blob, dtb)
 }
