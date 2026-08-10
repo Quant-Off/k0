@@ -30,25 +30,29 @@ pub const GRANULE: usize = 4096;
 #[cfg(feature = "plat-apple")]
 pub const GRANULE: usize = 16384;
 
-/// TTBR1 higher-half 선형 별칭의 VA 오프셋 (T1SZ=16, 48비트 VA 전제)
-pub const KERNEL_VA_OFFSET: u64 = 0xFFFF_0000_0000_0000;
+/// TTBR1 higher-half 선형 별칭의 VA 오프셋 (정의는 k0-abi, 링커 스크립트와 일치)
+pub use k0_abi::KERNEL_VA_OFFSET;
 
 const PAGE_SHIFT: u32 = GRANULE.trailing_zeros();
 const BITS_PER_LEVEL: u32 = PAGE_SHIFT - 3;
 const ENTRIES: usize = GRANULE / 8;
 const POOL_LEN: usize = 24;
-const ADDR_MASK: u64 = ((1u64 << 48) - 1) & !(GRANULE as u64 - 1);
+pub(crate) const ADDR_MASK: u64 = ((1u64 << 48) - 1) & !(GRANULE as u64 - 1);
 
-const DESC_TABLE: u64 = 0b11;
-const DESC_PAGE: u64 = 0b11;
-const ATTR_AF: u64 = 1 << 10;
-const SH_INNER: u64 = 0b11 << 8;
+pub(crate) const DESC_TABLE: u64 = 0b11;
+pub(crate) const DESC_PAGE: u64 = 0b11;
+pub(crate) const ATTR_AF: u64 = 1 << 10;
+pub(crate) const SH_INNER: u64 = 0b11 << 8;
 const SH_OUTER: u64 = 0b10 << 8;
 const AP_RO: u64 = 0b10 << 6;
 const AP_RW: u64 = 0b00 << 6;
-const PXN: u64 = 1 << 53;
-const UXN: u64 = 1 << 54;
-const IDX_NORMAL: u64 = 0 << 2;
+/// EL1 RO + EL0 RO, 사용자 텍스트/rodata용
+pub(crate) const AP_RO_ALL: u64 = 0b11 << 6;
+/// EL1 RW + EL0 RW, 사용자 데이터/스택용
+pub(crate) const AP_RW_ALL: u64 = 0b01 << 6;
+pub(crate) const PXN: u64 = 1 << 53;
+pub(crate) const UXN: u64 = 1 << 54;
+pub(crate) const IDX_NORMAL: u64 = 0 << 2;
 const IDX_DEVICE: u64 = 1 << 2;
 
 /// MAIR_EL1: idx0 = Normal WB WA, idx1 = Device-nGnRE
@@ -85,10 +89,13 @@ impl Perm {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MmuError {
     AlreadyEnabled,
+    NotEnabled,
     GranuleUnsupported,
     OutOfTables,
+    OutOfFrames,
     Misaligned,
     Overlap,
+    NullPage,
     BadTable,
 }
 
@@ -122,6 +129,7 @@ struct Pool {
     tables: [PageTable; POOL_LEN],
     used: usize,
     enabled: bool,
+    root1: usize,
 }
 
 struct SyncCell(UnsafeCell<Pool>);
@@ -135,9 +143,10 @@ static POOL: SyncCell = SyncCell(UnsafeCell::new(Pool {
     tables: [EMPTY_TABLE; POOL_LEN],
     used: 0,
     enabled: false,
+    root1: 0,
 }));
 
-fn index(va: u64, level: u32) -> usize {
+pub(crate) fn index(va: u64, level: u32) -> usize {
     let shift = PAGE_SHIFT + BITS_PER_LEVEL * (3 - level);
     let bits = if level == 0 { 48 - shift } else { BITS_PER_LEVEL };
     ((va >> shift) & ((1u64 << bits) - 1)) as usize
@@ -154,7 +163,8 @@ impl Pool {
     }
 
     fn pa(&self, i: usize) -> u64 {
-        core::ptr::from_ref(&self.tables[i]) as u64
+        // 점프 전에는 심볼 주소가 곧 PA고, 점프 후에는 VA라 오프셋을 벗겨냄
+        core::ptr::from_ref(&self.tables[i]) as u64 & !KERNEL_VA_OFFSET
     }
 
     fn index_of(&self, pa: u64) -> Result<usize, MmuError> {
@@ -299,11 +309,45 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
     let ttbr0 = pool.pa(root0);
     let ttbr1 = pool.pa(root1);
     pool.enabled = true;
+    pool.root1 = root1;
 
     // SAFETY: 현재 PC(text)와 SP(부트 스택)를 포함한 필수 매핑이 identity로
     //         구성돼 있고, 배리어 순서는 ARMv8 MMU 활성화 절차를 따름
     unsafe { switch_on(ttbr0, ttbr1, tcr(ips)) };
     Ok(Mmu { _sealed: () })
+}
+
+/// MMU 활성화 이후 TTBR1에 커널 RW 매핑(부트 프레임 윈도우)을 추가하는 함수입니다.
+///
+/// 진입 페이즈 3의 프레임 할당자가 쓸 물리 구간을 TTBR1 별칭
+/// (`PA + KERNEL_VA_OFFSET`)으로 열어 줍니다. 새 매핑 추가만 하기 때문에
+/// 기존 변환에 대한 break-before-make는 필요 없습니다.
+///
+/// # Arguments
+/// `window` - 그래뉼 정렬된 물리 구간(커널 이미지/DTB와 겹치지 않아야 함)
+///
+/// # Errors
+/// MMU 비활성 상태, 정렬 위반, 풀 고갈, 기존 매핑과의 겹침 시 `MmuError`
+pub fn map_kernel_window(window: Range<u64>) -> Result<(), MmuError> {
+    let g = GRANULE as u64;
+    if window.end <= window.start || window.start % g != 0 || window.end % g != 0 {
+        return Err(MmuError::Misaligned);
+    }
+
+    // SAFETY: 단일 부트 코어의 초기화 시퀀스에서만 호출됨(순서는 kernel_main이
+    //         강제), 예외 핸들러는 풀을 건드리지 않으므로 이 가변 참조는 유일함
+    let pool = unsafe { &mut *POOL.0.get() };
+    if !pool.enabled {
+        return Err(MmuError::NotEnabled);
+    }
+
+    let root1 = pool.root1;
+    let len = window.end - window.start;
+    pool.map_range(root1, window.start + KERNEL_VA_OFFSET, window.start, len, Perm::Rw)?;
+
+    // SAFETY: 새로 유효해진 테이블 엔트리를 워커가 보기 전에 쓰기를 완료시킴
+    unsafe { asm!("dsb ishst", "isb", options(nostack)) };
+    Ok(())
 }
 
 /// 변환 레지스터를 설정하고 SCTLR_EL1로 MMU를 켜는 함수입니다.
