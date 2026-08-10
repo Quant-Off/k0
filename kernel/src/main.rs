@@ -100,6 +100,8 @@ extern "C" fn kernel_init(dtb_phys: usize) -> ! {
 extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     // 벡터 재설치: 같은 테이블이지만 이제 PC가 higher-half라 VBAR도 VA가 됨
     let traps = k0_arch::vectors::install();
+    // 콘솔도 TTBR1 별칭으로 이행, TTBR0을 회수해도 살아 있어야 함
+    k0_arch::earlycon::use_higher_half();
 
     let mut con = EarlyCon;
     let pc: u64;
@@ -109,9 +111,13 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
 
     check_wx(&mut con);
 
-    // DTB는 identity(TTBR0) 쪽에 그대로 매핑돼 있어 물리 주소로 읽음
+    // DTB도 TTBR1 별칭으로 읽음(겹침 검사와 메모리 맵은 물리 주소 기준)
     let kernel_image = pa(&raw const __kernel_start)..pa(&raw const __kernel_end);
-    let bootinfo = match k0_boot::parse(dtb_phys, kernel_image) {
+    let bootinfo = match k0_boot::parse(
+        dtb_phys,
+        kernel_image.clone(),
+        k0_mm::KERNEL_VA_OFFSET as usize,
+    ) {
         Ok(bootinfo) => bootinfo,
         Err(e) => {
             // 부트 정보 없이는 진행할 수 없어서 fail-secure 파킹
@@ -154,10 +160,151 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
             park()
         }
     }
-    // 이후 커널은 파킹 루프에서 interrupt에만 반응함
-    // TODO: 진입 페이즈 3 (케이퍼빌리티 부트스트랩, 루트 태스크 생성, 이양)
-    let _ = root_task;
-    park()
+
+    //
+    // 진입 페이즈 3
+    // 케이퍼빌리티 부트스트랩, 루트 태스크 스폰, 이양
+    //
+
+    // 부트 프레임 윈도우: 루트 태스크 적재와 사용자 페이지 테이블 전용
+    let window = match pick_window(&bootinfo, &kernel_image) {
+        Some(w) => w,
+        None => {
+            let _ = writeln!(con, "k0: no frame window in memory map");
+            park()
+        }
+    };
+    if let Err(e) = k0_mm::map_kernel_window(window.clone()) {
+        let _ = writeln!(con, "k0: window map failed: {e:?}");
+        park()
+    }
+    let mut frames = match k0_mm::FrameAlloc::new(window.clone()) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = writeln!(con, "k0: frame alloc failed: {e:?}");
+            park()
+        }
+    };
+
+    // 세그먼트 메타데이터 변환(W^X는 빌드 시점에 검사 완료)
+    let mut seg_buf = [k0_task::LoadSeg {
+        va: 0,
+        memsz: 0,
+        kind: k0_task::SegKind::Rw,
+    }; 4];
+    if root_task.segments.len() > seg_buf.len() {
+        let _ = writeln!(con, "k0: too many root task segments");
+        park()
+    }
+    for (dst, s) in seg_buf.iter_mut().zip(root_task.segments) {
+        dst.va = s.va;
+        dst.memsz = s.memsz;
+        dst.kind = match s.kind {
+            k0_boot::RtSegKind::Text => k0_task::SegKind::Text,
+            k0_boot::RtSegKind::Ro => k0_task::SegKind::Ro,
+            k0_boot::RtSegKind::Rw => k0_task::SegKind::Rw,
+        };
+    }
+    let segs = &seg_buf[..root_task.segments.len()];
+
+    let (tcb, user_root) = match k0_task::spawn_root(
+        root_task.image,
+        root_task.base,
+        root_task.entry,
+        segs,
+        &mut frames,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(con, "k0: root task spawn failed: {e:?}");
+            park()
+        }
+    };
+    let _ = writeln!(
+        con,
+        "k0: root task loaded (entry {:#x}, ttbr0 {:#x})",
+        root_task.entry, user_root
+    );
+
+    // 케이퍼빌리티 부트스트랩: 커널/DTB/윈도우를 뺀 물리 메모리 전부가 untyped
+    let mut mem_buf = [k0_cap::PhysRegion { base: 0, size: 0 }; k0_boot::MAX_MEM_REGIONS];
+    for (dst, r) in mem_buf.iter_mut().zip(bootinfo.memory()) {
+        dst.base = r.base;
+        dst.size = r.size;
+    }
+    let memory = &mem_buf[..bootinfo.memory().len()];
+    let reserved = [
+        k0_cap::PhysRegion {
+            base: kernel_image.start as u64,
+            size: (kernel_image.end - kernel_image.start) as u64,
+        },
+        k0_cap::PhysRegion {
+            base: bootinfo.dtb.start as u64,
+            size: (bootinfo.dtb.end - bootinfo.dtb.start) as u64,
+        },
+        k0_cap::PhysRegion {
+            base: window.start,
+            size: window.end - window.start,
+        },
+    ];
+    let cnode = match k0_cap::bootstrap(memory, &reserved, user_root) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = writeln!(con, "k0: cap bootstrap failed: {e:?}");
+            park()
+        }
+    };
+    let mut untyped_count = 0u32;
+    for cap in cnode.slots() {
+        if let k0_cap::Cap::Untyped { base, size } = cap {
+            untyped_count += 1;
+            let _ = writeln!(con, "k0: untyped {base:#x} + {size:#x}");
+        }
+    }
+    let _ = writeln!(
+        con,
+        "k0: root cnode ready ({} caps, {untyped_count} untyped)",
+        cnode.slots().len()
+    );
+
+    // TTBR0 교체: 이 순간부터 identity 매핑은 없음
+    // SAFETY: 콘솔/GIC/DTB/페이지 테이블 접근이 전부 TTBR1 별칭으로 이행을
+    //         마쳤고, user_root는 spawn_root가 완성한 사용자 테이블임
+    unsafe { k0_mm::install_user_ttbr0(user_root) };
+
+    check_user_wx(&mut con, segs);
+
+    let _ = writeln!(con, "k0: entering root task (el0)");
+    // SAFETY: 주소 공간 설치와 컨텍스트 준비가 끝난 발산 지점에서의 이양
+    unsafe { k0_sched::handoff(tcb) }
+}
+
+/// EL0 svc 트랩의 시스템 콜 정책 함수입니다. (k0-arch가 링크 계약으로 호출)
+///
+/// 미지의 번호는 제로 트러스트 원칙대로 태스크를 정지시킵니다. 다중 태스크가
+/// 생기면 정지 범위는 해당 태스크로 좁아집니다.
+///
+/// # Arguments
+/// `ctx` - 사용자 컨텍스트, x8 = 번호, x0 = 인자와 반환값
+#[unsafe(no_mangle)]
+extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
+    let mut con = EarlyCon;
+    match ctx.x[8] {
+        k0_abi::syscall::DEBUG_PUTC => {
+            con.put_byte(ctx.x[0] as u8);
+            ctx.x[0] = 0;
+        }
+        // 단일 태스크라 양보 대상이 없어 즉시 재개
+        k0_abi::syscall::YIELD => ctx.x[0] = 0,
+        k0_abi::syscall::EXIT => {
+            let _ = writeln!(con, "k0: root task exited (code {})", ctx.x[0]);
+            park()
+        }
+        other => {
+            let _ = writeln!(con, "k0: unknown syscall {other}");
+            park()
+        }
+    }
 }
 
 /// 링커 심볼의 주소를 물리 주소로 환산하는 함수입니다.
@@ -221,6 +368,80 @@ fn enable_mmu(con: &mut EarlyCon, dtb: &Range<usize>) {
             park()
         }
     }
+}
+
+/// 부트 프레임 윈도우로 쓸 물리 구간을 고르는 함수입니다.
+///
+/// 커널 이미지 끝 바로 뒤(DTB와 겹치면 DTB 끝 뒤)의 그래뉼 정렬 구간을
+/// 메모리 맵 안에서 찾습니다. 윈도우는 루트 태스크 적재가 끝나면 더 자라지
+/// 않는 고정 예산입니다.
+///
+/// # Arguments
+/// `bootinfo` - 파싱을 마친 부트 정보
+/// `kernel_image` - 커널 이미지의 물리 범위
+fn pick_window(bootinfo: &k0_boot::BootInfo, kernel_image: &Range<usize>) -> Option<Range<u64>> {
+    const WINDOW_SIZE: u64 = 2 * 1024 * 1024;
+    let g = k0_mm::GRANULE as u64;
+    let dtb_start = bootinfo.dtb.start as u64;
+    let dtb_end = bootinfo.dtb.end as u64;
+
+    let mut start = (kernel_image.end as u64).div_ceil(g) * g;
+    if start < dtb_end && dtb_start < start.checked_add(WINDOW_SIZE)? {
+        start = dtb_end.div_ceil(g) * g;
+    }
+    let end = start.checked_add(WINDOW_SIZE)?;
+    bootinfo
+        .memory()
+        .iter()
+        .any(|r| start >= r.base && end <= r.base + r.size)
+        .then_some(start..end)
+}
+
+/// 사용자 매핑의 W^X / 가드 / 격리를 AT 명령으로 자가 검증하는 함수입니다.
+///
+/// `install_user_ttbr0` 이후에 호출해야 합니다. 커널 텍스트가 EL0에서
+/// 보이지 않는 것과 identity 매핑이 회수된 것까지 함께 확인합니다.
+///
+/// # Arguments
+/// `segs` - 스폰에 사용한 세그먼트 메타데이터
+///
+/// # Errors
+/// 검증 불일치는 사용자 주소 공간을 신뢰할 수 없다는 의미이기 때문에
+/// fail-secure 파킹으로 이어집니다.
+fn check_user_wx(con: &mut EarlyCon, segs: &[k0_task::LoadSeg]) {
+    let Some(text) = segs
+        .iter()
+        .find(|s| matches!(s.kind, k0_task::SegKind::Text))
+        .map(|s| s.va)
+    else {
+        let _ = writeln!(con, "k0: user w^x check fail: no text segment");
+        park()
+    };
+    let g = k0_mm::GRANULE as u64;
+    let ktext_va = &raw const __kernel_start as u64;
+    let stack_top = k0_task::USER_STACK_TOP;
+    let guard = stack_top - k0_task::USER_STACK_SIZE - g;
+
+    // (이름, 실측, 기대) 형태의 검증표
+    let checks: [(&str, bool, bool); 6] = [
+        ("utext+r", k0_mm::can_user_read(text), true),
+        ("utext+w", k0_mm::can_user_write(text), false),
+        ("ustack+w", k0_mm::can_user_write(stack_top - g), true),
+        ("uguard+r", k0_mm::can_user_read(guard), false),
+        ("ktext+u", k0_mm::can_user_read(ktext_va), false),
+        ("id+r", k0_mm::can_read(ktext_va - k0_mm::KERNEL_VA_OFFSET), false),
+    ];
+    let mut ok = true;
+    for (name, got, want) in checks {
+        if got != want {
+            ok = false;
+            let _ = writeln!(con, "k0: user w^x check fail: {name} (got {got}, want {want})");
+        }
+    }
+    if !ok {
+        park()
+    }
+    let _ = writeln!(con, "k0: user w^x checks pass");
 }
 
 /// W^X / 가드 / 양쪽 절반 매핑을 AT 명령으로 자가 검증하는 함수입니다.

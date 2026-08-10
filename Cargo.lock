@@ -63,6 +63,9 @@ version = "1.0.0"
 [[package]]
 name = "k0-arch"
 version = "1.0.0"
+dependencies = [
+ "k0-abi",
+]
 
 [[package]]
 name = "k0-boot"
@@ -83,22 +86,37 @@ version = "1.0.0"
 name = "k0-kernel"
 version = "1.0.0"
 dependencies = [
+ "k0-abi",
  "k0-arch",
  "k0-boot",
+ "k0-cap",
  "k0-mm",
+ "k0-sched",
+ "k0-task",
 ]
 
 [[package]]
 name = "k0-mm"
 version = "1.0.0"
+dependencies = [
+ "k0-abi",
+]
 
 [[package]]
 name = "k0-sched"
 version = "1.0.0"
+dependencies = [
+ "k0-arch",
+ "k0-task",
+]
 
 [[package]]
 name = "k0-task"
 version = "1.0.0"
+dependencies = [
+ "k0-arch",
+ "k0-mm",
+]
 
 [[package]]
 name = "libc"
@@ -109,6 +127,9 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "root-task"
 version = "1.0.0"
+dependencies = [
+ "k0-abi",
+]
 
 [[package]]
 name = "sha2"

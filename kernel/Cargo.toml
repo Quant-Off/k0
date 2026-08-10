@@ -8,12 +8,21 @@ license.workspace = true
 # 같은 feature를 k0-arch에도 전달해 MMIO 주소를 가름
 [features]
 default = ["plat-virt"]
-plat-virt = ["k0-arch/plat-virt", "k0-mm/plat-virt"]
-plat-apple = ["k0-arch/plat-apple", "k0-mm/plat-apple"]
+plat-virt = ["k0-arch/plat-virt", "k0-mm/plat-virt", "k0-task/plat-virt", "k0-sched/plat-virt"]
+plat-apple = [
+    "k0-arch/plat-apple",
+    "k0-mm/plat-apple",
+    "k0-task/plat-apple",
+    "k0-sched/plat-apple",
+]
 
 # 커널 크레이트는 외부(third-party) 의존성 0, 워크스페이스 크레이트만 허용
 # 외부가 필요해진 경우: vendored + 해시 고정
 [dependencies]
+k0-abi = { path = "../crates/k0-abi" }
 k0-arch = { path = "../crates/k0-arch", default-features = false }
 k0-boot = { path = "../crates/k0-boot" }
+k0-cap = { path = "../crates/k0-cap" }
 k0-mm = { path = "../crates/k0-mm", default-features = false }
+k0-sched = { path = "../crates/k0-sched", default-features = false }
+k0-task = { path = "../crates/k0-task", default-features = false }
