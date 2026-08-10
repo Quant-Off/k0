@@ -10,4 +10,4 @@ mod fdt;
 mod roottask;
 
 pub use fdt::{dtb_span, parse, BootError, BootInfo, MemRegion, MAX_MEM_REGIONS};
-pub use roottask::{verify_root_task, VerifiedRootTask, VerifyError};
+pub use roottask::{verify_root_task, RtSegKind, RtSegment, VerifiedRootTask, VerifyError};

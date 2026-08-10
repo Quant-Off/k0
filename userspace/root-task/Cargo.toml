@@ -5,3 +5,4 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+k0-abi = { path = "../../crates/k0-abi" }
