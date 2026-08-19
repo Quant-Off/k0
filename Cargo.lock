@@ -114,6 +114,7 @@ dependencies = [
 name = "k0-task"
 version = "1.0.0"
 dependencies = [
+ "k0-abi",
  "k0-arch",
  "k0-mm",
 ]

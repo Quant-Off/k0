@@ -128,6 +128,9 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     for r in bootinfo.memory() {
         let _ = writeln!(con, "k0: memory {:#x} + {:#x}", r.base, r.size);
     }
+    for r in bootinfo.reserved() {
+        let _ = writeln!(con, "k0: dtb reserved {:#x} + {:#x}", r.base, r.size);
+    }
 
     // 루트 태스크 무결성(손상) 검사: 빌드 및 적재 경로의 변형을 걸러내는 단계
     // 커널 이미지 자체를 수정할 수 있는 공격자는 부트 체인의 커널 서명
@@ -206,6 +209,16 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         }
     };
 
+    // bootinfo 페이지 프레임: 매핑은 스폰이, 내용 기록은 케이퍼빌리티
+    // 부트스트랩 이후가 담당
+    let bi_frame = match frames.alloc() {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = writeln!(con, "k0: bootinfo frame alloc failed: {e:?}");
+            park()
+        }
+    };
+
     // 세그먼트 메타데이터 변환(W^X는 빌드 시점에 검사 완료)
     let mut seg_buf = [k0_task::LoadSeg {
         va: 0,
@@ -232,6 +245,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         root_task.base,
         root_task.entry,
         segs,
+        bi_frame,
         &mut frames,
     ) {
         Ok(v) => v,
@@ -253,21 +267,28 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         dst.size = r.size;
     }
     let memory = &mem_buf[..bootinfo.memory().len()];
-    let reserved = [
-        k0_cap::PhysRegion {
-            base: kernel_image.start as u64,
-            size: (kernel_image.end - kernel_image.start) as u64,
-        },
-        k0_cap::PhysRegion {
-            base: bootinfo.dtb.start as u64,
-            size: (bootinfo.dtb.end - bootinfo.dtb.start) as u64,
-        },
-        k0_cap::PhysRegion {
-            base: window.start,
-            size: window.end - window.start,
-        },
-    ];
-    let cnode = match k0_cap::bootstrap(memory, &reserved, user_root) {
+    // 고정 예약(커널/DTB/윈도우) 뒤에 DTB의 펌웨어 예약 구간을 병합
+    const FIXED_RSV: usize = 3;
+    let mut rsv_buf =
+        [k0_cap::PhysRegion { base: 0, size: 0 }; FIXED_RSV + k0_boot::MAX_RSV_REGIONS];
+    rsv_buf[0] = k0_cap::PhysRegion {
+        base: kernel_image.start as u64,
+        size: (kernel_image.end - kernel_image.start) as u64,
+    };
+    rsv_buf[1] = k0_cap::PhysRegion {
+        base: bootinfo.dtb.start as u64,
+        size: (bootinfo.dtb.end - bootinfo.dtb.start) as u64,
+    };
+    rsv_buf[2] = k0_cap::PhysRegion {
+        base: window.start,
+        size: window.end - window.start,
+    };
+    for (dst, r) in rsv_buf[FIXED_RSV..].iter_mut().zip(bootinfo.reserved()) {
+        dst.base = r.base;
+        dst.size = r.size;
+    }
+    let reserved = &rsv_buf[..FIXED_RSV + bootinfo.reserved().len()];
+    let cnode = match k0_cap::bootstrap(memory, reserved, user_root) {
         Ok(c) => c,
         Err(e) => {
             let _ = writeln!(con, "k0: cap bootstrap failed: {e:?}");
@@ -276,7 +297,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     };
     let mut untyped_count = 0u32;
     for cap in cnode.slots() {
-        if let k0_cap::Cap::Untyped { base, size } = cap {
+        if let k0_cap::Cap::Untyped { base, size, .. } = cap {
             untyped_count += 1;
             let _ = writeln!(con, "k0: untyped {base:#x} + {size:#x}");
         }
@@ -286,6 +307,9 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         "k0: root cnode ready ({} caps, {untyped_count} untyped)",
         cnode.slots().len()
     );
+
+    write_bootinfo(bi_frame, cnode);
+    let _ = writeln!(con, "k0: bootinfo page ready");
 
     // TTBR0 교체: 이 순간부터 identity 매핑은 없음
     // SAFETY: 콘솔/GIC/DTB/페이지 테이블 접근이 전부 TTBR1 별칭으로 이행을
@@ -320,9 +344,194 @@ extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
             let _ = writeln!(con, "k0: root task exited (code {})", ctx.x[0]);
             park()
         }
+        k0_abi::syscall::RETYPE => ctx.x[0] = sys_retype(ctx.x[0], ctx.x[1]) as u64,
+        k0_abi::syscall::MAP => ctx.x[0] = sys_map(ctx.x[0], ctx.x[1], ctx.x[2]) as u64,
         other => {
             let _ = writeln!(con, "k0: unknown syscall {other}");
             park()
+        }
+    }
+}
+
+/// RETYPE 시스템 콜 처리 함수입니다.
+///
+/// untyped에서 오브젝트를 잘라내기 전에 해당 프레임을 TTBR1 별칭으로
+/// 매핑하고 소거합니다(이전 내용 누설 차단). 준비가 실패하면 케이퍼빌리티
+/// 상태는 변하지 않습니다.
+///
+/// # Arguments
+/// `slot` - untyped 슬롯(x0)
+/// `kind` - 오브젝트 타입(x1)
+fn sys_retype(slot: u64, kind: u64) -> i64 {
+    let kind = match kind {
+        k0_abi::obj::FRAME => k0_cap::ObjKind::Frame,
+        k0_abi::obj::PAGE_TABLE => k0_cap::ObjKind::PageTable,
+        _ => return k0_abi::err::BAD_TYPE,
+    };
+    let Ok(slot) = usize::try_from(slot) else {
+        return k0_abi::err::BAD_SLOT;
+    };
+    let g = k0_mm::GRANULE as u64;
+    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
+    let cnode = unsafe { k0_cap::root_mut() };
+    let r = cnode.retype(slot, kind, g, |pa| {
+        if k0_mm::map_kernel_window(pa..pa + g).is_err() {
+            return false;
+        }
+        // SAFETY: 방금 별칭 매핑을 마친 커널 전용 구간이며, 소거는 이전
+        //         내용의 누설을 차단함
+        unsafe {
+            core::ptr::write_bytes(
+                (pa + k0_mm::KERNEL_VA_OFFSET) as *mut u8,
+                0,
+                k0_mm::GRANULE,
+            );
+        }
+        true
+    });
+    match r {
+        Ok(new_slot) => new_slot as i64,
+        Err(k0_cap::RetypeError::BadSlot) => k0_abi::err::BAD_SLOT,
+        Err(k0_cap::RetypeError::NotUntyped) => k0_abi::err::NOT_UNTYPED,
+        Err(k0_cap::RetypeError::Exhausted) => k0_abi::err::EXHAUSTED,
+        Err(k0_cap::RetypeError::OutOfSlots) => k0_abi::err::OUT_OF_SLOTS,
+        Err(k0_cap::RetypeError::PrepFailed) => k0_abi::err::KERNEL_RESOURCE,
+    }
+}
+
+/// MAP 시스템 콜 처리 함수입니다.
+///
+/// 케이퍼빌리티 종류가 동작을 결정합니다. Frame은 리프 매핑(RO/RW만, 실행
+/// 매핑은 만들 수 없음), PageTable은 경로의 첫 빈 레벨에 설치입니다. 대상
+/// 주소 공간은 현재 설치된 TTBR0(단일 태스크 = 루트 태스크)입니다.
+///
+/// # Arguments
+/// `slot` - 케이퍼빌리티 슬롯(x0)
+/// `va` - 사용자 VA(x1)
+/// `perm` - Frame 권한(x2, PageTable은 무시)
+fn sys_map(slot: u64, va: u64, perm: u64) -> i64 {
+    let Ok(slot) = usize::try_from(slot) else {
+        return k0_abi::err::BAD_SLOT;
+    };
+    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
+    let cnode = unsafe { k0_cap::root_mut() };
+    let root = k0_mm::current_user_root();
+    match cnode.cap_mut(slot) {
+        Some(k0_cap::Cap::Frame { base, mapped }) => {
+            if *mapped {
+                return k0_abi::err::ALREADY_MAPPED;
+            }
+            let perm = match perm {
+                k0_abi::perm::RO => k0_mm::UserPerm::RoUser,
+                k0_abi::perm::RW => k0_mm::UserPerm::RwUser,
+                _ => return k0_abi::err::BAD_PERM,
+            };
+            // SAFETY: root는 커널이 설치한 사용자 루트고, 걷게 되는 테이블은
+            //         전부 부트 윈도우 또는 재분류된(별칭 매핑된) 프레임임
+            match unsafe { k0_mm::user_map_frame(root, va, *base, perm) } {
+                Ok(()) => {
+                    *mapped = true;
+                    0
+                }
+                Err(e) => mmu_err(e),
+            }
+        }
+        Some(k0_cap::Cap::PageTable { base, installed }) => {
+            if *installed {
+                return k0_abi::err::ALREADY_MAPPED;
+            }
+            // SAFETY: 위와 동일하고 base는 retype이 소거한 전용 프레임임
+            match unsafe { k0_mm::user_install_table(root, va, *base) } {
+                Ok(_) => {
+                    *installed = true;
+                    0
+                }
+                Err(e) => mmu_err(e),
+            }
+        }
+        Some(_) => k0_abi::err::BAD_CAP,
+        None => k0_abi::err::BAD_SLOT,
+    }
+}
+
+/// 런타임 매핑 경로의 MmuError를 ABI 에러 코드로 바꾸는 함수입니다.
+///
+/// # Errors
+/// `BadTable`은 페이지 테이블 손상을 의미하므로 fail-secure 파킹합니다
+fn mmu_err(e: k0_mm::MmuError) -> i64 {
+    match e {
+        k0_mm::MmuError::Misaligned | k0_mm::MmuError::NullPage => k0_abi::err::BAD_VA,
+        k0_mm::MmuError::Overlap => k0_abi::err::OVERLAP,
+        k0_mm::MmuError::MissingTable => k0_abi::err::MISSING_TABLE,
+        k0_mm::MmuError::BadTable => {
+            let mut con = EarlyCon;
+            let _ = writeln!(con, "k0: user page table corrupt");
+            park()
+        }
+        _ => k0_abi::err::KERNEL_RESOURCE,
+    }
+}
+
+/// 케이퍼빌리티 목록을 bootinfo 페이지에 기록하는 함수입니다.
+///
+/// 페이지는 EL0에 RO로 매핑돼 있고 커널은 TTBR1 별칭으로 씁니다. untyped만
+/// base/size를 노출하고 나머지 종류는 커널 내부 주소를 숨깁니다(0).
+///
+/// # Arguments
+/// `frame_pa` - bootinfo 페이지 프레임의 PA(부트 윈도우에서 할당)
+/// `cnode` - 부트스트랩을 마친 루트 CNode
+fn write_bootinfo(frame_pa: u64, cnode: &k0_cap::CNode) {
+    use k0_abi::bootinfo::{cap_kind, CapDesc, Header, VERSION};
+
+    // 슬롯 전수가 페이지 하나에 들어가는지 컴파일 시점에 강제
+    const _: () = assert!(
+        size_of::<Header>() + k0_cap::CNODE_SLOTS * size_of::<CapDesc>() <= k0_mm::GRANULE
+    );
+
+    let hdr = (frame_pa + k0_mm::KERNEL_VA_OFFSET) as *mut Header;
+    // SAFETY: 프레임은 부트 윈도우에서 할당돼 별칭 매핑이 있고, EL0에는 RO라
+    //         이 기록 경로가 유일한 쓰기임
+    unsafe {
+        hdr.write(Header {
+            version: VERSION,
+            frame_size: k0_mm::GRANULE as u64,
+            cap_count: cnode.slots().len() as u64,
+        });
+        let descs = hdr.add(1) as *mut CapDesc;
+        for (i, cap) in cnode.slots().iter().enumerate() {
+            let d = match cap {
+                k0_cap::Cap::Empty => CapDesc {
+                    kind: cap_kind::EMPTY,
+                    base: 0,
+                    size: 0,
+                },
+                k0_cap::Cap::Tcb => CapDesc {
+                    kind: cap_kind::TCB,
+                    base: 0,
+                    size: 0,
+                },
+                k0_cap::Cap::AddrSpace { .. } => CapDesc {
+                    kind: cap_kind::ADDR_SPACE,
+                    base: 0,
+                    size: 0,
+                },
+                k0_cap::Cap::Untyped { base, size, .. } => CapDesc {
+                    kind: cap_kind::UNTYPED,
+                    base: *base,
+                    size: *size,
+                },
+                k0_cap::Cap::Frame { .. } => CapDesc {
+                    kind: cap_kind::FRAME,
+                    base: 0,
+                    size: 0,
+                },
+                k0_cap::Cap::PageTable { .. } => CapDesc {
+                    kind: cap_kind::PAGE_TABLE,
+                    base: 0,
+                    size: 0,
+                },
+            };
+            descs.add(i).write(d);
         }
     }
 }
@@ -402,19 +611,45 @@ fn enable_mmu(con: &mut EarlyCon, dtb: &Range<usize>) {
 fn pick_window(bootinfo: &k0_boot::BootInfo, kernel_image: &Range<usize>) -> Option<Range<u64>> {
     const WINDOW_SIZE: u64 = 2 * 1024 * 1024;
     let g = k0_mm::GRANULE as u64;
-    let dtb_start = bootinfo.dtb.start as u64;
-    let dtb_end = bootinfo.dtb.end as u64;
+    let align_up = |v: u64| v.checked_add(g - 1).map(|x| x & !(g - 1));
+    let dtb = k0_boot::MemRegion {
+        base: bootinfo.dtb.start as u64,
+        size: (bootinfo.dtb.end - bootinfo.dtb.start) as u64,
+    };
 
-    let mut start = (kernel_image.end as u64).div_ceil(g) * g;
-    if start < dtb_end && dtb_start < start.checked_add(WINDOW_SIZE)? {
-        start = dtb_end.div_ceil(g) * g;
+    let mut start = align_up(kernel_image.end as u64)?;
+    // 장애물(DTB, 펌웨어 예약)을 넘어가며 안정될 때까지 전진, 반복은 유한
+    for _ in 0..64 {
+        let end = start.checked_add(WINDOW_SIZE)?;
+        let mut bumped = false;
+        for r in core::iter::once(&dtb).chain(bootinfo.reserved()) {
+            // 파서가 base + size 오버플로를 이미 거부함
+            let r_end = r.base.checked_add(r.size)?;
+            if r_end > start && r.base < end {
+                start = start.max(align_up(r_end)?);
+                bumped = true;
+            }
+        }
+        if bumped {
+            continue;
+        }
+        if bootinfo
+            .memory()
+            .iter()
+            .any(|m| start >= m.base && end <= m.base + m.size)
+        {
+            return Some(start..end);
+        }
+        // 어느 메모리 구간에도 안 들어가면 다음 구간의 시작으로 전진
+        let next = bootinfo
+            .memory()
+            .iter()
+            .map(|m| m.base)
+            .filter(|&b| b > start)
+            .min()?;
+        start = align_up(next)?;
     }
-    let end = start.checked_add(WINDOW_SIZE)?;
-    bootinfo
-        .memory()
-        .iter()
-        .any(|r| start >= r.base && end <= r.base + r.size)
-        .then_some(start..end)
+    None
 }
 
 /// 사용자 매핑의 W^X / 가드 / 격리를 AT 명령으로 자가 검증하는 함수입니다.
@@ -455,12 +690,14 @@ fn check_user_wx(con: &mut EarlyCon, segs: &[k0_task::LoadSeg], hard: &k0_arch::
     };
 
     // (이름, 실측, 기대) 형태의 검증표
-    let checks: [(&str, bool, bool); 7] = [
+    let checks: [(&str, bool, bool); 9] = [
         ("utext+r", k0_mm::can_user_read(text), true),
         ("utext+w", k0_mm::can_user_write(text), false),
         ("ustack+w", k0_mm::can_user_write(stack_top - g), true),
         ("uguard+r", k0_mm::can_user_read(guard), false),
         ("ktext+u", k0_mm::can_user_read(ktext_va), false),
+        ("binfo+r", k0_mm::can_user_read(k0_abi::bootinfo::VA), true),
+        ("binfo+w", k0_mm::can_user_write(k0_abi::bootinfo::VA), false),
         utext_k,
         ("id+r", k0_mm::can_read(ktext_va - k0_mm::KERNEL_VA_OFFSET), false),
     ];

@@ -86,14 +86,17 @@ static ROOT_TCB: SyncCell = SyncCell(UnsafeCell::new(Tcb {
 /// 검증된 루트 태스크 이미지를 적재해 TCB를 구성하는 함수입니다.
 ///
 /// flat 이미지를 연속 프레임에 복사하고, 세그먼트 메타데이터대로 사용자
-/// 매핑(W^X)을 만들고, 스택을 배치한 뒤 진입 컨텍스트(SPSR EL0t, 인터럽트
-/// 언마스크)를 채웁니다. TTBR0 설치와 이양은 호출자의 몫입니다.
+/// 매핑(W^X)을 만들고, 스택과 bootinfo 페이지(RO)를 배치한 뒤 진입
+/// 컨텍스트(SPSR EL0t, 인터럽트 언마스크)를 채웁니다. bootinfo 내용은
+/// 케이퍼빌리티 부트스트랩 이후 호출자가 별칭으로 채웁니다. TTBR0 설치와
+/// 이양은 호출자의 몫입니다.
 ///
 /// # Arguments
 /// `image` - 무결성 검증을 통과한 flat 이미지
 /// `base` - 이미지의 사용자 VA 베이스(그래뉼 정렬)
 /// `entry` - 진입점 VA
 /// `segs` - 세그먼트 메타데이터(빌드 시점에 W^X 검사 완료)
+/// `bootinfo_pa` - bootinfo 페이지로 쓸 프레임의 PA(부트 윈도우에서 할당)
 /// `fa` - 프레임 할당자(부트 윈도우)
 ///
 /// # Errors
@@ -103,6 +106,7 @@ pub fn spawn_root(
     base: u64,
     entry: u64,
     segs: &[LoadSeg],
+    bootinfo_pa: u64,
     fa: &mut FrameAlloc,
 ) -> Result<(&'static mut Tcb, u64), SpawnError> {
     let g = GRANULE as u64;
@@ -145,6 +149,9 @@ pub fn spawn_root(
     let stack_base = USER_STACK_TOP - USER_STACK_SIZE;
     let stack_frames = fa.alloc_contig(USER_STACK_SIZE / g)?;
     us.map_range(fa, stack_base, stack_frames, USER_STACK_SIZE, UserPerm::RwUser)?;
+
+    // bootinfo 페이지: EL0에는 읽기 전용, 내용은 이양 전에 커널이 별칭으로 기록
+    us.map_range(fa, k0_abi::bootinfo::VA, bootinfo_pa, g, UserPerm::RoUser)?;
 
     // SAFETY: 단일 부트 코어에서 한 번만 도달하므로 이 가변 참조는 유일함
     let tcb = unsafe { &mut *ROOT_TCB.0.get() };

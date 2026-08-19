@@ -13,7 +13,7 @@
 /// 일치해야 합니다.
 pub const KERNEL_VA_OFFSET: u64 = 0xFFFF_0000_0000_0000;
 
-/// 시스템 콜 번호(x8) 모듈입니다. 인자와 반환값은 x0을 사용합니다.
+/// 시스템 콜 번호(x8) 모듈입니다. 인자는 x0-x2, 반환값은 x0을 사용합니다.
 pub mod syscall {
     /// 바이트 하나를 커널 콘솔로 출력, x0 = 바이트(하위 8비트만 사용)
     pub const DEBUG_PUTC: u64 = 0;
@@ -21,4 +21,102 @@ pub mod syscall {
     pub const YIELD: u64 = 1;
     /// 태스크 종료, x0 = 종료 코드
     pub const EXIT: u64 = 2;
+    /// untyped를 커널 오브젝트로 재분류(retype)
+    ///
+    /// x0 = untyped 슬롯, x1 = 오브젝트 타입([super::obj]). 성공 시 x0 =
+    /// 새 케이퍼빌리티의 슬롯, 실패 시 음수 에러([super::err])
+    pub const RETYPE: u64 = 3;
+    /// 케이퍼빌리티를 현재 주소 공간에 매핑
+    ///
+    /// x0 = 슬롯, x1 = 사용자 VA, x2 = 권한([super::perm]). Frame은 리프
+    /// 매핑을 만들고, PageTable은 x1 경로의 첫 빈 레벨에 설치되며 x2를
+    /// 무시합니다. 성공 시 x0 = 0, 실패 시 음수 에러([super::err])
+    pub const MAP: u64 = 4;
+}
+
+/// 재분류(retype)로 만들 수 있는 오브젝트 타입 모듈입니다.
+pub mod obj {
+    /// 사용자 매핑 가능한 프레임 한 개(크기는 bootinfo의 frame_size)
+    pub const FRAME: u64 = 1;
+    /// 사용자 주소 공간의 중간 페이지 테이블 한 장
+    pub const PAGE_TABLE: u64 = 2;
+}
+
+/// Frame 매핑 권한 모듈입니다. 실행 가능한 조합은 제공하지 않습니다(W^X).
+pub mod perm {
+    /// EL0 읽기 전용
+    pub const RO: u64 = 0;
+    /// EL0 읽기/쓰기
+    pub const RW: u64 = 1;
+}
+
+/// 시스템 콜 에러 코드(음수 i64) 모듈입니다.
+pub mod err {
+    /// 슬롯 번호가 범위 밖이거나 비어 있음
+    pub const BAD_SLOT: i64 = -1;
+    /// 해당 슬롯이 untyped가 아님
+    pub const NOT_UNTYPED: i64 = -2;
+    /// untyped의 남은 공간이 부족함
+    pub const EXHAUSTED: i64 = -3;
+    /// CNode 슬롯이 가득 참
+    pub const OUT_OF_SLOTS: i64 = -4;
+    /// 알 수 없는 오브젝트 타입
+    pub const BAD_TYPE: i64 = -5;
+    /// VA가 정렬/범위/null 가드 규칙을 위반함
+    pub const BAD_VA: i64 = -6;
+    /// 알 수 없는 권한 값
+    pub const BAD_PERM: i64 = -7;
+    /// 이 케이퍼빌리티는 이미 매핑/설치됨
+    pub const ALREADY_MAPPED: i64 = -8;
+    /// 경로의 중간 테이블이 없음(PageTable을 먼저 매핑할 것)
+    pub const MISSING_TABLE: i64 = -9;
+    /// 대상 위치에 이미 매핑이 있음
+    pub const OVERLAP: i64 = -10;
+    /// 커널 내부 자원(테이블 풀 등) 고갈
+    pub const KERNEL_RESOURCE: i64 = -11;
+    /// 해당 슬롯의 케이퍼빌리티는 매핑 대상이 아님
+    pub const BAD_CAP: i64 = -12;
+}
+
+/// 커널이 루트 태스크에 RO로 매핑해 주는 bootinfo 페이지 모듈입니다.
+///
+/// 페이지 선두에 [Header], 바로 뒤에 `cap_count`개의 [CapDesc] 배열이
+/// 이어집니다. 내용은 이양 직전의 스냅샷이라 이후 재분류로 생긴
+/// 케이퍼빌리티는 반영되지 않습니다(RETYPE 반환값으로 추적).
+pub mod bootinfo {
+    /// bootinfo 페이지의 사용자 VA(양 플랫폼 그래뉼 정렬)
+    pub const VA: u64 = 0x0F00_0000;
+    /// 레이아웃 버전(불일치 시 루트 태스크는 진행하면 안 됨)
+    pub const VERSION: u64 = 1;
+
+    /// bootinfo 페이지 선두의 헤더 구조체입니다.
+    ///
+    /// 커널과 루트 태스크가 레이아웃을 공유하므로 repr(C)로 고정합니다.
+    #[repr(C)]
+    pub struct Header {
+        pub version: u64,
+        pub frame_size: u64,
+        pub cap_count: u64,
+    }
+
+    /// 케이퍼빌리티 슬롯 하나를 서술하는 구조체입니다.
+    ///
+    /// 배열 인덱스가 곧 CNode 슬롯 번호입니다. base와 size는 untyped에만
+    /// 채워지고 나머지 종류는 0입니다(커널 내부 주소 노출 최소화).
+    #[repr(C)]
+    pub struct CapDesc {
+        pub kind: u64,
+        pub base: u64,
+        pub size: u64,
+    }
+
+    /// [CapDesc]의 kind 값 모듈입니다.
+    pub mod cap_kind {
+        pub const EMPTY: u64 = 0;
+        pub const TCB: u64 = 1;
+        pub const ADDR_SPACE: u64 = 2;
+        pub const UNTYPED: u64 = 3;
+        pub const FRAME: u64 = 4;
+        pub const PAGE_TABLE: u64 = 5;
+    }
 }

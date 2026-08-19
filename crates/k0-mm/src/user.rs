@@ -3,15 +3,20 @@
 //! # Features
 //! `map_kernel_window`로 TTBR1에 열어 둔 부트 프레임 윈도우에서 프레임을
 //! 자르는 범프 할당자([FrameAlloc])와, 그 프레임으로 사용자 TTBR0 페이지
-//! 테이블을 만드는 빌더([UserSpace])를 제공합니다. 사용자 매핑은 W^X가
-//! 강제되며 실행 가능한 조합은 [UserPerm::TextUser](EL0 전용, 커널에서는
-//! PXN) 하나뿐입니다. 첫 그래뉼(VA 0)은 매핑을 거부해 사용자 null 포인터
-//! 역참조가 항상 폴트가 되게 합니다. [install_user_ttbr0]가 identity 매핑을
-//! 사용자 테이블로 교체하는 순간부터 커널은 TTBR1 별칭으로만 동작합니다.
+//! 테이블을 만드는 빌더([UserSpace])를 제공합니다. 이양 이후에는 재분류
+//! 시스템 콜을 위한 런타임 워커([user_map_frame], [user_install_table])가
+//! 설치된 루트 테이블을 직접 걷습니다. 런타임 워커는 테이블을 절대 만들지
+//! 않으며(중간 테이블은 사용자가 재분류한 PageTable로만 공급됨) 사용자
+//! 매핑은 W^X가 강제되고, 부트 빌더 밖에서 실행 가능한 매핑은 만들 수
+//! 없습니다. 첫 그래뉼(VA 0)은 매핑을 거부해 사용자 null 포인터 역참조가
+//! 항상 폴트가 되게 합니다. [install_user_ttbr0]가 identity 매핑을 사용자
+//! 테이블로 교체하는 순간부터 커널은 TTBR1 별칭으로만 동작합니다.
 //!
 //! # Errors
-//! 윈도우 고갈, 정렬 위반, null 페이지 매핑, 중복 매핑은 전부 `MmuError`로
-//! 반환합니다. 호출자는 실패 시 부팅을 중단해야 합니다(fail-secure).
+//! 윈도우 고갈, 정렬 위반, null 페이지 매핑, 중복 매핑, 중간 테이블 부재는
+//! 전부 `MmuError`로 반환합니다. 부트 경로의 호출자는 실패 시 부팅을
+//! 중단해야 하고(fail-secure), 시스템 콜 경로는 에러를 사용자에게
+//! 반환합니다.
 
 use core::arch::asm;
 use core::ops::Range;
@@ -118,6 +123,16 @@ impl FrameAlloc {
     }
 }
 
+fn entry_ptr(table_pa: u64, idx: usize) -> *mut u64 {
+    (table_pa + KERNEL_VA_OFFSET + (idx as u64) * 8) as *mut u64
+}
+
+/// 새로 유효해진 테이블 엔트리를 워커가 보기 전에 쓰기를 완료시키는 함수입니다.
+fn pte_fence() {
+    // SAFETY: 배리어는 부작용이 없음
+    unsafe { asm!("dsb ishst", "isb", options(nostack)) };
+}
+
 /// 사용자 TTBR0 페이지 테이블을 만드는 빌더 구조체입니다.
 ///
 /// 테이블 프레임은 전부 [FrameAlloc]에서 나오고, 커널은 TTBR1 별칭으로만
@@ -143,10 +158,6 @@ impl UserSpace {
         self.root
     }
 
-    fn entry_ptr(table_pa: u64, idx: usize) -> *mut u64 {
-        (table_pa + KERNEL_VA_OFFSET + (idx as u64) * 8) as *mut u64
-    }
-
     fn map_page(
         &mut self,
         fa: &mut FrameAlloc,
@@ -156,7 +167,7 @@ impl UserSpace {
     ) -> Result<(), MmuError> {
         let mut t = self.root;
         for level in 0..3 {
-            let p = Self::entry_ptr(t, index(va, level));
+            let p = entry_ptr(t, index(va, level));
             // SAFETY: t는 이 빌더가 할당한 윈도우 안의 테이블 프레임이라
             //         별칭으로 접근 가능함
             let entry = unsafe { p.read_volatile() };
@@ -171,7 +182,7 @@ impl UserSpace {
                 return Err(MmuError::BadTable);
             };
         }
-        let p = Self::entry_ptr(t, index(va, 3));
+        let p = entry_ptr(t, index(va, 3));
         // SAFETY: 위와 동일, 리프 엔트리 중복 검사 후 기록
         unsafe {
             if p.read_volatile() != 0 {
@@ -249,6 +260,127 @@ pub unsafe fn install_user_ttbr0(root_pa: u64) {
             options(nostack),
         );
     }
+}
+
+/// 현재 설치된 사용자 루트 테이블(TTBR0)의 PA를 주는 함수입니다.
+///
+/// 단일 태스크 구조에서 시스템 콜 처리부가 현재 태스크의 주소 공간을
+/// 얻는 경로입니다. BADDR 필드만 남기고 ASID/CnP 비트는 벗겨냅니다.
+pub fn current_user_root() -> u64 {
+    let ttbr0: u64;
+    // SAFETY: TTBR0_EL1 읽기는 부작용이 없음
+    unsafe { asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack)) };
+    ttbr0 & 0x0000_FFFF_FFFF_FFFE
+}
+
+/// 설치된 사용자 주소 공간에 프레임 하나를 리프 매핑하는 함수입니다.
+///
+/// 재분류(retype) 시스템 콜 경로의 워커입니다. 중간 테이블을 절대 만들지
+/// 않으며, 경로가 비어 있으면 `MissingTable`을 반환해 사용자가 PageTable을
+/// 먼저 매핑하도록 강제합니다. 권한은 W^X가 강제된 [UserPerm]만 받으므로
+/// 이 경로로는 실행 가능한 매핑이 생길 수 없습니다.
+///
+/// # Arguments
+/// `root_pa` - 설치된 사용자 L0 테이블의 PA
+/// `va` - 사용자 가상 주소(그래뉼 정렬)
+/// `pa` - 프레임 PA(그래뉼 정렬)
+/// `perm` - 매핑 권한
+///
+/// # Errors
+/// 정렬 위반, null 가드 침범, 48비트 VA 초과 시 `Misaligned`/`NullPage`,
+/// 중간 테이블 부재 시 `MissingTable`, 리프 점유 시 `Overlap`, 테이블
+/// 손상 시 `BadTable`
+///
+/// # Safety
+/// `root_pa`는 커널이 설치한 진짜 사용자 루트여야 하고, 걷게 되는 모든
+/// 테이블 프레임(부트 윈도우 또는 재분류된 PageTable)이 TTBR1 별칭으로
+/// 매핑돼 있어야 합니다.
+pub unsafe fn user_map_frame(
+    root_pa: u64,
+    va: u64,
+    pa: u64,
+    perm: UserPerm,
+) -> Result<(), MmuError> {
+    let g = GRANULE as u64;
+    if va % g != 0 || pa % g != 0 {
+        return Err(MmuError::Misaligned);
+    }
+    if va < g {
+        return Err(MmuError::NullPage);
+    }
+    let end = va.checked_add(g).ok_or(MmuError::Misaligned)?;
+    if end > 1u64 << 48 {
+        return Err(MmuError::Misaligned);
+    }
+
+    let mut t = root_pa;
+    for level in 0..3 {
+        let p = entry_ptr(t, index(va, level));
+        // SAFETY: 함수 계약대로 t는 별칭 매핑된 테이블 프레임임
+        let entry = unsafe { p.read_volatile() };
+        t = if entry == 0 {
+            return Err(MmuError::MissingTable);
+        } else if entry & 0b11 == DESC_TABLE {
+            entry & ADDR_MASK
+        } else {
+            return Err(MmuError::BadTable);
+        };
+    }
+    let p = entry_ptr(t, index(va, 3));
+    // SAFETY: 위와 동일, 리프 엔트리 중복 검사 후 기록
+    unsafe {
+        if p.read_volatile() != 0 {
+            return Err(MmuError::Overlap);
+        }
+        p.write_volatile(pa | perm.attrs());
+    }
+    pte_fence();
+    Ok(())
+}
+
+/// 설치된 사용자 주소 공간의 `va` 경로에서 첫 빈 레벨에 테이블을 설치하는 함수입니다.
+///
+/// 재분류된 PageTable 오브젝트를 중간 테이블로 연결하는 워커입니다. 경로를
+/// 위에서부터 걷다가 처음 만나는 빈 엔트리에 `table_pa`를 걸고 설치된
+/// 레벨(0..=2)을 반환합니다. 경로가 리프까지 이미 완성돼 있으면 설치할
+/// 자리가 없으므로 `Overlap`입니다.
+///
+/// # Arguments
+/// `root_pa` - 설치된 사용자 L0 테이블의 PA
+/// `va` - 테이블이 뒷받침할 사용자 가상 주소
+/// `table_pa` - 소거를 마친 테이블 프레임의 PA(그래뉼 정렬)
+///
+/// # Errors
+/// 정렬 위반과 48비트 VA 초과 시 `Misaligned`, 경로 완성 상태면 `Overlap`,
+/// 테이블 손상 시 `BadTable`
+///
+/// # Safety
+/// [user_map_frame]과 동일하며, `table_pa`는 소거된 전용 프레임으로서
+/// TTBR1 별칭으로 매핑돼 있어야 합니다.
+pub unsafe fn user_install_table(root_pa: u64, va: u64, table_pa: u64) -> Result<u32, MmuError> {
+    let g = GRANULE as u64;
+    if table_pa % g != 0 || va >= 1u64 << 48 {
+        return Err(MmuError::Misaligned);
+    }
+
+    let mut t = root_pa;
+    for level in 0..3 {
+        let p = entry_ptr(t, index(va, level));
+        // SAFETY: 함수 계약대로 t는 별칭 매핑된 테이블 프레임임
+        let entry = unsafe { p.read_volatile() };
+        if entry == 0 {
+            // SAFETY: 위와 동일, 빈 엔트리에 소거된 테이블 프레임을 연결
+            unsafe { p.write_volatile(table_pa | DESC_TABLE) };
+            pte_fence();
+            return Ok(level);
+        }
+        if entry & 0b11 == DESC_TABLE {
+            t = entry & ADDR_MASK;
+        } else {
+            return Err(MmuError::BadTable);
+        }
+    }
+    Err(MmuError::Overlap)
 }
 
 /// AT S1E0R로 해당 VA가 EL0에서 읽기 가능한지 확인하는 함수입니다.

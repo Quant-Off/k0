@@ -36,7 +36,7 @@ pub use k0_abi::KERNEL_VA_OFFSET;
 const PAGE_SHIFT: u32 = GRANULE.trailing_zeros();
 const BITS_PER_LEVEL: u32 = PAGE_SHIFT - 3;
 const ENTRIES: usize = GRANULE / 8;
-const POOL_LEN: usize = 24;
+const POOL_LEN: usize = 32;
 pub(crate) const ADDR_MASK: u64 = ((1u64 << 48) - 1) & !(GRANULE as u64 - 1);
 
 pub(crate) const DESC_TABLE: u64 = 0b11;
@@ -97,6 +97,7 @@ pub enum MmuError {
     Overlap,
     NullPage,
     BadTable,
+    MissingTable,
 }
 
 /// 매핑 대상 커널 레이아웃을 담는 구조체입니다.
@@ -317,11 +318,12 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
     Ok(Mmu { _sealed: () })
 }
 
-/// MMU 활성화 이후 TTBR1에 커널 RW 매핑(부트 프레임 윈도우)을 추가하는 함수입니다.
+/// MMU 활성화 이후 TTBR1에 커널 RW 매핑을 추가하는 함수입니다.
 ///
-/// 진입 페이즈 3의 프레임 할당자가 쓸 물리 구간을 TTBR1 별칭
-/// (`PA + KERNEL_VA_OFFSET`)으로 열어 줍니다. 새 매핑 추가만 하기 때문에
-/// 기존 변환에 대한 break-before-make는 필요 없습니다.
+/// 진입 페이즈 3의 프레임 할당자가 쓸 부트 윈도우와, 재분류(retype)된
+/// 오브젝트의 물리 구간을 TTBR1 별칭(`PA + KERNEL_VA_OFFSET`)으로 열어
+/// 줍니다. 새 매핑 추가만 하기 때문에 기존 변환에 대한 break-before-make는
+/// 필요 없습니다.
 ///
 /// # Arguments
 /// `window` - 그래뉼 정렬된 물리 구간(커널 이미지/DTB와 겹치지 않아야 함)
@@ -334,8 +336,9 @@ pub fn map_kernel_window(window: Range<u64>) -> Result<(), MmuError> {
         return Err(MmuError::Misaligned);
     }
 
-    // SAFETY: 단일 부트 코어의 초기화 시퀀스에서만 호출됨(순서는 kernel_main이
-    //         강제), 예외 핸들러는 풀을 건드리지 않으므로 이 가변 참조는 유일함
+    // SAFETY: 부트 코어의 초기화 시퀀스 또는 이양 후 시스템 콜 컨텍스트에서만
+    //         호출됨. 초기화 순서는 kernel_main이 강제하고, 시스템 콜은 단일
+    //         코어에서 DAIF 마스크 상태로 실행되므로 이 가변 참조는 유일함
     let pool = unsafe { &mut *POOL.0.get() };
     if !pool.enabled {
         return Err(MmuError::NotEnabled);

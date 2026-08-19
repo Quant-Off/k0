@@ -21,6 +21,6 @@ pub use paging::{
     KERNEL_VA_OFFSET,
 };
 pub use user::{
-    can_read_pan_checked, can_user_read, can_user_write, install_user_ttbr0, FrameAlloc,
-    UserPerm, UserSpace,
+    can_read_pan_checked, can_user_read, can_user_write, current_user_root, install_user_ttbr0,
+    user_install_table, user_map_frame, FrameAlloc, UserPerm, UserSpace,
 };

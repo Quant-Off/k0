@@ -11,5 +11,8 @@ mod fdt;
 mod roottask;
 
 pub use entropy::derive_pac_keys;
-pub use fdt::{dtb_span, parse, BootError, BootInfo, MemRegion, MAX_ENTROPY, MAX_MEM_REGIONS};
+pub use fdt::{
+    dtb_span, parse, BootError, BootInfo, MemRegion, MAX_ENTROPY, MAX_MEM_REGIONS,
+    MAX_RSV_REGIONS,
+};
 pub use roottask::{verify_root_task, RtSegKind, RtSegment, VerifiedRootTask, VerifyError};

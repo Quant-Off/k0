@@ -3,9 +3,12 @@
 //! # Features
 //! 부트로더가 넘긴 DTB를 신뢰하지 않는 입력으로 취급합니다. 헤더의 모든
 //! 오프셋과 길이를 검사 산술로 확인하고, 커널 이미지와 겹치는 DTB를 거부한
-//! 뒤, 루트의 #address-cells / #size-cells와 /memory 노드의 reg, /chosen
-//! 노드의 엔트로피(rng-seed, kaslr-seed)만 읽습니다. 그 외 노드는 해석하지
-//! 않습니다. 엔트로피는 PAC 키 파생의 재료일 뿐이라 내용을 검증하지 않고
+//! 뒤, 루트의 #address-cells / #size-cells와 /memory 노드의 reg,
+//! /reserved-memory 자식 노드들의 reg, memreserve 블록, /chosen 노드의
+//! 엔트로피(rng-seed, kaslr-seed)만 읽습니다. 그 외 노드는 해석하지
+//! 않습니다. 예약 구간은 untyped에서 제외하는 방향으로만 쓰이기 때문에
+//! 악의적 값이어도 자원 축소(부팅 거부)일 뿐 권한 확대가 되지 못합니다.
+//! 엔트로피는 PAC 키 파생의 재료일 뿐이라 내용을 검증하지 않고
 //! 길이만 상한으로 자릅니다. (악의적 값이어도 다른 재료와 해시로 혼합되어
 //! 키를 약화시키지 못함, 단 제공되지 않으면 저엔트로피가 됨)
 //!
@@ -17,6 +20,9 @@ use core::ops::Range;
 
 /// 저장 가능한 물리 메모리 영역 수의 상한
 pub const MAX_MEM_REGIONS: usize = 8;
+
+/// 저장 가능한 예약 구간(memreserve + /reserved-memory) 수의 상한
+pub const MAX_RSV_REGIONS: usize = 8;
 
 /// /chosen에서 수집하는 엔트로피 바이트 상한 (rng-seed + kaslr-seed)
 pub const MAX_ENTROPY: usize = 72;
@@ -49,6 +55,8 @@ pub struct BootInfo {
     pub dtb: Range<usize>,
     regions: [MemRegion; MAX_MEM_REGIONS],
     region_count: usize,
+    reserved: [MemRegion; MAX_RSV_REGIONS],
+    reserved_count: usize,
     entropy: [u8; MAX_ENTROPY],
     entropy_len: usize,
 }
@@ -56,6 +64,14 @@ pub struct BootInfo {
 impl BootInfo {
     pub fn memory(&self) -> &[MemRegion] {
         &self.regions[..self.region_count]
+    }
+
+    /// 부트로더/펌웨어 예약 구간을 주는 함수입니다.
+    ///
+    /// memreserve 블록과 /reserved-memory 자식 노드의 reg를 합친 목록이며
+    /// untyped 목록화와 부트 윈도우 선정에서 제외해야 합니다.
+    pub fn reserved(&self) -> &[MemRegion] {
+        &self.reserved[..self.reserved_count]
     }
 
     /// /chosen이 제공한 엔트로피 바이트(rng-seed + kaslr-seed)를 주는 함수입니다.
@@ -174,6 +190,13 @@ fn be32(blob: &[u8], off: usize) -> Result<u32, BootError> {
     Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
 
+fn be64(blob: &[u8], off: usize) -> Result<u64, BootError> {
+    let b = blob.get(off..off.wrapping_add(8)).ok_or(BootError::Truncated)?;
+    Ok(u64::from_be_bytes([
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+    ]))
+}
+
 fn align4(off: usize) -> Result<usize, BootError> {
     off.checked_add(3).map(|v| v & !3).ok_or(BootError::Truncated)
 }
@@ -205,9 +228,30 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
         dtb,
         regions: [MemRegion { base: 0, size: 0 }; MAX_MEM_REGIONS],
         region_count: 0,
+        reserved: [MemRegion { base: 0, size: 0 }; MAX_RSV_REGIONS],
+        reserved_count: 0,
         entropy: [0; MAX_ENTROPY],
         entropy_len: 0,
     };
+
+    // memreserve 블록: (addr, size) be64 쌍이 (0, 0)으로 끝남
+    let off_rsvmap = be32(blob, 16)? as usize;
+    if off_rsvmap % 8 != 0 {
+        return Err(BootError::BadHeader);
+    }
+    let mut rsv_off = off_rsvmap;
+    loop {
+        let base = be64(blob, rsv_off)?;
+        let size = be64(blob, rsv_off + 8)?;
+        rsv_off = rsv_off.checked_add(16).ok_or(BootError::Truncated)?;
+        if base == 0 && size == 0 {
+            break;
+        }
+        if size == 0 {
+            continue;
+        }
+        push_reserved(&mut info, base, size)?;
+    }
 
     // 루트가 셀 크기를 생략하면 DT spec 기본값(2 / 1)을 쓴다
     let mut addr_cells: u32 = 2;
@@ -215,6 +259,10 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
     let mut depth: u32 = 0;
     let mut memory_depth: Option<u32> = None;
     let mut chosen_depth: Option<u32> = None;
+    // /reserved-memory 자체의 셀 크기(spec상 루트와 같아야 하지만 명시를 우선)
+    let mut rsv_node: bool = false;
+    let mut rsv_addr_cells: u32 = 2;
+    let mut rsv_size_cells: u32 = 1;
     let mut off = off_struct;
 
     loop {
@@ -244,6 +292,11 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
                 if depth == 2 && name == b"chosen" {
                     chosen_depth = Some(depth);
                 }
+                if depth == 2 && name == b"reserved-memory" {
+                    rsv_node = true;
+                    rsv_addr_cells = addr_cells;
+                    rsv_size_cells = size_cells;
+                }
                 off = align4(off + rel + 1)?;
             }
             FDT_END_NODE => {
@@ -255,6 +308,9 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
                 }
                 if chosen_depth == Some(depth) {
                     chosen_depth = None;
+                }
+                if rsv_node && depth == 2 {
+                    rsv_node = false;
                 }
                 depth -= 1;
             }
@@ -280,6 +336,14 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
                     }
                 } else if memory_depth == Some(depth) && name == b"reg" {
                     push_regions(value, addr_cells, size_cells, &mut info)?;
+                } else if rsv_node && depth == 2 {
+                    match name {
+                        b"#address-cells" => rsv_addr_cells = cell_count(value)?,
+                        b"#size-cells" => rsv_size_cells = cell_count(value)?,
+                        _ => {}
+                    }
+                } else if rsv_node && depth == 3 && name == b"reg" {
+                    push_reserved_regions(value, rsv_addr_cells, rsv_size_cells, &mut info)?;
                 } else if chosen_depth == Some(depth)
                     && (name == b"rng-seed" || name == b"kaslr-seed")
                 {
@@ -328,11 +392,12 @@ fn cell_count(value: &[u8]) -> Result<u32, BootError> {
     Ok(u32::from_be_bytes([value[0], value[1], value[2], value[3]]))
 }
 
-fn push_regions(
+fn parse_reg(
     value: &[u8],
     addr_cells: u32,
     size_cells: u32,
-    info: &mut BootInfo,
+    out: &mut [MemRegion],
+    count: &mut usize,
 ) -> Result<(), BootError> {
     if !(1..=2).contains(&addr_cells) || !(1..=2).contains(&size_cells) {
         return Err(BootError::UnsupportedCells);
@@ -350,12 +415,51 @@ fn push_regions(
             continue;
         }
         base.checked_add(size).ok_or(BootError::BadReg)?;
-        if info.region_count == MAX_MEM_REGIONS {
+        if *count == out.len() {
             return Err(BootError::TooManyRegions);
         }
-        info.regions[info.region_count] = MemRegion { base, size };
-        info.region_count += 1;
+        out[*count] = MemRegion { base, size };
+        *count += 1;
     }
+    Ok(())
+}
+
+fn push_regions(
+    value: &[u8],
+    addr_cells: u32,
+    size_cells: u32,
+    info: &mut BootInfo,
+) -> Result<(), BootError> {
+    let mut count = info.region_count;
+    parse_reg(value, addr_cells, size_cells, &mut info.regions, &mut count)?;
+    info.region_count = count;
+    Ok(())
+}
+
+/// /reserved-memory 자식 노드의 reg를 예약 목록에 넣는 함수입니다.
+///
+/// reg 없이 size만 가진 동적 예약 노드는 펌웨어가 고정 주소를 예약한 것이
+/// 아니기 때문에 여기 도달하지 않고 무시됩니다.
+fn push_reserved_regions(
+    value: &[u8],
+    addr_cells: u32,
+    size_cells: u32,
+    info: &mut BootInfo,
+) -> Result<(), BootError> {
+    let mut count = info.reserved_count;
+    parse_reg(value, addr_cells, size_cells, &mut info.reserved, &mut count)?;
+    info.reserved_count = count;
+    Ok(())
+}
+
+/// memreserve 블록의 구간 하나를 예약 목록에 넣는 함수입니다.
+fn push_reserved(info: &mut BootInfo, base: u64, size: u64) -> Result<(), BootError> {
+    base.checked_add(size).ok_or(BootError::BadReg)?;
+    if info.reserved_count == MAX_RSV_REGIONS {
+        return Err(BootError::TooManyRegions);
+    }
+    info.reserved[info.reserved_count] = MemRegion { base, size };
+    info.reserved_count += 1;
     Ok(())
 }
 
