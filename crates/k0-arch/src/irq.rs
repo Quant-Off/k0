@@ -210,8 +210,19 @@ fn unexpected(kind: &str, id: u64) -> ! {
     }
 }
 
+unsafe extern "C" {
+    /// 타이머 선점 정책, 커널 바이너리가 정의함 (링크 계약)
+    ///
+    /// # Safety
+    /// EL0에서 진입한 IRQ/FIQ 컨텍스트에서 벡터가 사용자 컨텍스트 저장을
+    /// 마친 뒤에만 호출됩니다.
+    fn k0_preempt();
+}
+
 /// EL1과 EL0 양쪽 IRQ 벡터가 공유하는 실제 분배 함수입니다.
-fn dispatch_irq() {
+///
+/// 타이머 틱이었으면 true를 반환합니다(EL0 경로의 선점 판단용).
+fn dispatch_irq() -> bool {
     #[cfg(feature = "plat-virt")]
     {
         let iar = gicv3::ack();
@@ -219,8 +230,9 @@ fn dispatch_irq() {
             TIMER_INTID => {
                 timer_tick();
                 gicv3::eoi(iar);
+                true
             }
-            1020..=1023 => {} // 스퓨리어스: 승인 없이 복귀
+            1020..=1023 => false, // 스퓨리어스: 승인 없이 복귀
             other => unexpected("irq", other),
         }
     }
@@ -229,12 +241,14 @@ fn dispatch_irq() {
 }
 
 /// EL1과 EL0 양쪽 FIQ 벡터가 공유하는 실제 분배 함수입니다.
-fn dispatch_fiq() {
+///
+/// 타이머 틱이었으면 true를 반환합니다(EL0 경로의 선점 판단용).
+fn dispatch_fiq() -> bool {
     #[cfg(feature = "plat-apple")]
     {
         if timer_pending() {
             timer_tick();
-            return;
+            return true;
         }
         unexpected("fiq", 0);
     }
@@ -243,27 +257,37 @@ fn dispatch_fiq() {
 }
 
 /// 커널(EL1) 실행 중 IRQ 벡터(`vectors.S`)가 사용하는 디스패처 함수입니다.
+///
+/// 커널은 선점하지 않으므로 틱 여부는 버립니다.
 #[unsafe(no_mangle)]
 extern "C" fn irq_current() {
-    dispatch_irq();
+    let _ = dispatch_irq();
 }
 
 /// 커널(EL1) 실행 중 FIQ 벡터(`vectors.S`)가 사용하는 디스패처 함수입니다.
 #[unsafe(no_mangle)]
 extern "C" fn fiq_current() {
-    dispatch_fiq();
+    let _ = dispatch_fiq();
 }
 
 /// 사용자 공간(EL0) 실행 중 IRQ 벡터가 사용하는 디스패처 함수입니다.
 ///
-/// 복귀는 벡터의 `__user_restore`가 컨텍스트 전체를 복원하며 수행합니다.
+/// 타이머 틱이면 커널의 선점 정책을 부릅니다. 복귀는 벡터의
+/// `__user_restore`가 (선점 정책이 갱신했을 수 있는) 현재 컨텍스트를
+/// 복원하며 수행합니다.
 #[unsafe(no_mangle)]
 extern "C" fn irq_lower(_ctx: &mut crate::usermode::Context) {
-    dispatch_irq();
+    if dispatch_irq() {
+        // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ 경로임
+        unsafe { k0_preempt() };
+    }
 }
 
 /// 사용자 공간(EL0) 실행 중 FIQ 벡터가 사용하는 디스패처 함수입니다.
 #[unsafe(no_mangle)]
 extern "C" fn fiq_lower(_ctx: &mut crate::usermode::Context) {
-    dispatch_fiq();
+    if dispatch_fiq() {
+        // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 FIQ 경로임
+        unsafe { k0_preempt() };
+    }
 }

@@ -49,13 +49,103 @@ impl SegKind {
     }
 }
 
+/// 태스크 상태를 나타내는 열거형입니다.
+///
+/// 재분류(retype) 직후의 소거된 TCB 프레임이 그대로 유효한 Inactive가
+/// 되도록 0을 명시합니다.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskState {
+    /// 재분류 직후, 구성 전
+    Inactive = 0,
+    /// 구성 완료, 실행 대기 진입 전
+    Stopped = 1,
+    /// 준비 큐에 있음
+    Ready = 2,
+    /// 현재 실행 중
+    Running = 3,
+    /// 종료됨
+    Dead = 4,
+    /// 엔드포인트 대기 큐에서 수신자를 기다리는 중(SEND)
+    BlockedSend = 5,
+    /// 엔드포인트 대기 큐에서 송신자를 기다리는 중(RECV)
+    BlockedRecv = 6,
+    /// CALL 전달을 마치고 응답을 기다리는 중(수신자의 reply_to가 가리킴)
+    BlockedReply = 7,
+    /// 엔드포인트 대기 큐에서 수신자를 기다리는 중(CALL, 전달 시 응답 대기로 전환)
+    BlockedCall = 8,
+}
+
 /// 태스크 제어 블록(TCB) 구조체입니다.
 ///
-/// 지금은 단일 태스크라 컨텍스트와 주소 공간 루트만 담고, 상태 머신과
-/// 케이퍼빌리티 공간 참조는 스케줄러 확장과 함께 추가됩니다.
+/// 컨텍스트, 주소 공간 루트, 상태 머신, 큐 링크(intrusive)를 담습니다.
+/// `next`는 다음 TCB의 커널 VA(0 = 없음)라서 큐 노드 할당이 필요 없고,
+/// 준비 큐와 엔드포인트 대기 큐가 함께 씁니다(두 큐의 소속은 상태 머신이
+/// 상호 배타로 보장). `reply_to`는 이 태스크가 응답해야 할 BlockedReply
+/// 호출자의 커널 VA(0 = 없음)로, 1회성 응답 자격의 유일한 저장소입니다.
+/// 재분류된 TCB는 그래뉼 프레임 선두에 자리 잡고 커널이 TTBR1 별칭으로만
+/// 접근합니다(EL0에는 절대 매핑되지 않음).
 pub struct Tcb {
     pub ctx: Context,
     pub ttbr0_pa: u64,
+    pub state: TaskState,
+    pub next: u64,
+    pub reply_to: u64,
+}
+
+// 재분류된 TCB는 그래뉼 프레임 하나에 들어가야 함
+const _: () = assert!(size_of::<Tcb>() <= GRANULE);
+
+/// 동기 랑데부 IPC의 엔드포인트 오브젝트 구조체입니다.
+///
+/// 커널 메시지 버퍼가 없고 대기 큐는 블록된 TCB의 intrusive 링크(`next`
+/// 재사용)로만 구성됩니다. 대기 태스크는 준비 큐에 없으므로 링크 재사용이
+/// 안전합니다. 큐에는 송신자들 또는 수신자들 한 방향만 담기며 머리 TCB의
+/// 상태로 방향을 판별합니다. 재분류(retype)가 소거한 프레임이 그대로
+/// 유효한 빈 엔드포인트입니다(0 = 빈 큐).
+#[repr(C)]
+pub struct Endpoint {
+    pub head: u64,
+    pub tail: u64,
+}
+
+impl Endpoint {
+    /// 대기 큐 꼬리에 TCB를 붙이는 함수입니다.
+    ///
+    /// # Safety
+    /// `tcb`는 유효한 커널 VA의 TCB이고 어느 큐에도 없어야 합니다.
+    pub unsafe fn push(&mut self, tcb: *mut Tcb) {
+        // SAFETY: 함수 계약대로 tcb는 유효하고 큐 밖에 있음
+        unsafe {
+            (*tcb).next = 0;
+            if self.tail == 0 {
+                self.head = tcb as u64;
+            } else {
+                (*(self.tail as *mut Tcb)).next = tcb as u64;
+            }
+        }
+        self.tail = tcb as u64;
+    }
+
+    /// 대기 큐 머리를 꺼내는 함수입니다. 비어 있으면 0
+    ///
+    /// # Safety
+    /// 큐의 링크들이 유효한 TCB를 가리켜야 합니다.
+    pub unsafe fn pop(&mut self) -> u64 {
+        let head = self.head;
+        if head == 0 {
+            return 0;
+        }
+        // SAFETY: 함수 계약대로 head는 유효한 TCB임
+        unsafe {
+            self.head = (*(head as *mut Tcb)).next;
+            (*(head as *mut Tcb)).next = 0;
+        }
+        if self.head == 0 {
+            self.tail = 0;
+        }
+        head
+    }
 }
 
 /// 태스크 스폰이 실패한 이유를 나타내는 열거형입니다.
@@ -81,6 +171,9 @@ unsafe impl Sync for SyncCell {}
 static ROOT_TCB: SyncCell = SyncCell(UnsafeCell::new(Tcb {
     ctx: Context::zeroed(),
     ttbr0_pa: 0,
+    state: TaskState::Inactive,
+    next: 0,
+    reply_to: 0,
 }));
 
 /// 검증된 루트 태스크 이미지를 적재해 TCB를 구성하는 함수입니다.

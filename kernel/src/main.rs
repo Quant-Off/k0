@@ -325,11 +325,11 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
 
 /// EL0 svc 트랩의 시스템 콜 정책 함수입니다. (k0-arch가 링크 계약으로 호출)
 ///
-/// 미지의 번호는 제로 트러스트 원칙대로 태스크를 정지시킵니다. 다중 태스크가
-/// 생기면 정지 범위는 해당 태스크로 좁아집니다.
+/// 미지의 번호는 제로 트러스트 원칙대로 호출한 태스크를 종료시키고, 그게
+/// 마지막 태스크였다면 fail-secure 파킹합니다.
 ///
 /// # Arguments
-/// `ctx` - 사용자 컨텍스트, x8 = 번호, x0 = 인자와 반환값
+/// `ctx` - 사용자 컨텍스트, x8 = 번호, x0-x5 = 인자, x0(수신 계열은 x1-x5도) = 반환값
 #[unsafe(no_mangle)]
 extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
     let mut con = EarlyCon;
@@ -338,19 +338,148 @@ extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
             con.put_byte(ctx.x[0] as u8);
             ctx.x[0] = 0;
         }
-        // 단일 태스크라 양보 대상이 없어 즉시 재개
-        k0_abi::syscall::YIELD => ctx.x[0] = 0,
+        k0_abi::syscall::YIELD => {
+            ctx.x[0] = 0;
+            // SAFETY: 벡터가 컨텍스트 저장을 마친 시스템 콜 컨텍스트임
+            unsafe { k0_sched::rotate() };
+        }
         k0_abi::syscall::EXIT => {
-            let _ = writeln!(con, "k0: root task exited (code {})", ctx.x[0]);
-            park()
+            let _ = writeln!(con, "k0: task exited (code {})", ctx.x[0]);
+            kill_current(&mut con)
         }
         k0_abi::syscall::RETYPE => ctx.x[0] = sys_retype(ctx.x[0], ctx.x[1]) as u64,
         k0_abi::syscall::MAP => ctx.x[0] = sys_map(ctx.x[0], ctx.x[1], ctx.x[2]) as u64,
+        k0_abi::syscall::TCB_CONFIGURE => {
+            ctx.x[0] = sys_tcb_configure(ctx.x[0], ctx.x[1], ctx.x[2], ctx.x[3]) as u64
+        }
+        k0_abi::syscall::TCB_RESUME => ctx.x[0] = sys_tcb_resume(ctx.x[0]) as u64,
+        // IPC는 블록 경로에서 반환 레지스터를 미래의 상대가 기록하므로
+        // 핸들러가 ctx 기록까지 직접 책임지고, false(교착)만 커널이 파킹
+        k0_abi::syscall::SEND => ipc_or_park(&mut con, k0_ipc::sys_send(ctx)),
+        k0_abi::syscall::RECV => ipc_or_park(&mut con, k0_ipc::sys_recv(ctx)),
+        k0_abi::syscall::CALL => ipc_or_park(&mut con, k0_ipc::sys_call(ctx)),
+        k0_abi::syscall::REPLY_RECV => ipc_or_park(&mut con, k0_ipc::sys_reply_recv(ctx)),
         other => {
-            let _ = writeln!(con, "k0: unknown syscall {other}");
+            let _ = writeln!(con, "k0: unknown syscall {other}, killing task");
+            kill_current(&mut con)
+        }
+    }
+}
+
+/// 현재 태스크를 종료시키는 함수입니다. 마지막 태스크면 파킹합니다.
+///
+/// 죽는 태스크가 보류한 응답 자격은 먼저 정리해 호출자가 NO_REPLY로
+/// 깨어나게 합니다(영구 블록 방지).
+fn kill_current(con: &mut EarlyCon) {
+    // SAFETY: 벡터가 컨텍스트 저장을 마친 시스템 콜 컨텍스트임
+    unsafe {
+        k0_ipc::abort_reply(&mut *k0_sched::current());
+        if !k0_sched::exit_current() {
+            let _ = writeln!(con, "k0: all tasks exited");
             park()
         }
     }
+}
+
+/// IPC가 교착(전 태스크 블록)을 보고하면 fail-secure 파킹하는 함수입니다.
+///
+/// 알림 오브젝트가 생기기 전까지는 블록된 태스크를 깨울 외부 주체가
+/// 없으므로 전 태스크 블록은 회복 불가능한 교착입니다.
+fn ipc_or_park(con: &mut EarlyCon, ok: bool) {
+    if !ok {
+        let _ = writeln!(con, "k0: all tasks blocked");
+        park()
+    }
+}
+
+/// 타이머 틱의 선점 정책 함수입니다. (k0-arch가 EL0 IRQ 경로에서 링크
+/// 계약으로 호출)
+#[unsafe(no_mangle)]
+extern "C" fn k0_preempt() {
+    // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ/FIQ 컨텍스트임
+    unsafe { k0_sched::rotate() };
+}
+
+/// TCB_CONFIGURE 시스템 콜 처리 함수입니다.
+///
+/// 진입 컨텍스트는 커널이 강제합니다. SPSR은 항상 EL0t + DAIF 언마스크로
+/// 기록되어 사용자에게서 PSTATE를 절대 받지 않습니다(권한 상승 차단). 주소
+/// 공간은 AddrSpace 케이퍼빌리티 제시로만 지정할 수 있고, 구성은 Inactive
+/// 상태에서 한 번만 허용됩니다(실행 중 재구성 금지).
+///
+/// # Arguments
+/// `slot` - 재분류된 TCB의 슬롯(x0)
+/// `entry` - 진입점 VA(x1)
+/// `stack` - 스택 최상단 VA(x2, 16바이트 정렬)
+/// `aspace` - AddrSpace 슬롯(x3)
+fn sys_tcb_configure(slot: u64, entry: u64, stack: u64, aspace: u64) -> i64 {
+    let g = k0_mm::GRANULE as u64;
+    if entry < g || entry >= 1u64 << 48 {
+        return k0_abi::err::BAD_VA;
+    }
+    if stack % 16 != 0 || stack < g || stack > 1u64 << 48 {
+        return k0_abi::err::BAD_VA;
+    }
+    let (Ok(slot), Ok(aspace)) = (usize::try_from(slot), usize::try_from(aspace)) else {
+        return k0_abi::err::BAD_SLOT;
+    };
+    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
+    let cnode = unsafe { k0_cap::root_mut() };
+    let root_pa = match cnode.cap(aspace) {
+        Some(k0_cap::Cap::AddrSpace { root_pa }) => root_pa,
+        Some(_) => return k0_abi::err::BAD_CAP,
+        None => return k0_abi::err::BAD_SLOT,
+    };
+    let base = match cnode.cap(slot) {
+        Some(k0_cap::Cap::Tcb { base }) => base,
+        // RootTcb 포함: 실행 중인 자신의 재구성은 불가
+        Some(_) => return k0_abi::err::BAD_CAP,
+        None => return k0_abi::err::BAD_SLOT,
+    };
+    // SAFETY: base는 retype가 소거·별칭 매핑한 전용 프레임이고, 소거 상태가
+    //         곧 유효한 Inactive TCB임
+    let t = unsafe { &mut *((base + k0_mm::KERNEL_VA_OFFSET) as *mut k0_task::Tcb) };
+    if t.state != k0_task::TaskState::Inactive {
+        return k0_abi::err::BAD_STATE;
+    }
+    t.ctx = k0_arch::usermode::Context::zeroed();
+    t.ctx.elr = entry;
+    t.ctx.sp = stack;
+    t.ctx.spsr = 0; // EL0t, DAIF 언마스크, 커널이 강제
+    t.ttbr0_pa = root_pa;
+    t.state = k0_task::TaskState::Stopped;
+    0
+}
+
+/// TCB_RESUME 시스템 콜 처리 함수입니다.
+///
+/// 구성(Stopped)을 마친 TCB만 준비 큐에 넣습니다. 이미 큐에 있거나 실행
+/// 중이거나 종료된 TCB는 거부되므로 같은 TCB가 큐에 두 번 들어갈 수
+/// 없습니다.
+///
+/// # Arguments
+/// `slot` - 재분류된 TCB의 슬롯(x0)
+fn sys_tcb_resume(slot: u64) -> i64 {
+    let Ok(slot) = usize::try_from(slot) else {
+        return k0_abi::err::BAD_SLOT;
+    };
+    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
+    let cnode = unsafe { k0_cap::root_mut() };
+    let base = match cnode.cap(slot) {
+        Some(k0_cap::Cap::Tcb { base }) => base,
+        Some(_) => return k0_abi::err::BAD_CAP,
+        None => return k0_abi::err::BAD_SLOT,
+    };
+    let t = (base + k0_mm::KERNEL_VA_OFFSET) as *mut k0_task::Tcb;
+    // SAFETY: t는 retype가 만든 전용 TCB 프레임의 별칭이고, Stopped 검사로
+    //         큐 중복 진입이 차단됨
+    unsafe {
+        if (*t).state != k0_task::TaskState::Stopped {
+            return k0_abi::err::BAD_STATE;
+        }
+        k0_sched::enqueue(t);
+    }
+    0
 }
 
 /// RETYPE 시스템 콜 처리 함수입니다.
@@ -366,6 +495,8 @@ fn sys_retype(slot: u64, kind: u64) -> i64 {
     let kind = match kind {
         k0_abi::obj::FRAME => k0_cap::ObjKind::Frame,
         k0_abi::obj::PAGE_TABLE => k0_cap::ObjKind::PageTable,
+        k0_abi::obj::TCB => k0_cap::ObjKind::Tcb,
+        k0_abi::obj::ENDPOINT => k0_cap::ObjKind::Endpoint,
         _ => return k0_abi::err::BAD_TYPE,
     };
     let Ok(slot) = usize::try_from(slot) else {
@@ -505,7 +636,7 @@ fn write_bootinfo(frame_pa: u64, cnode: &k0_cap::CNode) {
                     base: 0,
                     size: 0,
                 },
-                k0_cap::Cap::Tcb => CapDesc {
+                k0_cap::Cap::RootTcb | k0_cap::Cap::Tcb { .. } => CapDesc {
                     kind: cap_kind::TCB,
                     base: 0,
                     size: 0,
@@ -527,6 +658,11 @@ fn write_bootinfo(frame_pa: u64, cnode: &k0_cap::CNode) {
                 },
                 k0_cap::Cap::PageTable { .. } => CapDesc {
                     kind: cap_kind::PAGE_TABLE,
+                    base: 0,
+                    size: 0,
+                },
+                k0_cap::Cap::Endpoint { .. } => CapDesc {
+                    kind: cap_kind::ENDPOINT,
                     base: 0,
                     size: 0,
                 },

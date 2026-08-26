@@ -130,7 +130,7 @@ pub fn dtb_span(dtb_phys: usize) -> Result<Range<usize>, BootError> {
     }
     // SAFETY: 위와 동일한 전제, dtb_phys + 4는 4바이트 정렬
     let totalsize = unsafe { read_be32_phys(dtb_phys + 4) };
-    if totalsize < HEADER_SIZE || totalsize > MAX_DTB_SIZE {
+    if !(HEADER_SIZE..=MAX_DTB_SIZE).contains(&totalsize) {
         return Err(BootError::BadHeader);
     }
 
@@ -368,12 +368,12 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
     Ok(info)
 }
 
-fn prop_name<'a>(
-    blob: &'a [u8],
+fn prop_name(
+    blob: &[u8],
     off_strings: usize,
     strings_end: usize,
     name_off: usize,
-) -> Result<&'a [u8], BootError> {
+) -> Result<&[u8], BootError> {
     let start = off_strings
         .checked_add(name_off)
         .filter(|&s| s < strings_end)

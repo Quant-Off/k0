@@ -81,6 +81,14 @@ version = "1.0.0"
 [[package]]
 name = "k0-ipc"
 version = "1.0.0"
+dependencies = [
+ "k0-abi",
+ "k0-arch",
+ "k0-cap",
+ "k0-mm",
+ "k0-sched",
+ "k0-task",
+]
 
 [[package]]
 name = "k0-kernel"
@@ -90,6 +98,7 @@ dependencies = [
  "k0-arch",
  "k0-boot",
  "k0-cap",
+ "k0-ipc",
  "k0-mm",
  "k0-sched",
  "k0-task",
@@ -107,6 +116,7 @@ name = "k0-sched"
 version = "1.0.0"
 dependencies = [
  "k0-arch",
+ "k0-mm",
  "k0-task",
 ]
 

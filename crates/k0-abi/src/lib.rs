@@ -13,7 +13,8 @@
 /// 일치해야 합니다.
 pub const KERNEL_VA_OFFSET: u64 = 0xFFFF_0000_0000_0000;
 
-/// 시스템 콜 번호(x8) 모듈입니다. 인자는 x0-x2, 반환값은 x0을 사용합니다.
+/// 시스템 콜 번호(x8) 모듈입니다. 인자는 x0-x5, 반환값은 x0을 사용하고
+/// IPC 수신 계열은 x1-x5로도 돌려받습니다.
 pub mod syscall {
     /// 바이트 하나를 커널 콘솔로 출력, x0 = 바이트(하위 8비트만 사용)
     pub const DEBUG_PUTC: u64 = 0;
@@ -32,6 +33,46 @@ pub mod syscall {
     /// 매핑을 만들고, PageTable은 x1 경로의 첫 빈 레벨에 설치되며 x2를
     /// 무시합니다. 성공 시 x0 = 0, 실패 시 음수 에러([super::err])
     pub const MAP: u64 = 4;
+    /// 재분류된 TCB의 진입 컨텍스트 구성
+    ///
+    /// x0 = TCB 슬롯, x1 = 진입점 VA, x2 = 스택 최상단 VA(16바이트 정렬),
+    /// x3 = AddrSpace 슬롯. Inactive 상태에서 한 번만 허용됩니다. SPSR은
+    /// 커널이 EL0t로 강제합니다. 성공 시 x0 = 0, 실패 시 음수 에러
+    pub const TCB_CONFIGURE: u64 = 5;
+    /// 구성을 마친 TCB를 준비 큐에 넣어 실행 대상으로 만듦
+    ///
+    /// x0 = TCB 슬롯. Stopped 상태에서만 허용됩니다. 성공 시 x0 = 0,
+    /// 실패 시 음수 에러
+    pub const TCB_RESUME: u64 = 6;
+    /// 엔드포인트로 메시지 전송(동기 랑데부, 커널 버퍼 없음)
+    ///
+    /// x0 = 엔드포인트 슬롯, x1 = 플래그([super::ipc]), x2-x5 = MR0-MR3.
+    /// 대기 중인 수신자가 없으면 블록됩니다. 성공 시 x0 = 0
+    pub const SEND: u64 = 7;
+    /// 엔드포인트에서 메시지 수신
+    ///
+    /// x0 = 엔드포인트 슬롯, x1 = 플래그. 대기 중인 송신자가 없으면
+    /// 블록됩니다. 성공 시 x0 = 0, x1 = 배지(예약, 현재 0), x2-x5 = MR0-MR3
+    pub const RECV: u64 = 8;
+    /// 전송과 응답 대기를 한 번의 트랩으로 묶은 원자적 호출
+    ///
+    /// 인자는 SEND와 같고, 성공 시 응답이 x2-x5로 돌아옵니다. 수신자가
+    /// 응답 없이 종료하거나 응답 자격을 잃으면 x0 = NO_REPLY
+    pub const CALL: u64 = 9;
+    /// 보류된 CALL 호출자에게 응답한 뒤 이어서 다음 메시지 수신(서버 루프)
+    ///
+    /// 인자와 반환은 RECV와 같고 x2-x5가 먼저 응답으로 전달됩니다. 응답
+    /// 자격은 1회성이라 전달 즉시 소멸하고, 보류된 응답이 없으면 응답
+    /// 단계는 건너뜁니다
+    pub const REPLY_RECV: u64 = 10;
+}
+
+/// IPC 플래그(x1) 모듈입니다.
+pub mod ipc {
+    /// 상대가 준비돼 있지 않으면 블록 대신 WOULD_BLOCK으로 즉시 복귀
+    ///
+    /// 타임아웃 없는 설계에서 유일한 비대기 수단입니다
+    pub const NONBLOCK: u64 = 1;
 }
 
 /// 재분류(retype)로 만들 수 있는 오브젝트 타입 모듈입니다.
@@ -40,6 +81,10 @@ pub mod obj {
     pub const FRAME: u64 = 1;
     /// 사용자 주소 공간의 중간 페이지 테이블 한 장
     pub const PAGE_TABLE: u64 = 2;
+    /// 태스크 제어 블록(TCB)
+    pub const TCB: u64 = 3;
+    /// 동기 랑데부 IPC의 엔드포인트
+    pub const ENDPOINT: u64 = 4;
 }
 
 /// Frame 매핑 권한 모듈입니다. 실행 가능한 조합은 제공하지 않습니다(W^X).
@@ -76,6 +121,12 @@ pub mod err {
     pub const KERNEL_RESOURCE: i64 = -11;
     /// 해당 슬롯의 케이퍼빌리티는 매핑 대상이 아님
     pub const BAD_CAP: i64 = -12;
+    /// 대상 오브젝트가 이 연산을 허용하지 않는 상태임
+    pub const BAD_STATE: i64 = -13;
+    /// 상대가 준비돼 있지 않음(NONBLOCK 요청의 즉시 복귀)
+    pub const WOULD_BLOCK: i64 = -14;
+    /// CALL의 수신자가 응답 없이 종료했거나 응답 자격을 잃음
+    pub const NO_REPLY: i64 = -15;
 }
 
 /// 커널이 루트 태스크에 RO로 매핑해 주는 bootinfo 페이지 모듈입니다.
@@ -118,5 +169,6 @@ pub mod bootinfo {
         pub const UNTYPED: u64 = 3;
         pub const FRAME: u64 = 4;
         pub const PAGE_TABLE: u64 = 5;
+        pub const ENDPOINT: u64 = 6;
     }
 }

@@ -8,9 +8,10 @@ license.workspace = true
 # default는 워크스페이스 전체 빌드가 깨지지 않게 하기 위한 것
 [features]
 default = ["plat-virt"]
-plat-virt = ["k0-arch/plat-virt", "k0-task/plat-virt"]
-plat-apple = ["k0-arch/plat-apple", "k0-task/plat-apple"]
+plat-virt = ["k0-arch/plat-virt", "k0-task/plat-virt", "k0-mm/plat-virt"]
+plat-apple = ["k0-arch/plat-apple", "k0-task/plat-apple", "k0-mm/plat-apple"]
 
 [dependencies]
 k0-arch = { path = "../k0-arch", default-features = false }
+k0-mm = { path = "../k0-mm", default-features = false }
 k0-task = { path = "../k0-task", default-features = false }

@@ -44,10 +44,12 @@ impl PhysRegion {
 #[derive(Clone, Copy, Debug)]
 pub enum Cap {
     Empty,
-    /// 루트 태스크의 TCB
-    Tcb,
+    /// 루트 태스크의 TCB(부트 시점 정적 오브젝트, 재구성 불가)
+    RootTcb,
     /// 루트 태스크의 주소 공간(TTBR0 루트 테이블)
     AddrSpace { root_pa: u64 },
+    /// 재분류로 만든 태스크 제어 블록, 상태 머신은 오브젝트 안에 있음
+    Tcb { base: u64 },
     /// 소유자가 재분류할 수 있는 미분류 물리 메모리
     ///
     /// `used`는 재분류 워터마크로 base로부터의 소비량이며 단조 증가합니다
@@ -56,6 +58,8 @@ pub enum Cap {
     Frame { base: u64, mapped: bool },
     /// 재분류로 만든 사용자 주소 공간의 중간 페이지 테이블
     PageTable { base: u64, installed: bool },
+    /// 재분류로 만든 동기 IPC 엔드포인트, 대기 큐는 오브젝트 안에 있음
+    Endpoint { base: u64 },
 }
 
 /// 재분류로 만들 수 있는 커널 오브젝트 종류를 나타내는 열거형입니다.
@@ -63,6 +67,8 @@ pub enum Cap {
 pub enum ObjKind {
     Frame,
     PageTable,
+    Tcb,
+    Endpoint,
 }
 
 /// 케이퍼빌리티 부트스트랩이 실패한 이유를 나타내는 열거형입니다.
@@ -193,6 +199,10 @@ impl CNode {
                 base: carve,
                 installed: false,
             },
+            // 소거된 프레임이 곧 유효한 Inactive TCB (상태 0)
+            ObjKind::Tcb => Cap::Tcb { base: carve },
+            // 소거된 프레임이 곧 유효한 빈 엔드포인트 (빈 대기 큐 = 0)
+            ObjKind::Endpoint => Cap::Endpoint { base: carve },
         };
         self.push(cap).map_err(|_| RetypeError::OutOfSlots)?;
         Ok(new_slot)
@@ -248,7 +258,7 @@ pub fn bootstrap(
     let cnode = unsafe { &mut *ROOT_CNODE.0.get() };
 
     cnode.push(Cap::Empty)?; // 슬롯 0은 null
-    cnode.push(Cap::Tcb)?;
+    cnode.push(Cap::RootTcb)?;
     cnode.push(Cap::AddrSpace {
         root_pa: addr_space_root,
     })?;
