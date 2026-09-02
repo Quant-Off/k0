@@ -100,16 +100,23 @@ el2_to_el1:
     eret
 
     //
-    // 4. EL1: SCTLR_EL1 정규화
+    // 4. EL1: SCTLR_EL1 / CPACR_EL1 정규화
     //
     // 진입 경로(EL1 직접 / EL2 강하)와 무관하게 부트로더가 남긴 상태를
     // 신뢰하지 않고 기지(known) 상태로 통일합니다. RES1 비트만 세팅되고
     // MMU/캐시 OFF, little-endian, EL0 WFx 트랩(nTWI/nTWE=0), EL0 DAIF
     // 접근 차단(UMA=0). W^X와 MMU 구성은 진입 페이즈 1의 Rust 코드가
     // 명시적으로 수행합니다.
+    //
+    // CPACR_EL1 = 0: FP/SIMD(FPEN), SVE(ZEN), SME(SMEN) 접근을 EL0/EL1
+    // 모두 트랩. 커널은 softfloat이고 태스크 컨텍스트에 벡터 레지스터
+    // 파일이 없으므로, 부트로더가 켜 두었더라도 EL0가 벡터 상태를 다른
+    // 태스크에 흘리지 못하게 명시적으로 내립니다. EL0의 사용은 폴트로
+    // 트랩되어 그 태스크만 종료됩니다.
 el1_entry:
     ldr     x1, =0x30d00800
     msr     SCTLR_EL1, x1
+    msr     CPACR_EL1, xzr
     isb
 
     //

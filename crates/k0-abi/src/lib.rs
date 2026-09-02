@@ -35,9 +35,10 @@ pub mod syscall {
     pub const MAP: u64 = 4;
     /// 재분류된 TCB의 진입 컨텍스트 구성
     ///
-    /// x0 = TCB 슬롯, x1 = 진입점 VA, x2 = 스택 최상단 VA(16바이트 정렬),
-    /// x3 = AddrSpace 슬롯. Inactive 상태에서 한 번만 허용됩니다. SPSR은
-    /// 커널이 EL0t로 강제합니다. 성공 시 x0 = 0, 실패 시 음수 에러
+    /// x0 = TCB 슬롯, x1 = 진입점 VA(4바이트 정렬), x2 = 스택 최상단
+    /// VA(16바이트 정렬), x3 = AddrSpace 슬롯. Inactive 상태에서 한 번만
+    /// 허용됩니다. SPSR과 스레드 포인터(TPIDR_EL0 / TPIDRRO_EL0 = 0)는
+    /// 커널이 강제합니다. 성공 시 x0 = 0, 실패 시 음수 에러
     pub const TCB_CONFIGURE: u64 = 5;
     /// 구성을 마친 TCB를 준비 큐에 넣어 실행 대상으로 만듦
     ///

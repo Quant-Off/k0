@@ -4,9 +4,10 @@
 //! 커널이 무결성 검증 후 EL0로 띄우는 첫 태스크입니다. bootinfo 페이지에서
 //! 케이퍼빌리티 목록을 읽고, 재분류(RETYPE)·매핑(MAP)·태스크 생성
 //! (TCB_CONFIGURE / TCB_RESUME)·스케줄러(양보, 종료, 타이머 선점)·동기
-//! 랑데부 IPC(SEND / RECV / CALL / REPLY_RECV)의 정상 경로와 거부 경로를
-//! 자가 검증합니다. 검증 실패는 EXIT로 즉시 드러나고(fail-secure, 커널이
-//! 파킹), 성공하면 양보 루프로 들어갑니다.
+//! 랑데부 IPC(SEND / RECV / CALL / REPLY_RECV)·폴트 격리(자식의 폴트와
+//! FP/SIMD 트랩은 그 태스크만 종료, 스레드 포인터는 태스크별 격리)의 정상
+//! 경로와 거부 경로를 자가 검증합니다. 검증 실패는 EXIT로 즉시 드러나고
+//! (fail-secure, 커널이 파킹), 성공하면 양보 루프로 들어갑니다.
 
 #![no_std]
 #![no_main]
@@ -35,6 +36,13 @@ static SRV_DIE: AtomicU64 = AtomicU64::new(0);
 static SRV_HOLD: AtomicU64 = AtomicU64::new(0);
 // 클라이언트 CALL의 최종 상태, 1 = 아직 응답 대기 중(유효한 상태값이 아님)
 static CLIENT_STATUS: AtomicU64 = AtomicU64::new(1);
+
+// 폴트 격리·스레드 포인터 격리 검증 상태
+static FAULT_STAGE: AtomicU64 = AtomicU64::new(0);
+static FAULT_SURVIVED: AtomicU64 = AtomicU64::new(0);
+static CHILD_SAW_TPIDR: AtomicU64 = AtomicU64::new(0);
+const ROOT_TPIDR: u64 = 0x5EED_0000_C0FF_EE01;
+const CHILD_TPIDR: u64 = 0xBAD0_0000_0000_0BAD;
 
 // FIFO·자격 덮어쓰기 검증에 쓰는 클라이언트 메시지
 const CM_FIFO_A: [u64; 4] = [0xC1A0, 1, 2, 3];
@@ -297,6 +305,55 @@ extern "C" fn client2_entry() -> ! {
     sys1(syscall::EXIT, 12);
     loop {
         core::hint::spin_loop();
+    }
+}
+
+fn get_tpidr() -> u64 {
+    let v: u64;
+    // SAFETY: TPIDR_EL0 읽기는 부작용이 없음
+    unsafe { asm!("mrs {}, tpidr_el0", out(reg) v, options(nomem, nostack)) };
+    v
+}
+
+fn get_tpidrro() -> u64 {
+    let v: u64;
+    // SAFETY: TPIDRRO_EL0 읽기는 부작용이 없음
+    unsafe { asm!("mrs {}, tpidrro_el0", out(reg) v, options(nomem, nostack)) };
+    v
+}
+
+fn set_tpidr(v: u64) {
+    // SAFETY: TPIDR_EL0는 EL0가 자유롭게 쓰는 스레드 포인터 레지스터
+    unsafe { asm!("msr tpidr_el0, {}", in(reg) v, options(nomem, nostack)) };
+}
+
+/// 스레드 포인터를 덮어쓴 뒤 null 역참조로 폴트를 내는 자식 태스크의
+/// 진입점입니다. 커널이 이 태스크만 종료해야 하므로 폴트 뒤 코드는 절대
+/// 실행되면 안 됩니다.
+extern "C" fn child_fault_entry() -> ! {
+    // 구성 시 커널이 0으로 강제한 값이어야 함 (루트의 값이 새면 안 됨)
+    CHILD_SAW_TPIDR.store(get_tpidr(), Ordering::Relaxed);
+    set_tpidr(CHILD_TPIDR);
+    FAULT_STAGE.store(1, Ordering::Relaxed);
+    sys1(syscall::YIELD, 0);
+    // SAFETY: 의도된 null 역참조, 데이터 어보트로 이 태스크가 종료돼야 함
+    unsafe { asm!("str xzr, [{}]", in(reg) 0u64, options(nostack)) };
+    FAULT_SURVIVED.fetch_add(1, Ordering::Relaxed);
+    loop {
+        sys1(syscall::YIELD, 0);
+    }
+}
+
+/// FP/SIMD 명령을 실행하는 자식 태스크의 진입점입니다. CPACR_EL1이 EL0의
+/// 접근을 트랩하므로 이 태스크만 종료돼야 합니다.
+extern "C" fn child_fp_entry() -> ! {
+    FAULT_STAGE.store(2, Ordering::Relaxed);
+    // SAFETY: fmov d0, x1의 raw 인코딩(softfloat 타겟이라 니모닉 거부), 트랩이
+    //         목적이며 이 태스크가 종료돼야 함
+    unsafe { asm!(".inst 0x9e670020", in("x1") 0u64, options(nostack)) };
+    FAULT_SURVIVED.fetch_add(1, Ordering::Relaxed);
+    loop {
+        sys1(syscall::YIELD, 0);
     }
 }
 
@@ -608,6 +665,67 @@ extern "C" fn _start() -> ! {
     check("no reply count", SRV_COUNT.load(Ordering::Relaxed) == 8);
 
     put_str("root: ipc tests pass\n");
+
+    // 폴트 격리와 스레드 포인터 격리 (스택은 +16, +18 그래뉼, 아래 +15,
+    // +17은 가드)
+    let s6 = retype(ut, obj::FRAME);
+    check("retype stack 6", s6 > 0);
+    check("map stack 6", map(s6, TEST_VA + 16 * frame_size, perm::RW) == 0);
+    let s7 = retype(ut, obj::FRAME);
+    check("retype stack 7", s7 > 0);
+    check("map stack 7", map(s7, TEST_VA + 18 * frame_size, perm::RW) == 0);
+    let tcb_fault = retype(ut, obj::TCB);
+    let tcb_fp = retype(ut, obj::TCB);
+    check("retype fault tcbs", tcb_fault > 0 && tcb_fp > 0);
+    let entry_fault = child_fault_entry as usize as u64;
+    let sp_fault = TEST_VA + 17 * frame_size;
+    check(
+        "configure misaligned entry",
+        tcb_configure(tcb_fault, entry_fault + 2, sp_fault, aspace) == err::BAD_VA,
+    );
+
+    // 자식의 폴트는 그 태스크만 종료해야 하고, 자식이 덮어쓴 TPIDR_EL0는
+    // 루트에 보이면 안 되며, 자식은 루트의 값이 아닌 0을 봐야 함
+    set_tpidr(ROOT_TPIDR);
+    check(
+        "configure tcb fault",
+        tcb_configure(tcb_fault, entry_fault, sp_fault, aspace) == 0,
+    );
+    check("resume tcb fault", tcb_resume(tcb_fault) == 0);
+    while FAULT_STAGE.load(Ordering::Relaxed) < 1 {
+        sys1(syscall::YIELD, 0);
+    }
+    check("child tpidr zeroed", CHILD_SAW_TPIDR.load(Ordering::Relaxed) == 0);
+    check("root tpidr isolated", get_tpidr() == ROOT_TPIDR);
+    check("root tpidrro zero", get_tpidrro() == 0);
+    // 양보하면 자식이 폴트를 내고 커널이 종료시킴, 살아 있으면 카운터가 오름
+    for _ in 0..4 {
+        sys1(syscall::YIELD, 0);
+    }
+    check("fault child killed", FAULT_SURVIVED.load(Ordering::Relaxed) == 0);
+    check("root tpidr after kill", get_tpidr() == ROOT_TPIDR);
+    check("dead tcb resume", tcb_resume(tcb_fault) == err::BAD_STATE);
+
+    // FP/SIMD 명령은 CPACR_EL1 트랩으로 그 태스크만 종료돼야 함
+    check(
+        "configure tcb fp",
+        tcb_configure(
+            tcb_fp,
+            child_fp_entry as usize as u64,
+            TEST_VA + 19 * frame_size,
+            aspace,
+        ) == 0,
+    );
+    check("resume tcb fp", tcb_resume(tcb_fp) == 0);
+    while FAULT_STAGE.load(Ordering::Relaxed) < 2 {
+        sys1(syscall::YIELD, 0);
+    }
+    for _ in 0..4 {
+        sys1(syscall::YIELD, 0);
+    }
+    check("fp child killed", FAULT_SURVIVED.load(Ordering::Relaxed) == 0);
+    set_tpidr(0);
+    put_str("root: fault isolation tests pass\n");
 
     // 무한 태스크: 양보 없이 돌아도 타이머 선점으로 루트가 복귀해야 함
     check(

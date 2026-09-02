@@ -366,6 +366,29 @@ extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
     }
 }
 
+/// EL0 동기 폴트의 격리 정책 함수입니다. (k0-arch가 링크 계약으로 호출)
+///
+/// 폴트는 그 태스크의 결함이므로 시스템을 세우지 않고 해당 태스크만
+/// 종료합니다(격리). 보류한 응답 자격 정리와 마지막 태스크의 fail-secure
+/// 파킹은 kill_current가 담당합니다. 폴트를 핸들러 태스크에 IPC로 전달하는
+/// 구조는 설계된 확장 지점입니다.
+///
+/// # Arguments
+/// `ctx` - 폴트 시점의 사용자 컨텍스트(ELR = 폴트 명령)
+/// `esr` - ESR_EL1 신드롬
+/// `far` - FAR_EL1(어보트 계열에서만 의미 있음)
+#[unsafe(no_mangle)]
+extern "C" fn k0_fault(ctx: &mut k0_arch::usermode::Context, esr: u64, far: u64) {
+    let mut con = EarlyCon;
+    let ec = k0_arch::vectors::ec_name((esr >> 26) & 0x3F);
+    let _ = writeln!(
+        con,
+        "k0: task fault {ec} (esr {esr:#x} elr {:#x} far {far:#x}), killing task",
+        ctx.elr
+    );
+    kill_current(&mut con)
+}
+
 /// 현재 태스크를 종료시키는 함수입니다. 마지막 태스크면 파킹합니다.
 ///
 /// 죽는 태스크가 보류한 응답 자격은 먼저 정리해 호출자가 NO_REPLY로
@@ -409,12 +432,13 @@ extern "C" fn k0_preempt() {
 ///
 /// # Arguments
 /// `slot` - 재분류된 TCB의 슬롯(x0)
-/// `entry` - 진입점 VA(x1)
+/// `entry` - 진입점 VA(x1, 4바이트 정렬)
 /// `stack` - 스택 최상단 VA(x2, 16바이트 정렬)
 /// `aspace` - AddrSpace 슬롯(x3)
 fn sys_tcb_configure(slot: u64, entry: u64, stack: u64, aspace: u64) -> i64 {
     let g = k0_mm::GRANULE as u64;
-    if entry < g || entry >= 1u64 << 48 {
+    // 비정렬 진입점은 첫 명령에서 PC 정렬 폴트가 되므로 구성 시점에 거부
+    if entry % 4 != 0 || entry < g || entry >= 1u64 << 48 {
         return k0_abi::err::BAD_VA;
     }
     if stack % 16 != 0 || stack < g || stack > 1u64 << 48 {

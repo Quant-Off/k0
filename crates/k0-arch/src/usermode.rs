@@ -4,29 +4,37 @@
 //! 사용자 레지스터 컨텍스트([Context])의 배치를 정의하고, 벡터 테이블의
 //! EL0 경로(`vectors.S`의 `__lower_common` / `__user_restore`)가 쓰는
 //! `__current_context` 포인터를 관리합니다. EL0 동기 예외는 svc(시스템 콜)와
-//! WFx(양보로 취급)만 복귀 가능하고, 그 외(폴트)는 fail-secure 진단으로
-//! 수렴합니다. 시스템 콜의 의미는 커널 바이너리가 `k0_syscall`로 정의합니다.
+//! WFx(양보로 취급)만 복귀 가능하고, 그 외(폴트)는 커널 바이너리의 격리
+//! 정책 `k0_fault`로 넘깁니다. 시스템 콜의 의미는 커널 바이너리가
+//! `k0_syscall`로 정의합니다. 컨텍스트에는 범용 레지스터 외에 EL0가 보는
+//! 스레드 포인터(`TPIDR_EL0` / `TPIDRRO_EL0`)도 포함되어 태스크 사이에
+//! 레지스터 값이 새지 않습니다. FP/SIMD 레지스터는 컨텍스트에 없으며
+//! 대신 `CPACR_EL1`이 EL0의 접근을 트랩합니다(진입 페이즈 0에서 강제).
 //!
 //! # Errors
-//! EL0 폴트는 태스크를 살리지 않고 신드롬을 출력한 채 정지합니다. 폴트를
-//! IPC로 핸들러 태스크에 전달하는 구조는 설계된 확장 지점입니다.
+//! EL0 폴트는 그 태스크의 결함이므로 시스템을 세우지 않고 `k0_fault`가
+//! 해당 태스크만 종료합니다. 폴트를 IPC로 핸들러 태스크에 전달하는 구조는
+//! 설계된 확장 지점입니다.
 
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// EL0 예외 진입 시 벡터가 저장하는 사용자 레지스터 컨텍스트 구조체입니다.
 ///
-/// 필드 오프셋(x: 0..248, sp: 248, elr: 256, spsr: 264)은 `vectors.S`의
-/// `__lower_common` / `__user_restore`와 반드시 일치해야 합니다.
+/// 필드 오프셋(x: 0..248, sp: 248, elr: 256, spsr: 264, tpidr: 272,
+/// tpidrro: 280)은 `vectors.S`의 `__lower_common` / `__user_restore`와
+/// 반드시 일치해야 합니다.
 #[repr(C)]
 pub struct Context {
     pub x: [u64; 31],
     pub sp: u64,
     pub elr: u64,
     pub spsr: u64,
+    pub tpidr: u64,
+    pub tpidrro: u64,
 }
 
-const _: () = assert!(/*core::mem::*/size_of::<Context>() == 272);
+const _: () = assert!(/*core::mem::*/size_of::<Context>() == 288);
 
 impl Context {
     /// 소거된 컨텍스트를 만드는 함수입니다.
@@ -36,6 +44,8 @@ impl Context {
             sp: 0,
             elr: 0,
             spsr: 0,
+            tpidr: 0,
+            tpidrro: 0,
         }
     }
 }
@@ -51,6 +61,16 @@ unsafe extern "C" {
     /// # Safety
     /// `ctx`는 `__current_context`가 가리키는 유효한 컨텍스트입니다.
     fn k0_syscall(ctx: &mut Context);
+
+    /// EL0 동기 폴트의 격리 정책, 커널 바이너리가 정의함 (링크 계약)
+    ///
+    /// svc와 WFx를 제외한 모든 EL0 동기 예외(어보트, 미정의 명령, 트랩된
+    /// 시스템 레지스터 접근, FP/SIMD 접근, 정렬 폴트, brk 등)가 여기로 옵니다.
+    ///
+    /// # Safety
+    /// `ctx`는 `__current_context`가 가리키는 유효한 컨텍스트이고 `esr` /
+    /// `far`는 벡터 진입 직후 읽은 신드롬입니다.
+    fn k0_fault(ctx: &mut Context, esr: u64, far: u64);
 }
 
 /// 벡터가 저장/복원할 현재 태스크 컨텍스트를 지정하는 함수입니다.
@@ -100,8 +120,14 @@ extern "C" fn el0_sync(ctx: &mut Context) {
         0x15 => unsafe { k0_syscall(ctx) },
         // EL0의 WFI/WFE 트랩(SCTLR nTWI/nTWE=0): 양보로 취급하고 다음 명령으로
         0x01 => ctx.elr += 4,
-        // 그 외 동기 예외(폴트)는 fail-secure 진단으로 정지
-        _ => crate::vectors::exception_fatal(8),
+        // 그 외 동기 예외(폴트)는 그 태스크의 결함이므로 커널의 격리 정책으로
+        _ => {
+            let far: u64;
+            // SAFETY: FAR_EL1 읽기는 부작용이 없음
+            unsafe { asm!("mrs {}, far_el1", out(reg) far, options(nomem, nostack)) };
+            // SAFETY: ctx는 벡터가 방금 저장한 현재 컨텍스트이고 신드롬은 방금 읽음
+            unsafe { k0_fault(ctx, esr, far) }
+        }
     }
 }
 
