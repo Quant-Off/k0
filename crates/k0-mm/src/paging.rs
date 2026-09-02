@@ -389,10 +389,13 @@ pub fn table_pool_usage() -> (usize, usize) {
 
 /// 변환 레지스터를 설정하고 SCTLR_EL1로 MMU를 켜는 함수입니다.
 ///
+/// I-캐시를 켜기 전에 전체 무효화(`ic iallu`)해 부트로더가 남긴 항목을
+/// 신뢰하지 않습니다.
+///
 /// # Safety
 /// 호출 시점의 PC와 SP가 identity 매핑에 포함돼 있어야 하며, 부트 경로에서
-/// 단 한 번만 호출해야 합니다. 실 하드웨어에서는 진입 전 캐시가 무효화돼
-/// 있어야 합니다. (m1n1은 페이로드 진입 전에 이를 보장)
+/// 단 한 번만 호출해야 합니다. 실 하드웨어에서는 진입 전 D-캐시가 클린/
+/// 무효화돼 있어야 합니다. (m1n1은 페이로드 진입 전에 이를 보장)
 unsafe fn switch_on(ttbr0: u64, ttbr1: u64, tcr: u64) {
     let mut sctlr: u64;
     // SAFETY: 시스템 레지스터 읽기, 부작용 없음
@@ -408,6 +411,7 @@ unsafe fn switch_on(ttbr0: u64, ttbr1: u64, tcr: u64) {
             "msr ttbr1_el1, {t1}",
             "dsb ishst",
             "tlbi vmalle1",
+            "ic iallu",
             "dsb ish",
             "isb",
             "msr sctlr_el1, {sctlr}",
