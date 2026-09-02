@@ -131,6 +131,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     for r in bootinfo.reserved() {
         let _ = writeln!(con, "k0: dtb reserved {:#x} + {:#x}", r.base, r.size);
     }
+    check_memory_map(&mut con, &bootinfo);
 
     // 루트 태스크 무결성(손상) 검사: 빌드 및 적재 경로의 변형을 걸러내는 단계
     // 커널 이미지 자체를 수정할 수 있는 공격자는 부트 체인의 커널 서명
@@ -761,26 +762,13 @@ fn enable_mmu(con: &mut EarlyCon, dtb: &Range<usize>) {
     let stack_top = &raw const __boot_stack_top as u64;
     let granule = k0_mm::GRANULE as u64;
 
-    let uart = k0_arch::earlycon::MMIO_BASE as u64;
-    #[cfg(feature = "plat-virt")]
-    let devices = {
-        use k0_arch::irq::gic;
-        [
-            uart..uart + granule,
-            gic::GICD_BASE..gic::GICD_BASE + gic::GICD_SIZE,
-            gic::GICR_BASE..gic::GICR_BASE + gic::GICR_SIZE,
-        ]
-    };
-    #[cfg(feature = "plat-apple")]
-    let devices = [uart..uart + granule, 0..0, 0..0]; // AIC는 필요해질 때 추가 ㄱㄱ
-
     let layout = k0_mm::KernelLayout {
         text: text_start..rodata_start,
         rodata: rodata_start..data_start,
         // 두 구간 사이의 가드 페이지는 의도적으로 매핑안함
         rw: [data_start..stack_bottom - granule, stack_bottom..stack_top],
         dtb: dtb.start as u64..dtb.end as u64,
-        devices,
+        devices: device_windows(),
     };
 
     match k0_mm::enable_paging(&layout) {
@@ -792,6 +780,54 @@ fn enable_mmu(con: &mut EarlyCon, dtb: &Range<usize>) {
             con.put_hex(e as u64);
             con.put_str("\n");
             park()
+        }
+    }
+}
+
+/// 커널이 디바이스로 매핑하는 MMIO 창(플랫폼 고정 주소)을 주는 함수입니다.
+///
+/// 진입 페이즈 1의 디바이스 매핑과 DTB 메모리 맵 검증이 같은 목록을 씁니다.
+/// 빈 범위(start == end)는 자리 표시자입니다.
+fn device_windows() -> [Range<u64>; 3] {
+    let uart = k0_arch::earlycon::MMIO_BASE as u64;
+    let granule = k0_mm::GRANULE as u64;
+    #[cfg(feature = "plat-virt")]
+    {
+        use k0_arch::irq::gic;
+        [
+            uart..uart + granule,
+            gic::GICD_BASE..gic::GICD_BASE + gic::GICD_SIZE,
+            gic::GICR_BASE..gic::GICR_BASE + gic::GICR_SIZE,
+        ]
+    }
+    #[cfg(feature = "plat-apple")]
+    [uart..uart + granule, 0..0, 0..0] // AIC는 필요해질 때 추가 ㄱㄱ
+}
+
+/// DTB 메모리 맵이 커널의 MMIO 창과 겹치지 않는지 검증하는 함수입니다.
+///
+/// 메모리 노드는 그대로 untyped가 되어 EL0에 매핑될 수 있으므로, MMIO를
+/// 메모리라고 주장하는 DTB는 사용자 공간에 디바이스 접근을 열어 주는
+/// 권한 확대입니다. 제로 트러스트 원칙대로 자원 축소가 아닌 확대는
+/// 거부합니다.
+///
+/// # Errors
+/// 겹침이 있으면 부트 정보를 신뢰할 수 없으므로 fail-secure 파킹합니다
+fn check_memory_map(con: &mut EarlyCon, bootinfo: &k0_boot::BootInfo) {
+    for dev in device_windows() {
+        if dev.end <= dev.start {
+            continue;
+        }
+        for m in bootinfo.memory() {
+            // 파서가 base + size 오버플로를 이미 거부함
+            if m.base < dev.end && dev.start < m.base + m.size {
+                let _ = writeln!(
+                    con,
+                    "k0: dtb memory {:#x} + {:#x} overlaps device window {:#x}",
+                    m.base, m.size, dev.start
+                );
+                park()
+            }
         }
     }
 }
