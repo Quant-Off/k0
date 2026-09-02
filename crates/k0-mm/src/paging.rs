@@ -181,27 +181,51 @@ impl Pool {
         Ok(i)
     }
 
+    /// 페이지 하나를 매핑하는 함수입니다. 실패하면 이 호출이 만든 중간
+    /// 테이블과 링크를 전부 되돌려 풀 상태를 호출 전과 같게 유지합니다.
+    ///
+    /// 되돌리기가 없으면 실패한 매핑(재분류 경로의 별칭 매핑 등)이 풀을
+    /// 조금씩 갉아먹어 사용자가 커널 정적 자원을 소모시키는 경로가 됩니다.
     fn map_page(&mut self, root: usize, va: u64, pa: u64, attrs: u64) -> Result<(), MmuError> {
-        let mut t = root;
-        for level in 0..3 {
-            let idx = index(va, level);
-            let entry = self.tables[t].0[idx];
-            t = if entry == 0 {
-                let child = self.alloc()?;
-                self.tables[t].0[idx] = self.pa(child) | DESC_TABLE;
-                child
-            } else if entry & 0b11 == DESC_TABLE {
-                self.index_of(entry & ADDR_MASK)?
-            } else {
-                return Err(MmuError::BadTable);
-            };
+        let used_before = self.used;
+        // 이번 호출이 새로 쓴 링크(부모 테이블, 인덱스), 레벨당 최대 하나
+        let mut links: [(usize, usize); 3] = [(0, 0); 3];
+        let mut link_count = 0;
+
+        let r = (|| {
+            let mut t = root;
+            for level in 0..3 {
+                let idx = index(va, level);
+                let entry = self.tables[t].0[idx];
+                t = if entry == 0 {
+                    let child = self.alloc()?;
+                    self.tables[t].0[idx] = self.pa(child) | DESC_TABLE;
+                    links[link_count] = (t, idx);
+                    link_count += 1;
+                    child
+                } else if entry & 0b11 == DESC_TABLE {
+                    self.index_of(entry & ADDR_MASK)?
+                } else {
+                    return Err(MmuError::BadTable);
+                };
+            }
+            let idx = index(va, 3);
+            if self.tables[t].0[idx] != 0 {
+                return Err(MmuError::Overlap);
+            }
+            self.tables[t].0[idx] = pa | attrs;
+            Ok(())
+        })();
+
+        if r.is_err() {
+            // 새 테이블은 링크 외에 기록된 것이 없으므로 링크만 지우면 다시
+            // 소거 상태의 풀 항목이 됨
+            for &(parent, idx) in &links[..link_count] {
+                self.tables[parent].0[idx] = 0;
+            }
+            self.used = used_before;
         }
-        let idx = index(va, 3);
-        if self.tables[t].0[idx] != 0 {
-            return Err(MmuError::Overlap);
-        }
-        self.tables[t].0[idx] = pa | attrs;
-        Ok(())
+        r
     }
 
     fn map_range(&mut self, root: usize, va: u64, pa: u64, len: u64, perm: Perm) -> Result<(), MmuError> {
@@ -353,12 +377,25 @@ pub fn map_kernel_window(window: Range<u64>) -> Result<(), MmuError> {
     Ok(())
 }
 
+/// 커널 정적 페이지 테이블 풀의 (사용량, 전체) 쌍을 주는 함수입니다.
+///
+/// 부트 로그와 감사에서 재분류 별칭 매핑의 여유를 확인하는 용도입니다.
+pub fn table_pool_usage() -> (usize, usize) {
+    // SAFETY: 읽기만 하고, 호출 지점(부트 시퀀스 또는 시스템 콜 컨텍스트)은
+    //         단일 코어라 동시 변이가 없음
+    let pool = unsafe { &*POOL.0.get() };
+    (pool.used, POOL_LEN)
+}
+
 /// 변환 레지스터를 설정하고 SCTLR_EL1로 MMU를 켜는 함수입니다.
+///
+/// I-캐시를 켜기 전에 전체 무효화(`ic iallu`)해 부트로더가 남긴 항목을
+/// 신뢰하지 않습니다.
 ///
 /// # Safety
 /// 호출 시점의 PC와 SP가 identity 매핑에 포함돼 있어야 하며, 부트 경로에서
-/// 단 한 번만 호출해야 합니다. 실 하드웨어에서는 진입 전 캐시가 무효화돼
-/// 있어야 합니다. (m1n1은 페이로드 진입 전에 이를 보장)
+/// 단 한 번만 호출해야 합니다. 실 하드웨어에서는 진입 전 D-캐시가 클린/
+/// 무효화돼 있어야 합니다. (m1n1은 페이로드 진입 전에 이를 보장)
 unsafe fn switch_on(ttbr0: u64, ttbr1: u64, tcr: u64) {
     let mut sctlr: u64;
     // SAFETY: 시스템 레지스터 읽기, 부작용 없음
@@ -374,6 +411,7 @@ unsafe fn switch_on(ttbr0: u64, ttbr1: u64, tcr: u64) {
             "msr ttbr1_el1, {t1}",
             "dsb ishst",
             "tlbi vmalle1",
+            "ic iallu",
             "dsb ish",
             "isb",
             "msr sctlr_el1, {sctlr}",

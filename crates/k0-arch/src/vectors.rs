@@ -1,10 +1,11 @@
 //! 진입 페이즈 2의 예외 벡터 설치와 fail-secure 예외 진단 모듈입니다.
 //!
 //! # Features
-//! `VBAR_EL1`에 벡터 테이블(`vectors.S`)을 설치합니다. 현재 단계에서는 모든
-//! 예외가 신드롬(ESR/ELR/FAR/SPSR)을 출력하고 정지하는 fatal 경로입니다.
-//! 벡터가 설치되기 전의 폴트는 진단 불가능한 행이 되므로 부트 경로에서
-//! 최대한 일찍 설치해야 합니다. IRQ 분배는 GIC 초기화와 함께 확장됩니다.
+//! `VBAR_EL1`에 벡터 테이블(`vectors.S`)을 설치합니다. 커널(EL1)의 동기
+//! 예외와 SError, 지원하지 않는 진입 상태는 신드롬(ESR/ELR/FAR/SPSR)을
+//! 출력하고 정지하는 fatal 경로입니다. EL0 경로는 `usermode`와 `irq`가
+//! 처리합니다. 벡터가 설치되기 전의 폴트는 진단 불가능한 행이 되므로 부트
+//! 경로에서 최대한 일찍 설치해야 합니다.
 
 use core::arch::asm;
 
@@ -54,9 +55,16 @@ fn kind_name(kind: u64) -> &'static str {
     }
 }
 
-fn ec_name(ec: u64) -> &'static str {
+/// ESR의 예외 클래스(EC)를 진단용 이름으로 바꾸는 함수입니다.
+///
+/// # Arguments
+/// `ec` - `ESR_ELx[31:26]`
+pub fn ec_name(ec: u64) -> &'static str {
     match ec {
         0x00 => "unknown",
+        0x01 => "wfx",
+        0x07 => "fp-simd",
+        0x0E => "illegal-state",
         0x15 => "svc64",
         0x18 => "sysreg",
         0x20 => "iabort-lower",
@@ -67,6 +75,7 @@ fn ec_name(ec: u64) -> &'static str {
         0x26 => "sp-align",
         0x2F => "serror",
         0x30..=0x34 => "debug",
+        0x3C => "brk",
         _ => "?",
     }
 }

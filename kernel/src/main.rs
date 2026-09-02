@@ -131,6 +131,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     for r in bootinfo.reserved() {
         let _ = writeln!(con, "k0: dtb reserved {:#x} + {:#x}", r.base, r.size);
     }
+    check_memory_map(&mut con, &bootinfo);
 
     // 루트 태스크 무결성(손상) 검사: 빌드 및 적재 경로의 변형을 걸러내는 단계
     // 커널 이미지 자체를 수정할 수 있는 공격자는 부트 체인의 커널 서명
@@ -201,6 +202,8 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         let _ = writeln!(con, "k0: window map failed: {e:?}");
         park()
     }
+    let (pool_used, pool_len) = k0_mm::table_pool_usage();
+    let _ = writeln!(con, "k0: kernel table pool {pool_used}/{pool_len}");
     let mut frames = match k0_mm::FrameAlloc::new(window.clone()) {
         Ok(f) => f,
         Err(e) => {
@@ -334,10 +337,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
 extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
     let mut con = EarlyCon;
     match ctx.x[8] {
-        k0_abi::syscall::DEBUG_PUTC => {
-            con.put_byte(ctx.x[0] as u8);
-            ctx.x[0] = 0;
-        }
+        k0_abi::syscall::DEBUG_PUTC => ctx.x[0] = sys_putc(ctx.x[0], ctx.x[1]) as u64,
         k0_abi::syscall::YIELD => {
             ctx.x[0] = 0;
             // SAFETY: 벡터가 컨텍스트 저장을 마친 시스템 콜 컨텍스트임
@@ -348,7 +348,9 @@ extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
             kill_current(&mut con)
         }
         k0_abi::syscall::RETYPE => ctx.x[0] = sys_retype(ctx.x[0], ctx.x[1]) as u64,
-        k0_abi::syscall::MAP => ctx.x[0] = sys_map(ctx.x[0], ctx.x[1], ctx.x[2]) as u64,
+        k0_abi::syscall::MAP => {
+            ctx.x[0] = sys_map(ctx.x[0], ctx.x[1], ctx.x[2], ctx.x[3]) as u64
+        }
         k0_abi::syscall::TCB_CONFIGURE => {
             ctx.x[0] = sys_tcb_configure(ctx.x[0], ctx.x[1], ctx.x[2], ctx.x[3]) as u64
         }
@@ -366,6 +368,29 @@ extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
     }
 }
 
+/// EL0 동기 폴트의 격리 정책 함수입니다. (k0-arch가 링크 계약으로 호출)
+///
+/// 폴트는 그 태스크의 결함이므로 시스템을 세우지 않고 해당 태스크만
+/// 종료합니다(격리). 보류한 응답 자격 정리와 마지막 태스크의 fail-secure
+/// 파킹은 kill_current가 담당합니다. 폴트를 핸들러 태스크에 IPC로 전달하는
+/// 구조는 설계된 확장 지점입니다.
+///
+/// # Arguments
+/// `ctx` - 폴트 시점의 사용자 컨텍스트(ELR = 폴트 명령)
+/// `esr` - ESR_EL1 신드롬
+/// `far` - FAR_EL1(어보트 계열에서만 의미 있음)
+#[unsafe(no_mangle)]
+extern "C" fn k0_fault(ctx: &mut k0_arch::usermode::Context, esr: u64, far: u64) {
+    let mut con = EarlyCon;
+    let ec = k0_arch::vectors::ec_name((esr >> 26) & 0x3F);
+    let _ = writeln!(
+        con,
+        "k0: task fault {ec} (esr {esr:#x} elr {:#x} far {far:#x}), killing task",
+        ctx.elr
+    );
+    kill_current(&mut con)
+}
+
 /// 현재 태스크를 종료시키는 함수입니다. 마지막 태스크면 파킹합니다.
 ///
 /// 죽는 태스크가 보류한 응답 자격은 먼저 정리해 호출자가 NO_REPLY로
@@ -373,12 +398,38 @@ extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
 fn kill_current(con: &mut EarlyCon) {
     // SAFETY: 벡터가 컨텍스트 저장을 마친 시스템 콜 컨텍스트임
     unsafe {
-        k0_ipc::abort_reply(&mut *k0_sched::current());
+        k0_ipc::abort_reply(k0_sched::current());
         if !k0_sched::exit_current() {
             let _ = writeln!(con, "k0: all tasks exited");
             park()
         }
     }
+}
+
+/// DEBUG_PUTC 시스템 콜 처리 함수입니다.
+///
+/// Console 케이퍼빌리티 제시가 필요합니다(암묵 권한 없음). 출력 가능한
+/// ASCII와 개행만 그대로 내보내고 나머지 바이트는 `?`로 바꿔 터미널 제어
+/// 문자 주입을 막습니다.
+///
+/// # Arguments
+/// `slot` - Console 슬롯(x0)
+/// `byte` - 출력할 바이트(x1, 하위 8비트)
+fn sys_putc(slot: u64, byte: u64) -> i64 {
+    let Ok(slot) = usize::try_from(slot) else {
+        return k0_abi::err::BAD_SLOT;
+    };
+    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
+    let cnode = unsafe { k0_cap::root_mut() };
+    match cnode.cap(slot) {
+        Some(k0_cap::Cap::Console) => {}
+        Some(_) => return k0_abi::err::BAD_CAP,
+        None => return k0_abi::err::BAD_SLOT,
+    }
+    let b = byte as u8;
+    let safe = if b == b'\n' || (0x20..=0x7E).contains(&b) { b } else { b'?' };
+    EarlyCon.put_byte(safe);
+    0
 }
 
 /// IPC가 교착(전 태스크 블록)을 보고하면 fail-secure 파킹하는 함수입니다.
@@ -409,12 +460,13 @@ extern "C" fn k0_preempt() {
 ///
 /// # Arguments
 /// `slot` - 재분류된 TCB의 슬롯(x0)
-/// `entry` - 진입점 VA(x1)
+/// `entry` - 진입점 VA(x1, 4바이트 정렬)
 /// `stack` - 스택 최상단 VA(x2, 16바이트 정렬)
 /// `aspace` - AddrSpace 슬롯(x3)
 fn sys_tcb_configure(slot: u64, entry: u64, stack: u64, aspace: u64) -> i64 {
     let g = k0_mm::GRANULE as u64;
-    if entry < g || entry >= 1u64 << 48 {
+    // 비정렬 진입점은 첫 명령에서 PC 정렬 폴트가 되므로 구성 시점에 거부
+    if entry % 4 != 0 || entry < g || entry >= 1u64 << 48 {
         return k0_abi::err::BAD_VA;
     }
     if stack % 16 != 0 || stack < g || stack > 1u64 << 48 {
@@ -534,19 +586,26 @@ fn sys_retype(slot: u64, kind: u64) -> i64 {
 ///
 /// 케이퍼빌리티 종류가 동작을 결정합니다. Frame은 리프 매핑(RO/RW만, 실행
 /// 매핑은 만들 수 없음), PageTable은 경로의 첫 빈 레벨에 설치입니다. 대상
-/// 주소 공간은 현재 설치된 TTBR0(단일 태스크 = 루트 태스크)입니다.
+/// 주소 공간은 제시한 AddrSpace 케이퍼빌리티로만 정해지며 현재 설치된
+/// TTBR0는 참조하지 않습니다(암묵 권한 배제). 현재 공간이 아닌 테이블에
+/// 새 항목을 추가하는 것도 무효 항목의 유효화라 TLB 무효화가 필요 없습니다.
 ///
 /// # Arguments
 /// `slot` - 케이퍼빌리티 슬롯(x0)
 /// `va` - 사용자 VA(x1)
 /// `perm` - Frame 권한(x2, PageTable은 무시)
-fn sys_map(slot: u64, va: u64, perm: u64) -> i64 {
-    let Ok(slot) = usize::try_from(slot) else {
+/// `aspace` - 대상 AddrSpace 슬롯(x3)
+fn sys_map(slot: u64, va: u64, perm: u64, aspace: u64) -> i64 {
+    let (Ok(slot), Ok(aspace)) = (usize::try_from(slot), usize::try_from(aspace)) else {
         return k0_abi::err::BAD_SLOT;
     };
     // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
     let cnode = unsafe { k0_cap::root_mut() };
-    let root = k0_mm::current_user_root();
+    let root = match cnode.cap(aspace) {
+        Some(k0_cap::Cap::AddrSpace { root_pa }) => root_pa,
+        Some(_) => return k0_abi::err::BAD_CAP,
+        None => return k0_abi::err::BAD_SLOT,
+    };
     match cnode.cap_mut(slot) {
         Some(k0_cap::Cap::Frame { base, mapped }) => {
             if *mapped {
@@ -646,6 +705,11 @@ fn write_bootinfo(frame_pa: u64, cnode: &k0_cap::CNode) {
                     base: 0,
                     size: 0,
                 },
+                k0_cap::Cap::Console => CapDesc {
+                    kind: cap_kind::CONSOLE,
+                    base: 0,
+                    size: 0,
+                },
                 k0_cap::Cap::Untyped { base, size, .. } => CapDesc {
                     kind: cap_kind::UNTYPED,
                     base: *base,
@@ -700,26 +764,13 @@ fn enable_mmu(con: &mut EarlyCon, dtb: &Range<usize>) {
     let stack_top = &raw const __boot_stack_top as u64;
     let granule = k0_mm::GRANULE as u64;
 
-    let uart = k0_arch::earlycon::MMIO_BASE as u64;
-    #[cfg(feature = "plat-virt")]
-    let devices = {
-        use k0_arch::irq::gic;
-        [
-            uart..uart + granule,
-            gic::GICD_BASE..gic::GICD_BASE + gic::GICD_SIZE,
-            gic::GICR_BASE..gic::GICR_BASE + gic::GICR_SIZE,
-        ]
-    };
-    #[cfg(feature = "plat-apple")]
-    let devices = [uart..uart + granule, 0..0, 0..0]; // AIC는 필요해질 때 추가 ㄱㄱ
-
     let layout = k0_mm::KernelLayout {
         text: text_start..rodata_start,
         rodata: rodata_start..data_start,
         // 두 구간 사이의 가드 페이지는 의도적으로 매핑안함
         rw: [data_start..stack_bottom - granule, stack_bottom..stack_top],
         dtb: dtb.start as u64..dtb.end as u64,
-        devices,
+        devices: device_windows(),
     };
 
     match k0_mm::enable_paging(&layout) {
@@ -731,6 +782,54 @@ fn enable_mmu(con: &mut EarlyCon, dtb: &Range<usize>) {
             con.put_hex(e as u64);
             con.put_str("\n");
             park()
+        }
+    }
+}
+
+/// 커널이 디바이스로 매핑하는 MMIO 창(플랫폼 고정 주소)을 주는 함수입니다.
+///
+/// 진입 페이즈 1의 디바이스 매핑과 DTB 메모리 맵 검증이 같은 목록을 씁니다.
+/// 빈 범위(start == end)는 자리 표시자입니다.
+fn device_windows() -> [Range<u64>; 3] {
+    let uart = k0_arch::earlycon::MMIO_BASE as u64;
+    let granule = k0_mm::GRANULE as u64;
+    #[cfg(feature = "plat-virt")]
+    {
+        use k0_arch::irq::gic;
+        [
+            uart..uart + granule,
+            gic::GICD_BASE..gic::GICD_BASE + gic::GICD_SIZE,
+            gic::GICR_BASE..gic::GICR_BASE + gic::GICR_SIZE,
+        ]
+    }
+    #[cfg(feature = "plat-apple")]
+    [uart..uart + granule, 0..0, 0..0] // AIC는 필요해질 때 추가 ㄱㄱ
+}
+
+/// DTB 메모리 맵이 커널의 MMIO 창과 겹치지 않는지 검증하는 함수입니다.
+///
+/// 메모리 노드는 그대로 untyped가 되어 EL0에 매핑될 수 있으므로, MMIO를
+/// 메모리라고 주장하는 DTB는 사용자 공간에 디바이스 접근을 열어 주는
+/// 권한 확대입니다. 제로 트러스트 원칙대로 자원 축소가 아닌 확대는
+/// 거부합니다.
+///
+/// # Errors
+/// 겹침이 있으면 부트 정보를 신뢰할 수 없으므로 fail-secure 파킹합니다
+fn check_memory_map(con: &mut EarlyCon, bootinfo: &k0_boot::BootInfo) {
+    for dev in device_windows() {
+        if dev.end <= dev.start {
+            continue;
+        }
+        for m in bootinfo.memory() {
+            // 파서가 base + size 오버플로를 이미 거부함
+            if m.base < dev.end && dev.start < m.base + m.size {
+                let _ = writeln!(
+                    con,
+                    "k0: dtb memory {:#x} + {:#x} overlaps device window {:#x}",
+                    m.base, m.size, dev.start
+                );
+                park()
+            }
         }
     }
 }

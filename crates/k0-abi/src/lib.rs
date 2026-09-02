@@ -16,7 +16,11 @@ pub const KERNEL_VA_OFFSET: u64 = 0xFFFF_0000_0000_0000;
 /// 시스템 콜 번호(x8) 모듈입니다. 인자는 x0-x5, 반환값은 x0을 사용하고
 /// IPC 수신 계열은 x1-x5로도 돌려받습니다.
 pub mod syscall {
-    /// 바이트 하나를 커널 콘솔로 출력, x0 = 바이트(하위 8비트만 사용)
+    /// 바이트 하나를 커널 디버그 콘솔로 출력
+    ///
+    /// x0 = Console 슬롯, x1 = 바이트(하위 8비트만 사용). 출력 가능한
+    /// ASCII(0x20-0x7E)와 개행만 그대로 나가고 그 외 바이트(터미널 제어
+    /// 문자 등)는 `?`로 바뀝니다. 성공 시 x0 = 0, 실패 시 음수 에러
     pub const DEBUG_PUTC: u64 = 0;
     /// 스케줄러 양보(현재는 단일 태스크라 즉시 복귀)
     pub const YIELD: u64 = 1;
@@ -27,17 +31,20 @@ pub mod syscall {
     /// x0 = untyped 슬롯, x1 = 오브젝트 타입([super::obj]). 성공 시 x0 =
     /// 새 케이퍼빌리티의 슬롯, 실패 시 음수 에러([super::err])
     pub const RETYPE: u64 = 3;
-    /// 케이퍼빌리티를 현재 주소 공간에 매핑
+    /// 케이퍼빌리티를 AddrSpace 케이퍼빌리티가 가리키는 주소 공간에 매핑
     ///
-    /// x0 = 슬롯, x1 = 사용자 VA, x2 = 권한([super::perm]). Frame은 리프
-    /// 매핑을 만들고, PageTable은 x1 경로의 첫 빈 레벨에 설치되며 x2를
-    /// 무시합니다. 성공 시 x0 = 0, 실패 시 음수 에러([super::err])
+    /// x0 = 슬롯, x1 = 사용자 VA, x2 = 권한([super::perm]), x3 = AddrSpace
+    /// 슬롯. Frame은 리프 매핑을 만들고, PageTable은 x1 경로의 첫 빈
+    /// 레벨에 설치되며 x2를 무시합니다. 대상 주소 공간은 언제나 제시한
+    /// 케이퍼빌리티로만 정해집니다(현재 실행 중인 주소 공간이라는 암묵
+    /// 권한 없음). 성공 시 x0 = 0, 실패 시 음수 에러([super::err])
     pub const MAP: u64 = 4;
     /// 재분류된 TCB의 진입 컨텍스트 구성
     ///
-    /// x0 = TCB 슬롯, x1 = 진입점 VA, x2 = 스택 최상단 VA(16바이트 정렬),
-    /// x3 = AddrSpace 슬롯. Inactive 상태에서 한 번만 허용됩니다. SPSR은
-    /// 커널이 EL0t로 강제합니다. 성공 시 x0 = 0, 실패 시 음수 에러
+    /// x0 = TCB 슬롯, x1 = 진입점 VA(4바이트 정렬), x2 = 스택 최상단
+    /// VA(16바이트 정렬), x3 = AddrSpace 슬롯. Inactive 상태에서 한 번만
+    /// 허용됩니다. SPSR과 스레드 포인터(TPIDR_EL0 / TPIDRRO_EL0 = 0)는
+    /// 커널이 강제합니다. 성공 시 x0 = 0, 실패 시 음수 에러
     pub const TCB_CONFIGURE: u64 = 5;
     /// 구성을 마친 TCB를 준비 큐에 넣어 실행 대상으로 만듦
     ///
@@ -170,5 +177,6 @@ pub mod bootinfo {
         pub const FRAME: u64 = 4;
         pub const PAGE_TABLE: u64 = 5;
         pub const ENDPOINT: u64 = 6;
+        pub const CONSOLE: u64 = 7;
     }
 }

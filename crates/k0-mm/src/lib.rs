@@ -17,8 +17,8 @@ pub mod paging;
 pub mod user;
 
 pub use paging::{
-    can_read, can_write, enable_paging, map_kernel_window, KernelLayout, Mmu, MmuError, GRANULE,
-    KERNEL_VA_OFFSET,
+    can_read, can_write, enable_paging, map_kernel_window, table_pool_usage, KernelLayout, Mmu,
+    MmuError, GRANULE, KERNEL_VA_OFFSET,
 };
 pub use user::{
     can_read_pan_checked, can_user_read, can_user_write, current_user_root, install_user_ttbr0,

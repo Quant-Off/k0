@@ -3,7 +3,8 @@
 // 커널이 실제로 쓰는 조합만 복귀 가능한 경로를 가집니다.
 //   - Current EL SP_ELx의 IRQ / FIQ: 호출자 보존 레지스터를 저장하고
 //     Rust 핸들러(irq_current / fiq_current)를 부른 뒤 eret로 복귀
-//   - Lower EL AArch64의 Sync / IRQ / FIQ: 사용자 컨텍스트 전체를
+//   - Lower EL AArch64의 Sync / IRQ / FIQ: 사용자 컨텍스트 전체(범용
+//     레지스터, sp_el0, elr, spsr, tpidr_el0, tpidrro_el0)를
 //     __current_context가 가리키는 TCB 컨텍스트에 저장하고 Rust 핸들러를
 //     부른 뒤 __user_restore로 EL0에 복귀 (진입 페이즈 3)
 //   - 그 외 벡터: fail-secure 진단 경로(exception_fatal)로 수렴,
@@ -120,6 +121,10 @@ __lower_common:
     stp     x2, x3, [x1, #248]          // 248: sp, 256: elr
     mrs     x2, spsr_el1
     str     x2, [x1, #264]
+    // EL0 스레드 포인터도 태스크별 상태라 함께 저장 (태스크 간 누설 차단)
+    mrs     x2, tpidr_el0
+    mrs     x3, tpidrro_el0
+    stp     x2, x3, [x1, #272]          // 272: tpidr_el0, 280: tpidrro_el0
     mov     x9, x0
     mov     x0, x1                      // 핸들러 인자 = 컨텍스트 포인터
     blr     x9
@@ -136,6 +141,9 @@ __user_restore:
     msr     elr_el1, x3
     ldr     x2, [x0, #264]
     msr     spsr_el1, x2
+    ldp     x2, x3, [x0, #272]
+    msr     tpidr_el0, x2
+    msr     tpidrro_el0, x3
     ldp     x2, x3, [x0, #16]
     ldp     x4, x5, [x0, #32]
     ldp     x6, x7, [x0, #48]

@@ -68,6 +68,10 @@ phase0_entry:
 el2_to_el1:
     mov     x1, xzr
     orr     x1, x1, #(1 << 31)          // HCR_EL2.RW=1: EL1은 AArch64 모드
+    // HCR_EL2.HCD=1: hvc를 EL1에서 미정의 명령으로 만듦. 커널은 hvc를 쓰지
+    // 않고 EL2에는 벡터(VBAR_EL2)가 없어 EL2로의 트랩은 진단 불가능한
+    // 행이 되므로, 잘못된 hvc가 EL1의 fatal 진단 경로로 오게 함
+    orr     x1, x1, #(1 << 29)
 
     // PAC 지원 코어면 EL1의 키 레지스터와 PAC 명령이 EL2로 트랩되지 않게 허용
     mrs     x2, ID_AA64ISAR1_EL1
@@ -100,16 +104,24 @@ el2_to_el1:
     eret
 
     //
-    // 4. EL1: SCTLR_EL1 정규화
+    // 4. EL1: SCTLR_EL1 / CPACR_EL1 정규화
     //
     // 진입 경로(EL1 직접 / EL2 강하)와 무관하게 부트로더가 남긴 상태를
-    // 신뢰하지 않고 기지(known) 상태로 통일합니다. RES1 비트만 세팅되고
-    // MMU/캐시 OFF, little-endian, EL0 WFx 트랩(nTWI/nTWE=0), EL0 DAIF
-    // 접근 차단(UMA=0). W^X와 MMU 구성은 진입 페이즈 1의 Rust 코드가
-    // 명시적으로 수행합니다.
+    // 신뢰하지 않고 기지(known) 상태로 통일합니다. RES1 비트 외에는 스택
+    // 정렬 검사(SA/SA0=1, EL1과 EL0 모두 sp가 16바이트 정렬이 아니면
+    // 즉시 폴트)만 켜고 MMU/캐시 OFF, little-endian, EL0 WFx 트랩
+    // (nTWI/nTWE=0), EL0 DAIF 접근 차단(UMA=0). W^X와 MMU 구성은 진입
+    // 페이즈 1의 Rust 코드가 명시적으로 수행합니다.
+    //
+    // CPACR_EL1 = 0: FP/SIMD(FPEN), SVE(ZEN), SME(SMEN) 접근을 EL0/EL1
+    // 모두 트랩. 커널은 softfloat이고 태스크 컨텍스트에 벡터 레지스터
+    // 파일이 없으므로, 부트로더가 켜 두었더라도 EL0가 벡터 상태를 다른
+    // 태스크에 흘리지 못하게 명시적으로 내립니다. EL0의 사용은 폴트로
+    // 트랩되어 그 태스크만 종료됩니다.
 el1_entry:
-    ldr     x1, =0x30d00800
+    ldr     x1, =0x30d00818
     msr     SCTLR_EL1, x1
+    msr     CPACR_EL1, xzr
     isb
 
     //

@@ -48,6 +48,8 @@ pub enum Cap {
     RootTcb,
     /// 루트 태스크의 주소 공간(TTBR0 루트 테이블)
     AddrSpace { root_pa: u64 },
+    /// 커널 디버그 콘솔 출력 권한(부트 시점 정적 오브젝트)
+    Console,
     /// 재분류로 만든 태스크 제어 블록, 상태 머신은 오브젝트 안에 있음
     Tcb { base: u64 },
     /// 소유자가 재분류할 수 있는 미분류 물리 메모리
@@ -239,20 +241,35 @@ pub unsafe fn root_mut() -> &'static mut CNode {
 /// DTB의 물리 메모리 맵에서 예약 구간을 뺀 나머지를 untyped 케이퍼빌리티로
 /// 만듭니다. 예약 구간에는 커널 이미지/DTB/부트 윈도우와 함께 부트로더 및
 /// 펌웨어 예약 구간(FDT memreserve, /reserved-memory)이 전부 들어와야
-/// 합니다. 예약 구간끼리 겹쳐도 동작합니다(커서가 단조 전진).
+/// 합니다. 예약 구간끼리 겹쳐도 동작합니다(커서가 단조 전진). 메모리
+/// 구간끼리 겹치면 같은 물리 프레임이 두 untyped에 들어가 두 번
+/// 재분류될 수 있으므로 거부합니다.
 ///
 /// # Arguments
-/// `memory` - DTB가 보고한 물리 메모리 구간들
+/// `memory` - DTB가 보고한 물리 메모리 구간들(서로 겹치지 않아야 함)
 /// `reserved` - untyped에서 제외할 구간들
 /// `addr_space_root` - 루트 태스크 TTBR0 루트 테이블의 PA
 ///
 /// # Errors
-/// 구간 산술 위반은 `BadRegion`, 슬롯 부족은 `OutOfSlots`
+/// 구간 산술 위반과 메모리 구간 간 겹침은 `BadRegion`, 슬롯 부족은
+/// `OutOfSlots`
 pub fn bootstrap(
     memory: &[PhysRegion],
     reserved: &[PhysRegion],
     addr_space_root: u64,
 ) -> Result<&'static CNode, CapError> {
+    for (i, m) in memory.iter().enumerate() {
+        if m.size == 0 || m.base.checked_add(m.size).is_none() {
+            return Err(CapError::BadRegion);
+        }
+        if memory[..i]
+            .iter()
+            .any(|o| o.base < m.end() && m.base < o.end())
+        {
+            return Err(CapError::BadRegion);
+        }
+    }
+
     // SAFETY: 단일 부트 코어의 초기화 시퀀스에서 한 번만 도달함(순서는
     //         kernel_main이 강제), 반환 후에는 공유 참조만 존재함
     let cnode = unsafe { &mut *ROOT_CNODE.0.get() };
@@ -262,11 +279,9 @@ pub fn bootstrap(
     cnode.push(Cap::AddrSpace {
         root_pa: addr_space_root,
     })?;
+    cnode.push(Cap::Console)?;
 
     for m in memory {
-        if m.size == 0 || m.base.checked_add(m.size).is_none() {
-            return Err(CapError::BadRegion);
-        }
         push_untypeds(cnode, *m, reserved)?;
     }
     Ok(cnode)

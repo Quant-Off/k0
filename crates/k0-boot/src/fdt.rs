@@ -212,7 +212,9 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
     if version < SUPPORTED_VERSION || last_comp_version > SUPPORTED_VERSION {
         return Err(BootError::UnsupportedVersion);
     }
-    if off_struct % 4 != 0 {
+    // 구조 블록은 4바이트 토큰 열이라 시작과 크기 모두 4의 배수여야 함
+    // (크기가 어긋나면 마지막 토큰이 블록 끝을 넘어 걸치게 됨)
+    if off_struct % 4 != 0 || size_struct % 4 != 0 {
         return Err(BootError::BadHeader);
     }
     let struct_end = off_struct
@@ -278,7 +280,9 @@ fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
                 if depth > MAX_DEPTH {
                     return Err(BootError::TooDeep);
                 }
-                let rel = blob[off..struct_end]
+                let rel = blob
+                    .get(off..struct_end)
+                    .ok_or(BootError::BadStructure)?
                     .iter()
                     .position(|&b| b == 0)
                     .ok_or(BootError::BadStructure)?;
