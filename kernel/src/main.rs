@@ -396,7 +396,7 @@ extern "C" fn k0_fault(ctx: &mut k0_arch::usermode::Context, esr: u64, far: u64)
 fn kill_current(con: &mut EarlyCon) {
     // SAFETY: 벡터가 컨텍스트 저장을 마친 시스템 콜 컨텍스트임
     unsafe {
-        k0_ipc::abort_reply(&mut *k0_sched::current());
+        k0_ipc::abort_reply(k0_sched::current());
         if !k0_sched::exit_current() {
             let _ = writeln!(con, "k0: all tasks exited");
             park()

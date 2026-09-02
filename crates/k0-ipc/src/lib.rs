@@ -57,15 +57,18 @@ fn deliver(src: &Context, dst: &mut Context) {
 ///
 /// # Safety
 /// 시스템 콜/IRQ 컨텍스트(단일 코어, DAIF 마스크)에서만 호출해야 하고
-/// `holder`는 유효한 TCB여야 합니다.
-pub unsafe fn abort_reply(holder: &mut Tcb) {
-    let caller = holder.reply_to as *mut Tcb;
-    holder.reply_to = 0;
-    if caller.is_null() {
-        return;
-    }
-    // SAFETY: reply_to는 이 크레이트가 BlockedReply 상태의 유효한 TCB로만 기록함
+/// `holder`는 유효한 TCB여야 합니다. 호출자가 `holder`의 컨텍스트에 대한
+/// 가변 참조를 쥔 채 부를 수 있도록 raw 포인터를 받고 `reply_to` 필드만
+/// 건드립니다(컨텍스트와 겹치는 참조를 만들지 않음).
+pub unsafe fn abort_reply(holder: *mut Tcb) {
+    // SAFETY: 함수 계약대로 holder는 유효한 TCB이고 reply_to는 이 크레이트가
+    //         BlockedReply 상태의 유효한 TCB로만 기록함
     unsafe {
+        let caller = (*holder).reply_to as *mut Tcb;
+        (*holder).reply_to = 0;
+        if caller.is_null() {
+            return;
+        }
         (*caller).ctx.x[0] = k0_abi::err::NO_REPLY as u64;
         k0_sched::enqueue(caller);
     }
@@ -156,7 +159,7 @@ unsafe fn recv_inner(ctx: &mut Context, ep: *mut Endpoint, nonblock: bool) -> bo
             deliver(&(*snd).ctx, ctx);
             if (*snd).state == TaskState::BlockedCall {
                 let cur = k0_sched::current();
-                abort_reply(&mut *cur);
+                abort_reply(cur);
                 (*snd).state = TaskState::BlockedReply;
                 (*cur).reply_to = snd as u64;
             } else {
@@ -205,7 +208,7 @@ pub fn sys_call(ctx: &mut Context) -> bool {
         if !head.is_null() && (*head).state == TaskState::BlockedRecv {
             let rcv = (*ep).pop() as *mut Tcb;
             deliver(ctx, &mut (*rcv).ctx);
-            abort_reply(&mut *rcv);
+            abort_reply(rcv);
             (*rcv).reply_to = cur as u64;
             (*cur).state = TaskState::BlockedReply;
             k0_sched::enqueue(rcv);
