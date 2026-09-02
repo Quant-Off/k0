@@ -48,6 +48,8 @@ pub enum Cap {
     RootTcb,
     /// 루트 태스크의 주소 공간(TTBR0 루트 테이블)
     AddrSpace { root_pa: u64 },
+    /// 커널 디버그 콘솔 출력 권한(부트 시점 정적 오브젝트)
+    Console,
     /// 재분류로 만든 태스크 제어 블록, 상태 머신은 오브젝트 안에 있음
     Tcb { base: u64 },
     /// 소유자가 재분류할 수 있는 미분류 물리 메모리
@@ -262,6 +264,7 @@ pub fn bootstrap(
     cnode.push(Cap::AddrSpace {
         root_pa: addr_space_root,
     })?;
+    cnode.push(Cap::Console)?;
 
     for m in memory {
         if m.size == 0 || m.base.checked_add(m.size).is_none() {

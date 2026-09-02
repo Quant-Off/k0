@@ -334,10 +334,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
 extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
     let mut con = EarlyCon;
     match ctx.x[8] {
-        k0_abi::syscall::DEBUG_PUTC => {
-            con.put_byte(ctx.x[0] as u8);
-            ctx.x[0] = 0;
-        }
+        k0_abi::syscall::DEBUG_PUTC => ctx.x[0] = sys_putc(ctx.x[0], ctx.x[1]) as u64,
         k0_abi::syscall::YIELD => {
             ctx.x[0] = 0;
             // SAFETY: 벡터가 컨텍스트 저장을 마친 시스템 콜 컨텍스트임
@@ -402,6 +399,32 @@ fn kill_current(con: &mut EarlyCon) {
             park()
         }
     }
+}
+
+/// DEBUG_PUTC 시스템 콜 처리 함수입니다.
+///
+/// Console 케이퍼빌리티 제시가 필요합니다(암묵 권한 없음). 출력 가능한
+/// ASCII와 개행만 그대로 내보내고 나머지 바이트는 `?`로 바꿔 터미널 제어
+/// 문자 주입을 막습니다.
+///
+/// # Arguments
+/// `slot` - Console 슬롯(x0)
+/// `byte` - 출력할 바이트(x1, 하위 8비트)
+fn sys_putc(slot: u64, byte: u64) -> i64 {
+    let Ok(slot) = usize::try_from(slot) else {
+        return k0_abi::err::BAD_SLOT;
+    };
+    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
+    let cnode = unsafe { k0_cap::root_mut() };
+    match cnode.cap(slot) {
+        Some(k0_cap::Cap::Console) => {}
+        Some(_) => return k0_abi::err::BAD_CAP,
+        None => return k0_abi::err::BAD_SLOT,
+    }
+    let b = byte as u8;
+    let safe = if b == b'\n' || (0x20..=0x7E).contains(&b) { b } else { b'?' };
+    EarlyCon.put_byte(safe);
+    0
 }
 
 /// IPC가 교착(전 태스크 블록)을 보고하면 fail-secure 파킹하는 함수입니다.
@@ -667,6 +690,11 @@ fn write_bootinfo(frame_pa: u64, cnode: &k0_cap::CNode) {
                 },
                 k0_cap::Cap::AddrSpace { .. } => CapDesc {
                     kind: cap_kind::ADDR_SPACE,
+                    base: 0,
+                    size: 0,
+                },
+                k0_cap::Cap::Console => CapDesc {
+                    kind: cap_kind::CONSOLE,
                     base: 0,
                     size: 0,
                 },

@@ -24,6 +24,9 @@ const TEST_VA: u64 = 0x2000_0000;
 /// 유한 태스크가 종료 전에 도달해야 하는 카운터 목표값
 const CHILD_EXIT_TARGET: u64 = 100_000;
 
+// bootinfo에서 찾은 Console 슬롯 (출력에 필요한 권한)
+static CON_SLOT: AtomicU64 = AtomicU64::new(0);
+
 // 두 자식 태스크와 공유하는 진행 카운터 (같은 주소 공간)
 static BUSY_COUNTER: AtomicU64 = AtomicU64::new(0);
 static EXIT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -97,18 +100,24 @@ fn sys3(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     ret
 }
 
+fn putc(slot: u64, b: u8) -> i64 {
+    sys3(syscall::DEBUG_PUTC, slot, u64::from(b), 0) as i64
+}
+
 fn put_str(s: &str) {
+    let con = CON_SLOT.load(Ordering::Relaxed);
     for b in s.bytes() {
-        sys1(syscall::DEBUG_PUTC, u64::from(b));
+        putc(con, b);
     }
 }
 
 fn put_hex(v: u64) {
     put_str("0x");
+    let con = CON_SLOT.load(Ordering::Relaxed);
     for i in (0..16).rev() {
         let nib = ((v >> (i * 4)) & 0xF) as u8;
         let c = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
-        sys1(syscall::DEBUG_PUTC, u64::from(c));
+        putc(con, c);
     }
 }
 
@@ -359,8 +368,8 @@ extern "C" fn child_fp_entry() -> ! {
 
 #[unsafe(no_mangle)]
 extern "C" fn _start() -> ! {
-    put_str("root: hello from EL0\n");
-
+    // 출력에도 Console 케이퍼빌리티가 필요하므로 bootinfo를 먼저 읽음. 이
+    // 전의 검증 실패는 출력 없이 EXIT(1)로만 드러남
     let hdr = bootinfo::VA as *const bootinfo::Header;
     // SAFETY: 커널이 이 VA에 bootinfo 페이지를 RO로 매핑하고 내용을 채웠음
     let (version, frame_size, cap_count) =
@@ -371,11 +380,12 @@ extern "C" fn _start() -> ! {
         frame_size > 0 && frame_size.is_power_of_two(),
     );
 
-    // 재분류 원본으로 쓸 넉넉한 untyped와 내 주소 공간 슬롯 탐색
+    // Console, 내 주소 공간, 재분류 원본으로 쓸 넉넉한 untyped 슬롯 탐색
     // SAFETY: 헤더 뒤에 커널이 기록한 cap_count개의 디스크립터가 이어짐
     let descs = unsafe { hdr.add(1) as *const bootinfo::CapDesc };
     let mut ut: u64 = 0;
     let mut aspace: u64 = 0;
+    let mut con: u64 = 0;
     for i in 0..cap_count {
         // SAFETY: 위와 동일, i는 cap_count 미만
         let d = unsafe { &*descs.add(i as usize) };
@@ -385,12 +395,26 @@ extern "C" fn _start() -> ! {
         if aspace == 0 && d.kind == bootinfo::cap_kind::ADDR_SPACE {
             aspace = i;
         }
+        if con == 0 && d.kind == bootinfo::cap_kind::CONSOLE {
+            con = i;
+        }
     }
+    check("console search", con != 0);
+    CON_SLOT.store(con, Ordering::Relaxed);
+    put_str("root: hello from EL0\n");
     check("untyped search", ut != 0);
     check("aspace search", aspace != 0);
     put_str("root: untyped slot ");
     put_hex(ut);
     put_str("\n");
+
+    // 콘솔 거부 경로: Console이 아닌 케이퍼빌리티, 범위 밖 슬롯. 제어 문자는
+    // 커널이 `?`로 바꿔야 함 (로그에 "[?]"로 나타남)
+    check("putc bad cap", putc(aspace, b'x') == err::BAD_CAP);
+    check("putc bad slot", putc(9999, b'x') == err::BAD_SLOT);
+    put_str("root: control byte filter [");
+    check("putc esc", putc(con, 0x1b) == 0);
+    put_str("]\n");
 
     // 거부 경로: null 슬롯 재분류, 미지의 타입
     check("retype null slot", retype(0, obj::FRAME) == err::NOT_UNTYPED);

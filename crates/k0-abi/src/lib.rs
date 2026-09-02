@@ -16,7 +16,11 @@ pub const KERNEL_VA_OFFSET: u64 = 0xFFFF_0000_0000_0000;
 /// 시스템 콜 번호(x8) 모듈입니다. 인자는 x0-x5, 반환값은 x0을 사용하고
 /// IPC 수신 계열은 x1-x5로도 돌려받습니다.
 pub mod syscall {
-    /// 바이트 하나를 커널 콘솔로 출력, x0 = 바이트(하위 8비트만 사용)
+    /// 바이트 하나를 커널 디버그 콘솔로 출력
+    ///
+    /// x0 = Console 슬롯, x1 = 바이트(하위 8비트만 사용). 출력 가능한
+    /// ASCII(0x20-0x7E)와 개행만 그대로 나가고 그 외 바이트(터미널 제어
+    /// 문자 등)는 `?`로 바뀝니다. 성공 시 x0 = 0, 실패 시 음수 에러
     pub const DEBUG_PUTC: u64 = 0;
     /// 스케줄러 양보(현재는 단일 태스크라 즉시 복귀)
     pub const YIELD: u64 = 1;
@@ -171,5 +175,6 @@ pub mod bootinfo {
         pub const FRAME: u64 = 4;
         pub const PAGE_TABLE: u64 = 5;
         pub const ENDPOINT: u64 = 6;
+        pub const CONSOLE: u64 = 7;
     }
 }
