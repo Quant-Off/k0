@@ -202,6 +202,8 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         let _ = writeln!(con, "k0: window map failed: {e:?}");
         park()
     }
+    let (pool_used, pool_len) = k0_mm::table_pool_usage();
+    let _ = writeln!(con, "k0: kernel table pool {pool_used}/{pool_len}");
     let mut frames = match k0_mm::FrameAlloc::new(window.clone()) {
         Ok(f) => f,
         Err(e) => {
