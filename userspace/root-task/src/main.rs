@@ -24,8 +24,9 @@ const TEST_VA: u64 = 0x2000_0000;
 /// 유한 태스크가 종료 전에 도달해야 하는 카운터 목표값
 const CHILD_EXIT_TARGET: u64 = 100_000;
 
-// bootinfo에서 찾은 Console 슬롯 (출력에 필요한 권한)
+// bootinfo에서 찾은 Console / AddrSpace 슬롯 (출력과 매핑에 필요한 권한)
 static CON_SLOT: AtomicU64 = AtomicU64::new(0);
+static ASPACE_SLOT: AtomicU64 = AtomicU64::new(0);
 
 // 두 자식 태스크와 공유하는 진행 카운터 (같은 주소 공간)
 static BUSY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -170,8 +171,14 @@ fn retype(slot: u64, kind: u64) -> i64 {
     sys3(syscall::RETYPE, slot, kind, 0) as i64
 }
 
+fn map_into(slot: i64, va: u64, p: u64, aspace: u64) -> i64 {
+    sys4(syscall::MAP, slot as u64, va, p, aspace) as i64
+}
+
+/// 루트 자신의 주소 공간(bootinfo에서 찾은 AddrSpace 슬롯)에 매핑하는
+/// 함수입니다.
 fn map(slot: i64, va: u64, p: u64) -> i64 {
-    sys3(syscall::MAP, slot as u64, va, p) as i64
+    map_into(slot, va, p, ASPACE_SLOT.load(Ordering::Relaxed))
 }
 
 fn tcb_configure(slot: i64, entry: u64, stack: u64, aspace: u64) -> i64 {
@@ -404,6 +411,7 @@ extern "C" fn _start() -> ! {
     put_str("root: hello from EL0\n");
     check("untyped search", ut != 0);
     check("aspace search", aspace != 0);
+    ASPACE_SLOT.store(aspace, Ordering::Relaxed);
     put_str("root: untyped slot ");
     put_hex(ut);
     put_str("\n");
@@ -424,6 +432,13 @@ extern "C" fn _start() -> ! {
     let f = retype(ut, obj::FRAME);
     check("retype frame", f > 0);
     check("map before pt", map(f, TEST_VA, perm::RW) == err::MISSING_TABLE);
+
+    // 매핑 대상은 제시한 AddrSpace 케이퍼빌리티로만 정해짐
+    check("map bad aspace", map_into(f, TEST_VA, perm::RW, con) == err::BAD_CAP);
+    check(
+        "map bad aspace slot",
+        map_into(f, TEST_VA, perm::RW, 9999) == err::BAD_SLOT,
+    );
 
     // 페이지 테이블 재분류와 설치
     let pt = retype(ut, obj::PAGE_TABLE);

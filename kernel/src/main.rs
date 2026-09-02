@@ -345,7 +345,9 @@ extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
             kill_current(&mut con)
         }
         k0_abi::syscall::RETYPE => ctx.x[0] = sys_retype(ctx.x[0], ctx.x[1]) as u64,
-        k0_abi::syscall::MAP => ctx.x[0] = sys_map(ctx.x[0], ctx.x[1], ctx.x[2]) as u64,
+        k0_abi::syscall::MAP => {
+            ctx.x[0] = sys_map(ctx.x[0], ctx.x[1], ctx.x[2], ctx.x[3]) as u64
+        }
         k0_abi::syscall::TCB_CONFIGURE => {
             ctx.x[0] = sys_tcb_configure(ctx.x[0], ctx.x[1], ctx.x[2], ctx.x[3]) as u64
         }
@@ -581,19 +583,26 @@ fn sys_retype(slot: u64, kind: u64) -> i64 {
 ///
 /// 케이퍼빌리티 종류가 동작을 결정합니다. Frame은 리프 매핑(RO/RW만, 실행
 /// 매핑은 만들 수 없음), PageTable은 경로의 첫 빈 레벨에 설치입니다. 대상
-/// 주소 공간은 현재 설치된 TTBR0(단일 태스크 = 루트 태스크)입니다.
+/// 주소 공간은 제시한 AddrSpace 케이퍼빌리티로만 정해지며 현재 설치된
+/// TTBR0는 참조하지 않습니다(암묵 권한 배제). 현재 공간이 아닌 테이블에
+/// 새 항목을 추가하는 것도 무효 항목의 유효화라 TLB 무효화가 필요 없습니다.
 ///
 /// # Arguments
 /// `slot` - 케이퍼빌리티 슬롯(x0)
 /// `va` - 사용자 VA(x1)
 /// `perm` - Frame 권한(x2, PageTable은 무시)
-fn sys_map(slot: u64, va: u64, perm: u64) -> i64 {
-    let Ok(slot) = usize::try_from(slot) else {
+/// `aspace` - 대상 AddrSpace 슬롯(x3)
+fn sys_map(slot: u64, va: u64, perm: u64, aspace: u64) -> i64 {
+    let (Ok(slot), Ok(aspace)) = (usize::try_from(slot), usize::try_from(aspace)) else {
         return k0_abi::err::BAD_SLOT;
     };
     // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
     let cnode = unsafe { k0_cap::root_mut() };
-    let root = k0_mm::current_user_root();
+    let root = match cnode.cap(aspace) {
+        Some(k0_cap::Cap::AddrSpace { root_pa }) => root_pa,
+        Some(_) => return k0_abi::err::BAD_CAP,
+        None => return k0_abi::err::BAD_SLOT,
+    };
     match cnode.cap_mut(slot) {
         Some(k0_cap::Cap::Frame { base, mapped }) => {
             if *mapped {
