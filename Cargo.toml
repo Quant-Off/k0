@@ -16,6 +16,7 @@ members = [
 [workspace.package]
 edition = "2024"
 license = "AGPL-3"
+version = "0.1.0"
 
 # 커널은 unwind 불가능
 [profile.dev]

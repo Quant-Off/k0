@@ -1,6 +1,6 @@
 [package]
 name = "k0-arch"
-version = "1.0.0"
+version.workspace = true
 edition.workspace = true
 
 # 플랫폼 feature는 k0-kernel이 전달(둘 다 켜지거나 꺼지면 compile_error)

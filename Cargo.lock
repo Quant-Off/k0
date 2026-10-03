@@ -58,29 +58,29 @@ dependencies = [
 
 [[package]]
 name = "k0-abi"
-version = "1.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "k0-arch"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "k0-abi",
 ]
 
 [[package]]
 name = "k0-boot"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "k0-cap"
-version = "1.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "k0-ipc"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "k0-abi",
  "k0-arch",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "k0-kernel"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "k0-abi",
  "k0-arch",
@@ -106,14 +106,14 @@ dependencies = [
 
 [[package]]
 name = "k0-mm"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "k0-abi",
 ]
 
 [[package]]
 name = "k0-sched"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "k0-arch",
  "k0-mm",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "k0-task"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "k0-abi",
  "k0-arch",
@@ -137,7 +137,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "root-task"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "k0-abi",
 ]

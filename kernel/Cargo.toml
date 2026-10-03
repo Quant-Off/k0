@@ -1,6 +1,6 @@
 [package]
 name = "k0-kernel"
-version = "1.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 
