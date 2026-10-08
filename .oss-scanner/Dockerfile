@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/cargo/bin:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git python3 bash procps gcc libc6-dev \
-      qemu-system-arm gdb-multiarch \
+      qemu-system-arm ipxe-qemu gdb-multiarch \
     && rm -rf /var/lib/apt/lists/*
 
 # Pinned toolchain, identical to rust-toolchain.toml: 1.89.0 + rust-src + llvm-tools + bare-metal target.
