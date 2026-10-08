@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git python3 bash procps \
+      ca-certificates curl git python3 bash procps gcc libc6-dev \
       qemu-system-arm gdb-multiarch \
     && rm -rf /var/lib/apt/lists/*
 
