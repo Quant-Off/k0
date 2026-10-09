@@ -162,3 +162,143 @@ fn slot_accessors_respect_used_count() {
     assert!(c.cap(usize::MAX).is_none());
     assert!(c.cap_mut(n - 1).is_some());
 }
+
+#[test]
+fn retype_carves_aligned_objects_in_order() {
+    let mut c = filled(&[r(0x4000_0000, 8 * G)], &[]);
+    let slot = 4;
+    let mut seen = Vec::new();
+    for kind in [ObjKind::Frame, ObjKind::PageTable, ObjKind::Tcb, ObjKind::Endpoint] {
+        let new = c
+            .retype(slot, kind, G, |pa| {
+                seen.push(pa);
+                true
+            })
+            .expect("retype");
+        assert_eq!(new, c.slots().len() - 1);
+        let base = match (kind, c.cap(new).unwrap()) {
+            (ObjKind::Frame, Cap::Frame { base, mapped: false }) => base,
+            (ObjKind::PageTable, Cap::PageTable { base, installed: false }) => base,
+            (ObjKind::Tcb, Cap::Tcb { base }) => base,
+            (ObjKind::Endpoint, Cap::Endpoint { base }) => base,
+            (k, cap) => panic!("{k:?} produced {cap:?}"),
+        };
+        assert_eq!(base, *seen.last().unwrap());
+    }
+    assert_eq!(seen, vec![0x4000_0000, 0x4000_1000, 0x4000_2000, 0x4000_3000]);
+    assert_eq!(untypeds(&c), vec![(0x4000_0000, 8 * G, 4 * G)]);
+}
+
+#[test]
+fn retype_rounds_unaligned_watermark_up() {
+    let mut c = filled(&[r(0x1800, 0x4000)], &[]);
+    let slot = 4;
+    let mut at = 0;
+    c.retype(slot, ObjKind::Frame, G, |pa| {
+        at = pa;
+        true
+    })
+    .unwrap();
+    assert_eq!(at, 0x2000);
+    assert_eq!(untypeds(&c), vec![(0x1800, 0x4000, 0x1800)]);
+    assert_eq!(c.retype(slot, ObjKind::Frame, G, |pa| pa == 0x3000), Ok(6));
+    assert_eq!(c.retype(slot, ObjKind::Frame, G, |pa| pa == 0x4000), Ok(7));
+    assert_eq!(
+        c.retype(slot, ObjKind::Frame, G, |_| panic!("prep must not run")),
+        Err(RetypeError::Exhausted)
+    );
+    assert_eq!(untypeds(&c), vec![(0x1800, 0x4000, 0x3800)]);
+}
+
+#[test]
+fn failed_prep_leaves_state_unchanged() {
+    let mut c = filled(&[r(0x10000, 4 * G)], &[]);
+    let before_used = c.slots().len();
+    assert_eq!(c.retype(4, ObjKind::Tcb, G, |_| false), Err(RetypeError::PrepFailed));
+    assert_eq!(c.slots().len(), before_used);
+    assert_eq!(untypeds(&c), vec![(0x10000, 4 * G, 0)]);
+    let mut at = 0;
+    c.retype(4, ObjKind::Tcb, G, |pa| {
+        at = pa;
+        true
+    })
+    .unwrap();
+    assert_eq!(at, 0x10000);
+}
+
+#[test]
+fn retype_rejects_bad_sources_without_prep() {
+    let mut c = filled(&[r(0x10000, 4 * G)], &[]);
+    let frame = c.retype(4, ObjKind::Frame, G, |_| true).unwrap();
+    let never = |_| -> bool { panic!("prep must not run") };
+    assert_eq!(c.retype(c.slots().len(), ObjKind::Frame, G, never), Err(RetypeError::BadSlot));
+    assert_eq!(c.retype(usize::MAX, ObjKind::Frame, G, never), Err(RetypeError::BadSlot));
+    for slot in [0, 1, 2, 3, frame] {
+        assert_eq!(c.retype(slot, ObjKind::Frame, G, never), Err(RetypeError::NotUntyped));
+    }
+}
+
+#[test]
+fn retype_reports_full_cnode_before_prep() {
+    let mut c = filled(&[r(0, 64 * G)], &[]);
+    while c.slots().len() < CNODE_SLOTS {
+        c.retype(4, ObjKind::Frame, G, |_| true).unwrap();
+    }
+    let used = untypeds(&c)[0].2;
+    assert_eq!(
+        c.retype(4, ObjKind::Frame, G, |_| panic!("prep must not run")),
+        Err(RetypeError::OutOfSlots)
+    );
+    assert_eq!(untypeds(&c)[0].2, used);
+}
+
+#[test]
+fn retype_near_address_space_top_does_not_overflow() {
+    let mut c = empty();
+    c.slots[0] = Cap::Untyped {
+        base: u64::MAX - G + 2,
+        size: G - 2,
+        used: 0,
+    };
+    c.used = 1;
+    assert_eq!(
+        c.retype(0, ObjKind::Frame, G, |_| panic!("prep must not run")),
+        Err(RetypeError::Exhausted)
+    );
+}
+
+#[test]
+fn random_retypes_never_overlap() {
+    let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+    for granule in [4096u64, 16384] {
+        for _ in 0..200 {
+            let memory: Vec<PhysRegion> = (0..1 + rng.below(3))
+                .map(|i| r(i * 0x100_0000 + rng.below(4) * 0x800, granule * (1 + rng.below(12))))
+                .collect();
+            let mut c = filled(&memory, &[]);
+            let sources: Vec<usize> = (4..c.slots().len()).collect();
+            let mut carved: Vec<(u64, usize)> = Vec::new();
+            for _ in 0..40 {
+                let src = sources[rng.below(sources.len() as u64) as usize];
+                let Cap::Untyped { base, size, used } = c.cap(src).unwrap() else {
+                    unreachable!()
+                };
+                let mut at = None;
+                match c.retype(src, ObjKind::Frame, granule, |pa| {
+                    at = Some(pa);
+                    true
+                }) {
+                    Ok(_) => {
+                        let pa = at.unwrap();
+                        assert_eq!(pa % granule, 0);
+                        assert!(pa >= base + used && pa + granule <= base + size);
+                        assert!(carved.iter().all(|&(o, _)| o + granule <= pa || pa + granule <= o));
+                        carved.push((pa, src));
+                    }
+                    Err(RetypeError::Exhausted) | Err(RetypeError::OutOfSlots) => assert!(at.is_none()),
+                    Err(e) => panic!("unexpected {e:?}"),
+                }
+            }
+        }
+    }
+}
