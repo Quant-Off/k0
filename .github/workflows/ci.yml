@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    name: offline build and test (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the toolchain image and both kernel images
+        run: docker build --file .oss-scanner/Dockerfile --tag k0-ci .
+
+      - name: Host unit tests and DTB fuzzing with networking disabled
+        run: docker run --rm --network none k0-ci tools/host-test.sh
+
+      - name: QEMU boot test with networking disabled
+        run: docker run --rm --network none k0-ci tools/qemu-boot-test.sh
