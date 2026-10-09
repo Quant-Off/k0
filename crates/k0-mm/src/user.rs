@@ -449,3 +449,6 @@ pub fn can_user_write(va: u64) -> bool {
     }
     par & 1 == 0
 }
+
+#[cfg(test)]
+mod tests;
