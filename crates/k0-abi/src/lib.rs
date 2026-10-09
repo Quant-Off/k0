@@ -180,3 +180,6 @@ pub mod bootinfo {
         pub const CONSOLE: u64 = 7;
     }
 }
+
+#[cfg(test)]
+mod tests;
