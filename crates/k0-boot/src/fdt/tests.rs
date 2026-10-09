@@ -163,6 +163,17 @@ fn memreserve_entries_are_collected() {
 }
 
 #[test]
+fn memreserve_stops_at_the_first_zero_pair() {
+    let board = Board {
+        memreserve: vec![(0x4800_0000, 0x1000), (0, 0), (0x4900_0000, 0x1000)],
+        ..Board::qemu_virt()
+    };
+    let info = run(&board.blob()).unwrap();
+    assert_eq!(info.reserved(), &[MemRegion { base: 0x4800_0000, size: 0x1000 }]);
+    check(&board);
+}
+
+#[test]
 fn memreserve_overflow_is_rejected() {
     let board = Board {
         memreserve: vec![(u64::MAX, 2)],

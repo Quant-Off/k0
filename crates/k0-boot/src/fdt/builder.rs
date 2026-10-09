@@ -288,7 +288,7 @@ impl Board {
     }
 
     pub fn expected_reserved(&self) -> Vec<MemRegion> {
-        let rsv = self.memreserve.iter().copied();
+        let rsv = self.memreserve.iter().copied().take_while(|&e| e != (0, 0));
         let children = self.rsv_children.iter().flatten().flatten().copied();
         rsv.chain(children)
             .filter(|&(_, s)| s != 0)
