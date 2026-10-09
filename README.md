@@ -54,6 +54,10 @@ tools/qemu-boot-test.sh             # boot under QEMU and check the root task se
 
 CI runs the same tests on x86-64 and AArch64 inside containers with networking disabled, and runs a longer fuzzing campaign every week.
 
+## Design notes
+
+The [design notes](design/README.md) explain each subsystem: how it works, why it is built that way, how it is tested, and what is still missing.
+
 ## Repository layout
 
 | Path | Contents |

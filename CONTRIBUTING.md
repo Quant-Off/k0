@@ -9,6 +9,7 @@ Thank you for your interest in K0. K0 is a pre-release research microkernel. Bef
 - **Security problems** never go into public issues or pull requests. Follow [SECURITY.md](SECURITY.md).
 - **Small fixes** such as typos, test gaps or clear bugs can go straight to a pull request.
 - **Anything larger** should start as an issue, so that the design can be agreed on before you write code. This applies to new system calls, new kernel objects, changes to the capability model and anything that touches `unsafe` code or assembly.
+- **Read the design note** for the subsystem you want to change in [design/](design/README.md). Each note ends with the known gaps, which are good places to start.
 
 ## License and contributor agreement
 
