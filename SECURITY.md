@@ -24,7 +24,7 @@ Until per-task CSpaces, `AddrSpace` retype, and the capability derivation tree l
 
 ## Known advisories
 
-The following advisories are tracked in this repository's GitHub Security Advisories. All of them affect version 0.1.0 and earlier, and none has a fixed version yet.
+The following advisories are tracked as GitHub Security Advisories in this repository. They are still unpublished drafts, so their identifiers do not resolve publicly yet, and this table is the public record until they are published. All of them affect version 0.1.0 and earlier, and none has a fixed version yet.
 
 | Advisory | Severity | Summary |
 | --- | --- | --- |
