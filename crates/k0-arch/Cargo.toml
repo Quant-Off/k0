@@ -2,6 +2,7 @@
 name = "k0-arch"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 # 플랫폼 feature는 k0-kernel이 전달(둘 다 켜지거나 꺼지면 compile_error)
 # default는 워크스페이스 전체 빌드가 깨지지 않게 하기 위한 것
