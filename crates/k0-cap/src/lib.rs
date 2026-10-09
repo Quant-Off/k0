@@ -17,7 +17,7 @@
 //! 부팅을 중단해야 합니다(fail-secure). 재분류 실패는 `RetypeError`로
 //! 반환하며 상태 변화 없이 사용자에게 전달됩니다.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 use core::cell::UnsafeCell;
 

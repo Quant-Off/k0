@@ -4,7 +4,7 @@
 //! DTB를 파싱해 물리 메모리 맵을 확보하고, 커널 이미지에 함께 구운 루트
 //! 태스크 이미지의 무결성(SHA-256 고정 해시)을 검증합니다.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 mod entropy;
 mod fdt;

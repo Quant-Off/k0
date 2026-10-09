@@ -5,7 +5,7 @@
 //! 부트 프레임 할당자와 사용자 주소 공간(TTBR0) 구성을 담당합니다.
 //! 그래뉼은 plat-virt에서 4KiB, plat-apple에서 16KiB로 갈립니다.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 #[cfg(all(feature = "plat-virt", feature = "plat-apple"))]
 compile_error!("plat-virt와 plat-apple은 동시에 활성화 할 수 없음");

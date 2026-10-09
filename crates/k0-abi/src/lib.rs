@@ -4,7 +4,7 @@
 //! 시스템 콜 번호와 주소 공간 배치 상수를 담습니다. 의존성이 없는 최하단
 //! 크레이트라서 커널 크레이트들과 root-task가 모두 여기에 의존합니다.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 /// TTBR1 higher-half 선형 별칭의 VA 오프셋 (T1SZ=16, 48비트 VA 전제)
 ///
