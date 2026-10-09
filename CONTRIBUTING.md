@@ -58,6 +58,13 @@ tools/qemu-boot-test.sh                      # boot under QEMU and check the sel
 
 `tools/qemu-boot-test.sh` boots the debug kernel, checks the boot log line by line in a fixed order, fails on any error marker, and stops QEMU as soon as the root task reports `root: sched tests pass`. Set `K0_BOOT_TIMEOUT` (seconds) on slow machines.
 
+The default QEMU CPU model (`cortex-a72`) has no PAC, PAN or RNDR. To exercise those paths as well, boot on QEMU's `max` model and require the matching log lines. Any arguments after the kernel path are passed to QEMU.
+
+```sh
+K0_BOOT_REQUIRE='rndr=on|k0: pac=on bti=present pan=on' \
+  tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel -cpu max
+```
+
 ### Where each part is tested
 
 | Area | Host unit tests | Boot self-tests in the root task |
@@ -108,7 +115,7 @@ Run this from a clean checkout, because the build context includes everything in
 - One logical change per commit. A reviewer should be able to read each commit on its own.
 - Keep the subject line short and plain. Korean or English are both fine. Do not use type prefixes such as `feat:` or `fix:`.
 - In the pull request, say what changed, why, and how you tested it. Link the issue if there is one.
-- CI must pass. It builds both platform images, runs the host tests on x86-64 and AArch64, and boots the kernel under QEMU.
+- CI must pass. It builds both platform images, runs the host tests on x86-64 and AArch64, and boots the kernel under QEMU on two CPU models.
 
 ## AI-assisted contributions
 

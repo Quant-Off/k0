@@ -60,6 +60,13 @@ tools/qemu-boot-test.sh                      # QEMU 부팅과 자가 테스트 �
 
 `tools/qemu-boot-test.sh`는 디버그 커널을 부팅하고 부팅 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 표식이 하나라도 나오면 실패하고, 루트 태스크가 `root: sched tests pass`를 출력하면 곧바로 QEMU를 종료합니다. 느린 환경에서는 `K0_BOOT_TIMEOUT`(초)을 늘려 주세요.
 
+기본 QEMU CPU 모델(`cortex-a72`)에는 PAC, PAN, RNDR이 없습니다. 이 경로까지 검증하려면 QEMU의 `max` 모델로 부팅하고 해당 로그 줄을 필수로 지정하세요. 커널 경로 뒤의 인자는 그대로 QEMU에 전달됩니다.
+
+```sh
+K0_BOOT_REQUIRE='rndr=on|k0: pac=on bti=present pan=on' \
+  tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel -cpu max
+```
+
 ### 영역별 테스트 위치
 
 | 영역 | 호스트 단위 테스트 | 루트 태스크의 부팅 자가 테스트 |
@@ -110,7 +117,7 @@ docker run --rm --network none k0-ci tools/qemu-boot-test.sh
 - 커밋 하나에는 논리적 변경 하나만 담습니다. 리뷰어가 커밋을 하나씩 따로 읽을 수 있어야 합니다.
 - 제목은 짧고 평이하게 씁니다. 한국어와 영어 모두 괜찮습니다. `feat:`나 `fix:` 같은 접두어는 쓰지 않습니다.
 - 풀 리퀘스트에는 무엇을, 왜 바꿨고, 어떻게 테스트했는지 적고, 관련 이슈가 있으면 연결합니다.
-- CI를 통과해야 합니다. CI는 두 플랫폼 이미지를 빌드하고, x86-64와 AArch64에서 호스트 테스트를 돌리고, QEMU로 커널을 부팅합니다.
+- CI를 통과해야 합니다. CI는 두 플랫폼 이미지를 빌드하고, x86-64와 AArch64에서 호스트 테스트를 돌리고, 두 가지 CPU 모델의 QEMU로 커널을 부팅합니다.
 
 ## AI 보조 기여
 
