@@ -46,3 +46,5 @@ Reports about the isolation gaps described above are already known and do not ne
 In scope: everything under `kernel/`, `crates/`, and `userspace/root-task/`.
 
 Out of scope: the boot chain before the kernel entry point (m1n1, QEMU firmware), and the integrity of the kernel image itself. Kernel image signing is the boot chain's responsibility.
+
+The kernel checks the embedded root task image against a SHA-256 hash at every boot. This is a corruption check, not a signature check. The reference hash lives in the same kernel image as the root task, so anyone who can modify the kernel image can change both. Reports that rely on modifying the kernel image are therefore out of scope.
