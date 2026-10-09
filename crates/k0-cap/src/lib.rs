@@ -258,6 +258,19 @@ pub fn bootstrap(
     reserved: &[PhysRegion],
     addr_space_root: u64,
 ) -> Result<&'static CNode, CapError> {
+    // SAFETY: 단일 부트 코어의 초기화 시퀀스에서 한 번만 도달함(순서는
+    //         kernel_main이 강제), 반환 후에는 공유 참조만 존재함
+    let cnode = unsafe { &mut *ROOT_CNODE.0.get() };
+    populate(cnode, memory, reserved, addr_space_root)?;
+    Ok(cnode)
+}
+
+fn populate(
+    cnode: &mut CNode,
+    memory: &[PhysRegion],
+    reserved: &[PhysRegion],
+    addr_space_root: u64,
+) -> Result<(), CapError> {
     for (i, m) in memory.iter().enumerate() {
         if m.size == 0 || m.base.checked_add(m.size).is_none() {
             return Err(CapError::BadRegion);
@@ -270,10 +283,6 @@ pub fn bootstrap(
         }
     }
 
-    // SAFETY: 단일 부트 코어의 초기화 시퀀스에서 한 번만 도달함(순서는
-    //         kernel_main이 강제), 반환 후에는 공유 참조만 존재함
-    let cnode = unsafe { &mut *ROOT_CNODE.0.get() };
-
     cnode.push(Cap::Empty)?; // 슬롯 0은 null
     cnode.push(Cap::RootTcb)?;
     cnode.push(Cap::AddrSpace {
@@ -284,7 +293,7 @@ pub fn bootstrap(
     for m in memory {
         push_untypeds(cnode, *m, reserved)?;
     }
-    Ok(cnode)
+    Ok(())
 }
 
 /// 메모리 구간 하나에서 예약 구간들을 뺀 나머지를 untyped로 넣는 함수입니다.
