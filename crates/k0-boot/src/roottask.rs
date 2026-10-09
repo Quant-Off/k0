@@ -85,3 +85,6 @@ pub fn verify_root_task() -> Result<VerifiedRootTask, VerifyError> {
         segments: generated::ROOT_TASK_SEGMENTS,
     })
 }
+
+#[cfg(test)]
+mod tests;
