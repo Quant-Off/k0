@@ -484,4 +484,6 @@ fn push_entropy(value: &[u8], info: &mut BootInfo) {
 #[cfg(test)]
 mod builder;
 #[cfg(test)]
+mod fuzz;
+#[cfg(test)]
 mod tests;
