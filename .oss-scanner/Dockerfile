@@ -32,9 +32,9 @@ WORKDIR /src
 RUN cargo build -p k0-kernel --offline \
  && cargo build -p k0-kernel --release --no-default-features --features plat-apple --offline
 
-# Boot check. The root task runs its self-tests on the serial console and then idles forever,
-# so QEMU is stopped by timeout (exit 124 is the normal outcome). A missing pass line is a
-# warning, never a failed build. The log stays at /src/bootcheck.log for the scanner.
-RUN (timeout 120 tools/qemu-virt-runner.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel > /src/bootcheck.log 2>&1 || true) \
- && (grep -q "root: sched tests pass" /src/bootcheck.log || echo "WARNING: QEMU boot check did not reach 'root: sched tests pass'") \
+# Boot check. tools/qemu-boot-test.sh boots the kernel, waits for the root task's self-test
+# lines in order, and stops QEMU as soon as they appear. A failure is a warning, never a
+# failed build. The serial log stays at /src/bootcheck.log for the scanner.
+RUN (K0_BOOT_LOG=/src/bootcheck.log tools/qemu-boot-test.sh \
+      || echo "WARNING: QEMU boot check did not reach 'root: sched tests pass'") \
  && tail -n 40 /src/bootcheck.log
