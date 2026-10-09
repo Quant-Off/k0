@@ -17,6 +17,7 @@
 //! 설계된 확장 지점입니다.
 
 use core::arch::asm;
+use core::mem::offset_of;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// EL0 예외 진입 시 벡터가 저장하는 사용자 레지스터 컨텍스트 구조체입니다.
@@ -35,6 +36,14 @@ pub struct Context {
 }
 
 const _: () = assert!(/*core::mem::*/size_of::<Context>() == 288);
+const _: () = {
+    assert!(offset_of!(Context, x) == 0);
+    assert!(offset_of!(Context, sp) == 248);
+    assert!(offset_of!(Context, elr) == 256);
+    assert!(offset_of!(Context, spsr) == 264);
+    assert!(offset_of!(Context, tpidr) == 272);
+    assert!(offset_of!(Context, tpidrro) == 280);
+};
 
 impl Context {
     /// 소거된 컨텍스트를 만드는 함수입니다.
