@@ -16,6 +16,7 @@ members = [
 [workspace.package]
 edition = "2024"
 license = "PolyForm-Noncommercial-1.0.0"
+publish = false
 version = "0.1.0"
 
 # 커널은 unwind 불가능

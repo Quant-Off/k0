@@ -3,6 +3,7 @@ name = "k0-kernel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 # 플랫폼 선택: build.rs가 링커 스크립트를 고르고 잘못된 조합은 빌드 실패
 # 같은 feature를 k0-arch에도 전달해 MMIO 주소를 가름

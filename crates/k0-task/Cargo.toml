@@ -3,6 +3,7 @@ name = "k0-task"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 # 플랫폼 feature는 k0-kernel이 전달하고 여기서는 하위 크레이트로 중계만 함
 # default는 워크스페이스 전체 빌드가 깨지지 않게 하기 위한 것

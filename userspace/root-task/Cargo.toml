@@ -3,6 +3,7 @@ name = "root-task"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 k0-abi = { path = "../../crates/k0-abi" }
