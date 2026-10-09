@@ -341,3 +341,6 @@ fn push_untypeds(cnode: &mut CNode, m: PhysRegion, reserved: &[PhysRegion]) -> R
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
