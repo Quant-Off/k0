@@ -23,6 +23,17 @@ fn err(blob: &[u8]) -> BootError {
     }
 }
 
+fn board_err(board: &Board) -> BootError {
+    err(&board.blob())
+}
+
+fn with_memory(entries: &[(u64, u64)]) -> Board {
+    Board {
+        memory: vec![entries.to_vec()],
+        ..Board::empty()
+    }
+}
+
 struct Aligned(Vec<u64>);
 
 impl Aligned {
@@ -47,6 +58,199 @@ fn qemu_virt_board_parses() {
     let info = run(&board.blob()).unwrap();
     assert_eq!(info.memory(), &[MemRegion { base: 0x4000_0000, size: 0x2000_0000 }]);
     assert_eq!(info.entropy().len(), 40);
+}
+
+#[test]
+fn root_cells_default_to_two_and_one() {
+    check(&with_memory(&[(0x1_0000_0000, 0x1000_0000)]));
+}
+
+#[test]
+fn every_supported_cell_combination_parses() {
+    for ac in 1..=2 {
+        for sc in 1..=2 {
+            check(&Board {
+                cells: Some((ac, sc)),
+                memory: vec![vec![(0x4000_0000, 0x1000_0000), (0x8000_0000, 0x10_0000)]],
+                ..Board::empty()
+            });
+        }
+    }
+}
+
+#[test]
+fn unsupported_cells_are_rejected() {
+    for cells in [(0, 1), (3, 1), (1, 0), (2, 3)] {
+        let board = Board {
+            cells: Some(cells),
+            memory: vec![vec![(0x4000_0000, 0x1000)]],
+            ..Board::empty()
+        };
+        assert_eq!(board_err(&board), BootError::UnsupportedCells, "{cells:?}");
+    }
+    let mut b = Builder::new();
+    b.begin("").prop("#address-cells", &[0, 0, 2]).end();
+    assert_eq!(err(&b.build()), BootError::UnsupportedCells);
+}
+
+#[test]
+fn missing_memory_is_rejected() {
+    assert_eq!(board_err(&Board::empty()), BootError::NoMemory);
+    assert_eq!(board_err(&with_memory(&[(0x4000_0000, 0)])), BootError::NoMemory);
+}
+
+#[test]
+fn zero_sized_entries_are_skipped() {
+    check(&with_memory(&[(0x1000, 0), (0x4000_0000, 0x1000), (0x2000, 0)]));
+}
+
+#[test]
+fn malformed_reg_is_rejected() {
+    let mut b = Builder::new();
+    b.begin("").begin("memory").prop("reg", &[0; 11]).end().end();
+    assert_eq!(err(&b.build()), BootError::BadReg);
+
+    let mut b = Builder::new();
+    b.begin("").begin("memory").prop("reg", &[]).end().end();
+    assert_eq!(err(&b.build()), BootError::BadReg);
+
+    assert_eq!(board_err(&with_memory(&[(u64::MAX - 0xFFF, 0x1000)])), BootError::BadReg);
+    check(&with_memory(&[(u64::MAX - 0x1FFF, 0x1000)]));
+}
+
+#[test]
+fn memory_region_limit_is_enforced() {
+    let eight: Vec<(u64, u64)> = (0..8).map(|i| (i * 0x1000_0000, 0x1000)).collect();
+    check(&with_memory(&eight));
+    let nine: Vec<(u64, u64)> = (0..9).map(|i| (i * 0x1000_0000, 0x1000)).collect();
+    assert_eq!(board_err(&with_memory(&nine)), BootError::TooManyRegions);
+    let split = Board {
+        memory: vec![eight[..5].to_vec(), nine[5..].to_vec()],
+        ..Board::empty()
+    };
+    assert_eq!(board_err(&split), BootError::TooManyRegions);
+}
+
+#[test]
+fn only_top_level_memory_nodes_count() {
+    let mut b = Builder::new();
+    b.begin("")
+        .begin("memory-controller@1000")
+        .prop("reg", &reg(&[(0x1000, 0x1000)], 2, 1))
+        .end()
+        .begin("soc")
+        .begin("memory@2000")
+        .prop("reg", &reg(&[(0x2000, 0x1000)], 2, 1))
+        .end()
+        .end()
+        .begin("memory@4000")
+        .prop("reg", &reg(&[(0x4000, 0x1000)], 2, 1))
+        .begin("bank")
+        .prop("reg", &reg(&[(0x9000, 0x1000)], 2, 1))
+        .end()
+        .end()
+        .end();
+    let info = run(&b.build()).unwrap();
+    assert_eq!(info.memory(), &[MemRegion { base: 0x4000, size: 0x1000 }]);
+}
+
+#[test]
+fn memreserve_entries_are_collected() {
+    check(&Board {
+        memreserve: vec![(0x4800_0000, 0x10_0000), (0x5000_0000, 0), (0x4900_0000, 0x1000)],
+        ..Board::qemu_virt()
+    });
+}
+
+#[test]
+fn memreserve_overflow_is_rejected() {
+    let board = Board {
+        memreserve: vec![(u64::MAX, 2)],
+        ..Board::qemu_virt()
+    };
+    assert_eq!(board_err(&board), BootError::BadReg);
+}
+
+#[test]
+fn reserved_memory_children_are_collected() {
+    check(&Board {
+        cells: Some((2, 2)),
+        memory: vec![vec![(0x4000_0000, 0x2000_0000)]],
+        rsv_cells: Some((1, 1)),
+        rsv_children: vec![Some(vec![(0x4100_0000, 0x1000)]), None, Some(vec![(0x4200_0000, 0x2000), (0x4300_0000, 0)])],
+        ..Board::empty()
+    });
+    check(&Board {
+        rsv_children: vec![Some(vec![(0x1_0000_0000, 0x1000)])],
+        ..Board::qemu_virt()
+    });
+}
+
+#[test]
+fn reserved_memory_grandchildren_are_ignored() {
+    let mut b = Builder::new();
+    b.begin("")
+        .begin("memory")
+        .prop("reg", &reg(&[(0x4000_0000, 0x1000_0000)], 2, 1))
+        .end()
+        .begin("reserved-memory")
+        .begin("pool")
+        .begin("inner")
+        .prop("reg", &reg(&[(0x4100_0000, 0x1000)], 2, 1))
+        .end()
+        .end()
+        .end()
+        .end();
+    assert!(run(&b.build()).unwrap().reserved().is_empty());
+}
+
+#[test]
+fn reserved_region_limit_spans_both_sources() {
+    let board = Board {
+        memreserve: (0..5).map(|i| (0x5000_0000 + i * 0x1000, 0x1000)).collect(),
+        rsv_children: (0..4).map(|i| Some(vec![(0x5100_0000 + i * 0x1000, 0x1000)])).collect(),
+        ..Board::qemu_virt()
+    };
+    assert_eq!(board_err(&board), BootError::TooManyRegions);
+}
+
+#[test]
+fn entropy_is_concatenated_and_capped() {
+    check(&Board {
+        rng_seed: Some(vec![1; 64]),
+        kaslr_seed: Some(vec![2; 16]),
+        ..Board::qemu_virt()
+    });
+    let info = run(&Board {
+        rng_seed: Some(vec![1; 64]),
+        kaslr_seed: Some(vec![2; 16]),
+        ..Board::qemu_virt()
+    }
+    .blob())
+    .unwrap();
+    assert_eq!(info.entropy().len(), MAX_ENTROPY);
+    assert_eq!(&info.entropy()[64..], &[2; 8]);
+    check(&Board {
+        rng_seed: None,
+        kaslr_seed: None,
+        ..Board::qemu_virt()
+    });
+}
+
+#[test]
+fn nested_chosen_is_ignored() {
+    let mut b = Builder::new();
+    b.begin("")
+        .begin("memory")
+        .prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1))
+        .end()
+        .begin("soc")
+        .begin("chosen")
+        .prop("rng-seed", &[7; 16])
+        .end()
+        .end()
+        .end();
+    assert!(run(&b.build()).unwrap().entropy().is_empty());
 }
 
 #[test]
