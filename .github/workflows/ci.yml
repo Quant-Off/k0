@@ -36,3 +36,10 @@ jobs:
 
       - name: QEMU boot test with networking disabled
         run: docker run --rm --network none k0-ci tools/qemu-boot-test.sh
+
+      - name: QEMU boot test on the max CPU model so PAC, PAN and RNDR are exercised
+        env:
+          K0_BOOT_REQUIRE: "rndr=on|k0: pac=on bti=present pan=on"
+        run: >-
+          docker run --rm --network none --env K0_BOOT_REQUIRE
+          k0-ci tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel -cpu max
