@@ -480,3 +480,8 @@ fn push_entropy(value: &[u8], info: &mut BootInfo) {
     info.entropy[info.entropy_len..info.entropy_len + n].copy_from_slice(&value[..n]);
     info.entropy_len += n;
 }
+
+#[cfg(test)]
+mod builder;
+#[cfg(test)]
+mod tests;
