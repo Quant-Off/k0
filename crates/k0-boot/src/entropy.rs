@@ -44,3 +44,6 @@ pub fn derive_pac_keys(dtb_entropy: &[u8], extra: &[u64]) -> [u64; 10] {
     }
     keys
 }
+
+#[cfg(test)]
+mod tests;
