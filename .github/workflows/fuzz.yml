@@ -1,0 +1,37 @@
+name: fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Number of fuzz cases
+        required: false
+        default: "5000000"
+
+permissions:
+  contents: read
+
+jobs:
+  dtb:
+    name: DTB parser fuzzing
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the toolchain image
+        run: docker build --file .oss-scanner/Dockerfile --tag k0-ci .
+
+      - name: Fuzz with a seed taken from the run number and networking disabled
+        env:
+          CASES: ${{ inputs.cases || '5000000' }}
+          SEED: ${{ github.run_number }}
+        run: >-
+          docker run --rm --network none
+          --env K0_FUZZ_ITERS="$CASES" --env K0_FUZZ_SEED="$SEED"
+          k0-ci sh -c 'cargo test --release --offline --target "$(rustc -vV | sed -n "s/^host: //p")" -p k0-boot fuzz -- --nocapture'
