@@ -1,0 +1,52 @@
+name: Bug report
+description: Something in K0 behaves differently from what the code or documentation says.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems do not belong here. Follow SECURITY.md and report them privately.
+        The isolation gaps listed in SECURITY.md are already known.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse HEAD`
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - QEMU virt
+        - Apple Silicon (m1n1)
+        - Host unit tests
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands, QEMU arguments, a DTB, or a root task change that triggers the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Boot log or test output
+      render: text
+  - type: checkboxes
+    id: not-security
+    attributes:
+      label: Scope
+      options:
+        - label: This is not a security vulnerability.
+          required: true

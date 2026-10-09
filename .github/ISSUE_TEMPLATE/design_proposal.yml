@@ -1,0 +1,29 @@
+name: Design proposal
+description: Propose a new system call, kernel object, or change to the capability model before writing code.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can K0 not do today, and who needs it?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The interface, the kernel objects involved, and how authority flows through capabilities.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security impact
+      description: Which trust boundaries does this touch? What new kernel state can user space create or exhaust? How does it fail?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
