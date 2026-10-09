@@ -3,7 +3,9 @@ set -eu
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 elf="${1:-$root/target/aarch64-unknown-none-softfloat/debug/k0-kernel}"
+[ "$#" -gt 0 ] && shift
 timeout_s="${K0_BOOT_TIMEOUT:-120}"
+require="${K0_BOOT_REQUIRE:-}"
 log="${K0_BOOT_LOG:-$root/target/qemu-boot-test.log}"
 
 if [ ! -f "$elf" ]; then
@@ -15,7 +17,7 @@ fi
 mkdir -p "$(dirname "$log")"
 : > "$log"
 
-"$root/tools/qemu-virt-runner.sh" "$elf" > "$log" 2>&1 < /dev/null &
+"$root/tools/qemu-virt-runner.sh" "$elf" "$@" > "$log" 2>&1 < /dev/null &
 pid=$!
 trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
 
@@ -53,6 +55,20 @@ i <= n && index($0, want[i]) == 1 { i++ }
 END {
     if (i <= n) print want[i]
 }')"
+
+if [ -z "$missing" ] && [ -n "$require" ]; then
+    set -f
+    old_ifs="$IFS"
+    IFS='|'
+    for marker in $require; do
+        if ! tr -d '\r' < "$log" | grep -qF -- "$marker"; then
+            missing="$marker"
+            break
+        fi
+    done
+    IFS="$old_ifs"
+    set +f
+fi
 
 if [ "$state" = done ] && [ -z "$missing" ]; then
     echo "boot-test: pass (${elapsed}s, log $log)"
