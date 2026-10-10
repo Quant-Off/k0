@@ -36,7 +36,11 @@ If any entity institutes patent litigation against You or any other entity, incl
 
 ## 4. Moral rights
 
-To the extent permitted by applicable law, You agree not to assert any moral rights in Your Contributions against Us or against recipients of software distributed by Us, where doing so would interfere with the licenses granted in this agreement.
+You consent to Us, and to recipients of software distributed by Us, publishing Your Contributions, and modifying, adapting, translating, combining and shortening them, as part of the Project or of any work based on it.
+
+Your authorship of each Contribution stays visible in the Project's version control history. You agree that We do not have to name You anywhere else, such as in product documentation or in commercial versions of the Project.
+
+To the extent permitted by applicable law, You agree not to exercise any moral rights in Your Contributions, including the rights of publication, attribution and integrity, against Us or against recipients of software distributed by Us in a way that would interfere with the consent above or with the licenses granted in this agreement.
 
 ## 5. Your representations
 
