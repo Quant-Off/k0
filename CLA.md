@@ -50,6 +50,7 @@ You represent that:
 2. If Your employer or another party has rights to intellectual property that You create, including Your Contributions, You have received permission to make Contributions on its behalf, or that party has waived those rights for Your Contributions to the Project.
 3. Each of Your Contributions is Your original creation. If part of a Contribution was produced with the help of an automated tool, including an AI model, You have reviewed that part, You are able to explain it, and You have the right to submit it.
 4. To Your knowledge, no Contribution reproduces third-party material under terms that conflict with this agreement. If You submit any third-party material, You will identify it as such, together with its source and license, separately from any Contribution of Your own.
+5. You are of legal age to enter into this agreement where You live, or Your parent or legal guardian has consented to You entering into it.
 
 You agree to notify Us if You become aware of any fact or circumstance that would make these representations inaccurate in any respect.
 
