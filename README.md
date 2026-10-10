@@ -77,7 +77,7 @@ The [design notes](design/README.md) explain each subsystem: how it works, why i
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Before your first contribution is merged, you must sign the [Contributor License Agreement](CLA.md). Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Before your first contribution is merged, you must sign the [Contributor License Agreement](CLA.md), unless it only fixes typos or broken links in documentation or comments. Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

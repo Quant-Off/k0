@@ -75,7 +75,7 @@ CI는 x86-64와 AArch64에서 네트워크를 끊은 컨테이너 안에 같은 
 
 ## 기여
 
-[CONTRIBUTING_KR.md](CONTRIBUTING_KR.md)를 참고하세요. 첫 기여가 병합되기 전에 [기여자 라이선스 계약](CLA.md)에 서명해야 합니다. 모든 참여자는 [행동 강령](CODE_OF_CONDUCT.md)을 따릅니다.
+[CONTRIBUTING_KR.md](CONTRIBUTING_KR.md)를 참고하세요. 문서나 주석의 오타 또는 깨진 링크만 고치는 경우가 아니라면, 첫 기여가 병합되기 전에 [기여자 라이선스 계약](CLA.md)에 서명해야 합니다. 모든 참여자는 [행동 강령](CODE_OF_CONDUCT.md)을 따릅니다.
 
 ## 라이선스
 
