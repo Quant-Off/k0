@@ -16,7 +16,7 @@ K0 is distributed to the public under the [PolyForm Noncommercial License 1.0.0]
 
 **"We"**, **"Us"** and **"Our"** mean the individual who owns and operates 퀀트스페이스 (Quant Space, <https://qu4nt.space>), a sole proprietorship registered in the Republic of Korea, together with that individual's successors and assigns under section 8. That individual is the copyright holder and licensor of K0. Quant Space is a trade name and not a separate legal person, so every reference to Quant Space in this agreement means Us.
 
-**"You"** and **"Your"** mean the individual who signs this agreement.
+**"You"** and **"Your"** mean the individual who signs this agreement, or who submits a change under section 12.
 
 **"Project"** means the K0 software maintained by Us at <https://github.com/Quant-Off/k0>, including its documentation, and any work derived from it by Us.
 
@@ -82,7 +82,7 @@ If any provision of this agreement is held invalid or unenforceable, the remaini
 
 ## 11. How to sign
 
-Comment on Your first pull request with the following sentence, exactly as written:
+Comment on the first of Your pull requests that is not covered by section 12 with the following sentence, exactly as written:
 
 ```
 I have read the K0 CLA version 1.0 (CLA.md) and I agree to its terms for this and all my future contributions to K0.
@@ -91,3 +91,17 @@ I have read the K0 CLA version 1.0 (CLA.md) and I agree to its terms for this an
 Your signature applies to that pull request and to every later Contribution You submit, until You notify Us in writing that You withdraw it. Withdrawal applies only to Contributions submitted after the notice. The licenses granted for earlier Contributions remain in force.
 
 We keep Our own record of each signature: the link to the comment, the GitHub account that posted it, the version of this agreement and the date. Editing or deleting the comment later does not withdraw the signature. Only a written notice as described above does.
+
+## 12. Changes that do not need a signature
+
+You do not need to sign this agreement for a pull request in which every change is trivial. A change is trivial only if it corrects an obvious mistake in documentation files or in code comments, adds no original expression of its own, and is one of the following:
+
+- a fix to spelling, grammar or punctuation
+- a fix to a broken link
+- a fix to a wrong file name, path, line number, command, or version number
+
+A change to the code itself, including tests, build scripts and CI configuration, or to a log or error message, `LICENSE` or this agreement, is never trivial, however small.
+
+We decide whether a change is trivial. We may ask You to sign before merging if We are unsure, or if several small changes from You add up to more than a correction.
+
+If a change You submit without signing turns out to be protected by copyright, then by submitting it You grant Us the licenses in section 2 and the consent in section 4 for that change, and You make the representations in section 5 for it.
