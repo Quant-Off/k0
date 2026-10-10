@@ -14,7 +14,7 @@ K0 is distributed to the public under the [PolyForm Noncommercial License 1.0.0]
 
 ## 1. Definitions
 
-**"We"**, **"Us"** and **"Our"** mean Quant Space (<https://qu4nt.space>), the copyright holder and licensor of K0.
+**"We"**, **"Us"** and **"Our"** mean the individual who owns and operates 퀀트스페이스 (Quant Space, <https://qu4nt.space>), a sole proprietorship registered in the Republic of Korea, together with that individual's successors and assigns under section 8. That individual is the copyright holder and licensor of K0. Quant Space is a trade name and not a separate legal person, so every reference to Quant Space in this agreement means Us.
 
 **"You"** and **"Your"** mean the individual who signs this agreement.
 
@@ -59,7 +59,13 @@ Unless required by applicable law or agreed to in writing, You provide Your Cont
 
 This agreement is for individuals. If You contribute on behalf of a company or other organization, contact <qtfelix@qu4nt.space> before submitting, so that a separate agreement can be signed by someone authorized to bind that organization.
 
-## 8. How to sign
+## 8. Transfer and successors
+
+We may transfer this agreement, and the licenses and consent You grant in it, in whole or in part, to any person or entity that acquires Our rights in the Project or the business that maintains it. This includes a company that We form to carry on that business. If We make such a transfer, We will announce it in the Project's repository.
+
+This agreement continues to benefit Our heirs, successors and assigns.
+
+## 9. How to sign
 
 Comment on Your first pull request with the following sentence, exactly as written:
 
