@@ -20,7 +20,7 @@ K0는 [PolyForm Noncommercial License 1.0.0](LICENSE)을 따릅니다. 퀀트스
 첫 풀 리퀘스트가 병합되기 전에 [기여자 라이선스 계약(CLA)](CLA.md)에 서명해야 합니다. 풀 리퀘스트에 아래 문장을 그대로 댓글로 달면 서명이 됩니다.
 
 ```
-I have read the K0 CLA (CLA.md) and I agree to its terms for this and all my future contributions to K0.
+I have read the K0 CLA version 1.0 (CLA.md) and I agree to its terms for this and all my future contributions to K0.
 ```
 
 계약서는 현재 법률 검토를 기다리는 초안입니다. 내용이 바뀌면 새 버전에 다시 서명해 달라는 요청을 받게 됩니다. 법적 효력은 영문 원문에만 있고, 준거법은 대한민국 법입니다.

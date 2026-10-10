@@ -18,7 +18,7 @@ K0 is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). Quant 
 Before your first pull request can be merged, you must sign the [Contributor License Agreement](CLA.md). To sign it, comment on your pull request with this sentence:
 
 ```
-I have read the K0 CLA (CLA.md) and I agree to its terms for this and all my future contributions to K0.
+I have read the K0 CLA version 1.0 (CLA.md) and I agree to its terms for this and all my future contributions to K0.
 ```
 
 The agreement is currently a draft pending legal review. If it changes, you will be asked to sign the new version. It is governed by the laws of the Republic of Korea.

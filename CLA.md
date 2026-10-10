@@ -85,7 +85,9 @@ If any provision of this agreement is held invalid or unenforceable, the remaini
 Comment on Your first pull request with the following sentence, exactly as written:
 
 ```
-I have read the K0 CLA (CLA.md) and I agree to its terms for this and all my future contributions to K0.
+I have read the K0 CLA version 1.0 (CLA.md) and I agree to its terms for this and all my future contributions to K0.
 ```
 
 Your signature applies to that pull request and to every later Contribution You submit, until You notify Us in writing that You withdraw it. Withdrawal applies only to Contributions submitted after the notice. The licenses granted for earlier Contributions remain in force.
+
+We keep Our own record of each signature: the link to the comment, the GitHub account that posted it, the version of this agreement and the date. Editing or deleting the comment later does not withdraw the signature. Only a written notice as described above does.
