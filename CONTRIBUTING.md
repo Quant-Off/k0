@@ -7,7 +7,7 @@ Thank you for your interest in K0. K0 is a pre-release research microkernel. Bef
 ## Before you start
 
 - **Security problems** never go into public issues or pull requests. Follow [SECURITY.md](SECURITY.md).
-- **Small fixes** such as typos, test gaps or clear bugs can go straight to a pull request.
+- **Small fixes** such as typos, test gaps or clear bugs can go straight to a pull request. Typo fixes in documentation or code comments do not need the CLA, as described below.
 - **Anything larger** should start as an issue, so that the design can be agreed on before you write code. This applies to new system calls, new kernel objects, changes to the capability model and anything that touches `unsafe` code or assembly.
 - **Read the design note** for the subsystem you want to change in [design/](design/README.md). Each note ends with the known gaps, which are good places to start.
 
@@ -15,11 +15,13 @@ Thank you for your interest in K0. K0 is a pre-release research microkernel. Bef
 
 K0 is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). Quant Space may also offer K0 under separate commercial terms.
 
-Before your first pull request can be merged, you must sign the [Contributor License Agreement](CLA.md). To sign it, comment on your pull request with this sentence:
+Before your first pull request can be merged, you must sign the [Contributor License Agreement](CLA.md), unless the pull request is trivial as described below. To sign it, comment on the first pull request that needs a signature with this sentence:
 
 ```
 I have read the K0 CLA version 1.0 (CLA.md) and I agree to its terms for this and all my future contributions to K0.
 ```
+
+A pull request that only fixes spelling, grammar, punctuation, broken links or wrong paths and version numbers in documentation or code comments does not need a signature. The exact scope is in [section 12 of the CLA](CLA.md#12-changes-that-do-not-need-a-signature). A change to the code itself or to a log message always needs one, however small.
 
 The agreement is currently a draft pending legal review. If it changes, you will be asked to sign the new version. It is governed by the laws of the Republic of Korea.
 
