@@ -71,3 +71,4 @@ target/
 NO-COMMIT*
 bootcheck-*.log
 .DS_Store
+docs/
