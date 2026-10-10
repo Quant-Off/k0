@@ -4,17 +4,17 @@ Version 1.0 (draft)
 
 > **Status.** This agreement is a draft and has not yet been reviewed by legal counsel. Its wording may change before the first external contribution is merged. If it changes after you sign, you will be asked to sign the new version before further contributions are merged.
 
-Thank you for your interest in contributing to K0. This agreement sets out the rights you grant to Qu4nt Space when you contribute. It protects you as a contributor and it protects the project.
+Thank you for your interest in contributing to K0. This agreement sets out the rights you grant to Quant Space when you contribute. It protects you as a contributor and it protects the project.
 
 You keep the copyright in your contributions. This agreement only grants licenses.
 
 ## Why this agreement exists
 
-K0 is distributed to the public under the [PolyForm Noncommercial License 1.0.0](LICENSE). Qu4nt Space may also offer K0, or specific versions of it, under separate commercial terms. Without this agreement, code you contribute would be available to Qu4nt Space only under the same noncommercial terms as everyone else, and Qu4nt Space could not include it in a commercial offering. This agreement grants the broader license that makes that possible.
+K0 is distributed to the public under the [PolyForm Noncommercial License 1.0.0](LICENSE). Quant Space may also offer K0, or specific versions of it, under separate commercial terms. Without this agreement, code you contribute would be available to Quant Space only under the same noncommercial terms as everyone else, and Quant Space could not include it in a commercial offering. This agreement grants the broader license that makes that possible.
 
 ## 1. Definitions
 
-**"We"**, **"Us"** and **"Our"** mean Qu4nt Space (<https://qu4nt.space>), the copyright holder and licensor of K0.
+**"We"**, **"Us"** and **"Our"** mean Quant Space (<https://qu4nt.space>), the copyright holder and licensor of K0.
 
 **"You"** and **"Your"** mean the individual who signs this agreement.
 

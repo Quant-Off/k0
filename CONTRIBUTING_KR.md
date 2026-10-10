@@ -15,7 +15,7 @@ K0에 관심을 가져 주셔서 감사합니다. K0는 정식 릴리스 전 단
 
 ## 라이선스와 기여자 계약
 
-K0는 [PolyForm Noncommercial License 1.0.0](LICENSE)을 따릅니다. Qu4nt Space는 K0를 별도의 상업 라이선스로 제공할 수도 있습니다.
+K0는 [PolyForm Noncommercial License 1.0.0](LICENSE)을 따릅니다. 퀀트스페이스는 K0를 별도의 상업 라이선스로 제공할 수도 있습니다.
 
 첫 풀 리퀘스트가 병합되기 전에 [기여자 라이선스 계약(CLA)](CLA.md)에 서명해야 합니다. 풀 리퀘스트에 아래 문장을 그대로 댓글로 달면 서명이 됩니다.
 

@@ -13,7 +13,7 @@ Thank you for your interest in K0. K0 is a pre-release research microkernel. Bef
 
 ## License and contributor agreement
 
-K0 is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). Qu4nt Space may also offer K0 under separate commercial terms.
+K0 is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). Quant Space may also offer K0 under separate commercial terms.
 
 Before your first pull request can be merged, you must sign the [Contributor License Agreement](CLA.md). To sign it, comment on your pull request with this sentence:
 
