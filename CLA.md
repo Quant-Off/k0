@@ -65,7 +65,17 @@ We may transfer this agreement, and the licenses and consent You grant in it, in
 
 This agreement continues to benefit Our heirs, successors and assigns.
 
-## 9. How to sign
+## 9. Governing law and jurisdiction
+
+This agreement is governed by the laws of the Republic of Korea. The courts of the Republic of Korea have exclusive jurisdiction over any dispute arising out of or in connection with this agreement.
+
+## 10. General
+
+This agreement is written in English. If We provide a translation, it is for convenience only, and the English text prevails if the two differ.
+
+If any provision of this agreement is held invalid or unenforceable, the remaining provisions stay in effect.
+
+## 11. How to sign
 
 Comment on Your first pull request with the following sentence, exactly as written:
 

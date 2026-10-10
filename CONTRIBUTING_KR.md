@@ -23,7 +23,7 @@ K0는 [PolyForm Noncommercial License 1.0.0](LICENSE)을 따릅니다. 퀀트스
 I have read the K0 CLA (CLA.md) and I agree to its terms for this and all my future contributions to K0.
 ```
 
-계약서는 현재 법률 검토를 기다리는 초안입니다. 내용이 바뀌면 새 버전에 다시 서명해 달라는 요청을 받게 됩니다. 법적 효력은 영문 원문에만 있습니다.
+계약서는 현재 법률 검토를 기다리는 초안입니다. 내용이 바뀌면 새 버전에 다시 서명해 달라는 요청을 받게 됩니다. 법적 효력은 영문 원문에만 있고, 준거법은 대한민국 법입니다.
 
 ## 환경 준비
 

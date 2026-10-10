@@ -21,7 +21,7 @@ Before your first pull request can be merged, you must sign the [Contributor Lic
 I have read the K0 CLA (CLA.md) and I agree to its terms for this and all my future contributions to K0.
 ```
 
-The agreement is currently a draft pending legal review. If it changes, you will be asked to sign the new version.
+The agreement is currently a draft pending legal review. If it changes, you will be asked to sign the new version. It is governed by the laws of the Republic of Korea.
 
 ## Setting up
 
