@@ -24,12 +24,12 @@ Until per-task CSpaces, `AddrSpace` retype, and the capability derivation tree l
 
 ## Known advisories
 
-The following advisories are tracked as GitHub Security Advisories in this repository. They are still unpublished drafts, so their identifiers do not resolve publicly yet, and this table is the public record until they are published. All of them affect version 0.1.0 and earlier, and none has a fixed version yet.
+The following advisories are tracked as GitHub Security Advisories in this repository. The first two were published on 2026-11-07. GHSA-hj3f-38h9-hrpj is still an unpublished draft, so its identifier does not resolve publicly yet, and this table is its public record until it is published. All of them affect version 0.1.0 and earlier, and none has a fixed version yet.
 
 | Advisory | Severity | Summary |
 | --- | --- | --- |
-| GHSA-vmpv-qc49-3p6r | High | All tasks share the root CNode and address space, so any spawned task holds full root authority. |
-| GHSA-q99x-2wrv-358p | Medium | A task that blocks on IPC while every other task is blocked halts the whole system. |
+| [GHSA-vmpv-qc49-3p6r](https://github.com/Quant-Off/k0/security/advisories/GHSA-vmpv-qc49-3p6r) | High | All tasks share the root CNode and address space, so any spawned task holds full root authority. |
+| [GHSA-q99x-2wrv-358p](https://github.com/Quant-Off/k0/security/advisories/GHSA-q99x-2wrv-358p) | Medium | A task that blocks on IPC while every other task is blocked halts the whole system. |
 | GHSA-hj3f-38h9-hrpj | Low | DTB memory regions are not bounded by the physical address width. |
 
 ## Reporting a vulnerability
