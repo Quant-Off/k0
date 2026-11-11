@@ -127,7 +127,6 @@ When the CPU has FEAT_PAN, the kernel runs with PAN set, so any EL1 access throu
 - The root task self-tests exercise the run-time path: mapping before a page table exists, double mapping, mapping at the null address, bad permissions, overlapping mappings, executable mapping of a retyped frame (`NO_RIGHTS`), `RX` of a text frame and `RW` of it (`NO_RIGHTS`), rights that never grow through copies, unmap and remap, mapping that follows a moved capability, a detached table that does not carry its old leaf to a new place, stale frame records after the table was detached, and reading and writing through the new mappings.
 - The isolation self-tests build confined tasks with their own CNode and address space (only image text and read-only data mapped) and check that a read of a root-only address faults at exactly that address, that writes to a read-only page, execution from a stack page and reads of a kernel address fault, and that a task dies when its address space is deleted.
 - `tools/qemu-boot-test.sh` requires, among others, `k0: user w^x checks pass`, `root: retype/map tests pass`, `root: isolation tests pass`, `root: teardown tests pass` and `root: revocation tests pass`, and an exact count of `k0: task fault` lines.
-- Not verified: the 16 KiB (Apple) build is compiled and host-tested only and has not been booted.
 
 ## Known gaps
 

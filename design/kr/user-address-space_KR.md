@@ -127,7 +127,6 @@ CPU에 FEAT_PAN이 있으면 커널은 PAN을 설정한 채 실행되므로, 사
 - 루트 태스크 자가 테스트는 실행 중 경로를 점검합니다. 페이지 테이블이 생기기 전의 매핑, 이중 매핑, null 주소 매핑, 잘못된 권한, 겹치는 매핑, retype한 프레임의 실행 매핑(`NO_RIGHTS`), text 프레임의 `RX`와 `RW`(`NO_RIGHTS`), 복사로도 늘지 않는 rights, 해제 후 재매핑, 이동한 케이퍼빌리티를 따라가는 매핑, 떼어 낸 테이블이 옛 리프를 새 자리로 가져가지 않는 것, 테이블이 분리된 뒤의 낡은 프레임 기록, 그리고 새 매핑을 통한 읽기와 쓰기입니다.
 - 격리 자가 테스트는 자기 CNode와 자기 주소 공간(이미지 text와 읽기 전용 데이터만 매핑)을 가진 격리 태스크를 만들어, 루트 전용 주소를 읽으면 정확히 그 주소에서 폴트가 나는지, 읽기 전용 페이지 쓰기·스택 페이지 실행·커널 주소 읽기가 폴트를 내는지, 주소 공간이 삭제되면 태스크가 죽는지를 확인합니다.
 - `tools/qemu-boot-test.sh`는 `k0: user w^x checks pass`, `root: retype/map tests pass`, `root: isolation tests pass`, `root: teardown tests pass`, `root: revocation tests pass` 등을 요구하고, `k0: task fault` 줄의 정확한 개수도 요구합니다.
-- 검증하지 못한 것은 16 KiB(Apple) 빌드입니다. 컴파일과 호스트 테스트만 했고 부팅해 보지는 않았습니다.
 
 ## 알려진 공백
 

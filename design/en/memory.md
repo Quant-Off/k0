@@ -13,15 +13,17 @@ This note describes how the kernel maps itself: the translation setup, the stati
 AArch64 splits the virtual address space between two table roots.
 
 - **`TTBR0_EL1`** covers the lower half. During boot it holds an identity map, where each virtual address equals its physical address. The kernel needs it to keep running at the moment the MMU turns on. Later, `TTBR0_EL1` is switched to the root task's tables and the identity map disappears.
-- **`TTBR1_EL1`** covers the upper half. It holds the kernel's alias of physical memory at a fixed offset: virtual address = physical address + `0xFFFF_0000_0000_0000`. After the jump to the higher half, the kernel uses only this alias.
+- **`TTBR1_EL1`** covers the upper half. The kernel image is always mapped at the fixed virtual address `0xFFFF_8000_0000_0000`, whatever physical address the boot loader loaded it at. The rest of the half has two parts. The first is an alias of the RAM the kernel touches (the boot frame window, objects created by `RETYPE`, the DTB) at a fixed offset: virtual address = physical address + `0xFFFF_0000_0000_0000`. The second is a device window above the image, where device registers are mapped one page at a time. The alias must end below the image, so the kernel supports RAM only below physical address 2^47 and refuses anything higher. After the jump to the higher half, the kernel uses only these mappings.
 
-Both halves use 48-bit virtual addresses (`T0SZ = T1SZ = 16`) and four levels of tables. The granule is 4 KiB on QEMU virt and 16 KiB on Apple Silicon, selected by the `plat-virt` or `plat-apple` feature. `TG0` and `TG1` encode the same granule with different values, and the code handles that explicitly. The physical address size (`IPS`) comes from the CPU's reported range, capped at 48 bits.
+Both halves use 48-bit virtual addresses (`T0SZ = T1SZ = 16`) and four levels of tables. The granule is a build option: 4 KiB by default (`granule-4k`), or 16 KiB with `--no-default-features --features granule-16k`. There is no run-time selection, and exactly one of the two features must be set or the build fails. 64 KiB is not supported. The boot checks `ID_AA64MMFR0_EL1` and refuses to boot on a CPU that does not support the chosen granule. `TG0` and `TG1` encode the same granule with different values, and the code handles that explicitly. The physical address size (`IPS`) comes from the CPU's reported range, capped at 48 bits.
+
+The image can be loaded at any physical address on the granule grid. The entry code finds its own position relative to the program counter and maps itself at the fixed virtual address. The identity map in `TTBR0_EL1` exists only for the moment of the switch.
 
 The kernel maps only pages, never blocks. Every mapping goes through the same walk to the last level, so there is one code path to reason about.
 
 ## The static table pool
 
-The kernel has no heap. Its page tables come from a pool of 32 tables in `.bss`, handed out by a counter that only goes up. Three tables are taken when the MMU is set up: the roots of the two halves and an empty `TTBR0_EL1` root with no mappings in it (`null_user_root`). The kernel switches `TTBR0_EL1` to that empty root when the address space that is currently installed is destroyed, so the hardware never walks a table that no longer exists. The rest become intermediate tables as mappings are added. On QEMU virt the boot log line `k0: kernel table pool N/32`, printed after the boot frame window is mapped, shows `18/32`. Later `RETYPE` calls can use more.
+The kernel has no heap. Its page tables come from a pool of 40 tables in `.bss`, handed out by a counter that only goes up. Three tables are taken when the MMU is set up: the roots of the two halves and an empty `TTBR0_EL1` root with no mappings in it (`null_user_root`). The kernel switches `TTBR0_EL1` to that empty root when the address space that is currently installed is destroyed, so the hardware never walks a table that no longer exists. The rest become intermediate tables as mappings are added. On QEMU virt with the default build, the boot log line `k0: kernel table pool N/40`, printed after the boot frame window is mapped, shows `16/40`. Later `RETYPE` calls can use more.
 
 When the walk follows an existing table entry, `index_of` converts the address in that entry back into a pool index. It rejects any address that does not land exactly on an allocated table in the pool. A corrupted or forged table address therefore stops the walk with `BadTable`. It is never followed into arbitrary memory.
 
@@ -40,13 +42,19 @@ All kernel mappings follow one rule: nothing is writable and executable at the s
 | `Text` | kernel code | read | yes | none |
 | `Ro` | read-only data, the DTB | read | no | none |
 | `Rw` | data, `.bss`, stacks, frame windows | read and write | no | none |
-| `Device` | UART, GIC | read and write | no | none |
+| `Device` | console UART, interrupt controller | read and write | no | none |
 
 Every kernel mapping sets `UXN`, and every one except `Text` sets `PXN`. Memory attribute index 0 is normal write-back memory and index 1 is Device-nGnRE.
 
 `SCTLR_EL1.WXN` is set when the MMU turns on. With `WXN`, the hardware refuses to execute from any writable page, whatever its execute bits say. A bug that produced a writable and executable entry would still not give an executable writable page.
 
-The linker script supports this split. It aligns text, read-only data and data to granule boundaries, and its ELF program headers carry the same R+X, R and R+W flags.
+The linker script supports this split. `kernel/build.rs` generates it from one template (`kernel/kernel.ld`), prepending the granule size, so alignment follows the granule feature. It aligns text, read-only data and data to granule boundaries, and its ELF program headers carry the same R+X, R and R+W flags.
+
+## Device and DTB mapping
+
+The DTB is mapped read-only through the alias only after its header has been checked, and the kernel reads the platform description from it. A device page is mapped only after the platform descriptor has been checked against the memory map: a device range that overlaps RAM, the kernel image or the DTB is refused, and so is a physical address beyond the CPU's address width. Device pages go into the device window one page at a time, so a large register range (for example the GICv3 redistributors) is never mapped as a whole. See [exceptions.md](exceptions.md) for the interrupt controller.
+
+The boot frame window is 2 MiB of RAM that the kernel picks inside the memory map: first right after the kernel image (after the DTB if they overlap), and if there is no room above, from the lowest memory upward.
 
 ## Guard pages
 
@@ -88,12 +96,13 @@ Any mismatch stops the boot with the name of the check. These checks test the ta
 
 ## How it is tested
 
+- `tools/boot-matrix.sh` boots the default build and the 16 KiB build on several QEMU configurations, and checks that unsupported configurations are refused with a reason in the boot log.
 - Host unit tests in `crates/k0-mm/src/paging/tests.rs` check the index arithmetic for both granules, the W^X properties of every kernel permission, the rollback after a failed walk, the rejection of forged or block entries, and that an identical leaf is accepted only when the caller asks for it (`an_identical_leaf_is_accepted_only_when_asked`). They run on AArch64 hosts.
 - `tools/qemu-boot-test.sh` requires the line `k0: w^x checks pass`.
 
 ## Known gaps
 
-- The pool size is fixed at 32 tables. If retypes spread over enough distinct address ranges, the pool runs out and `RETYPE` returns `KERNEL_RESOURCE`. Nothing leaks, but the pool is never reclaimed.
+- The pool size is fixed at 40 tables. If retypes spread over enough distinct address ranges, the pool runs out and `RETYPE` returns `KERNEL_RESOURCE`. Nothing leaks, but the pool is never reclaimed.
 - Kernel alias mappings are never removed. A retyped object stays mapped in the kernel alias even after its capability is revoked and its memory is retyped again. Reuse no longer fails, because an identical alias is accepted, but the alias itself and the tables that hold it stay.
 - Because of the previous two points, a task that holds a lot of untyped memory can retype across enough distinct address ranges to use up the pool. `RETYPE` then returns `KERNEL_RESOURCE` for every task, not only for the one that caused it. Isolation between tasks does not cover this availability limit.
 - Address space identifiers (ASIDs) are not used. Every switch to a different user address space invalidates the whole TLB.

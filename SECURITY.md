@@ -53,7 +53,12 @@ What is still NOT provided on `main`:
 - A sender already queued on an endpoint still delivers once after its capability is revoked.
 - One core only.
 - New executable code cannot be loaded after boot, so a confined task runs code from the root task image.
-- The 16 KiB (Apple Silicon) build is compiled and host-tested only. It has never been booted.
+- Only the evidence tiers in [INTRODUCTION.md](INTRODUCTION.md) count as supported. Real boards, KVM and other hypervisors, the 16550 console driver, and processors with `HCR_EL2.E2H` fixed to 1 have never been booted.
+- The device tree is not trusted, but it now supplies device addresses. A wrong or hostile device tree can point the console at another device. The kernel limits this: it checks the platform descriptor against the memory map, checks the identification registers of the GIC and the PL011 (no such register exists for a 16550, so that driver has no such check), maps a device page only after validation, bounds every console wait, and offers a pinned build (`K0_PIN`) that refuses a different platform. The pinned build compares values that come from the device tree, so it does not stop a hostile boot chain.
+- The address of the device tree cannot be checked before the first read. The boot loader passes it in `x0`, and the kernel has no memory map until it has read that blob. The kernel refuses a null or misaligned address, an address at or above 2^47 and a range that overlaps the kernel image. It then maps the address as read-only normal memory and reads eight bytes. It reads further, up to 2 MiB, only if those bytes look like a device tree header. A boot loader that passes the address of a device therefore makes the kernel read device registers as if they were memory, and reading some registers has side effects. The mapping is cacheable, so the processor may fetch more of that page than the eight bytes the kernel asks for. The later check that the device tree lies inside declared memory uses the memory map from the same blob. The kernel never writes through this mapping.
+- Kernel output and task output share one console and one boot log, and a line does not say who wrote it. A task that holds a `Console` capability can print a line that starts with `k0:`. The kernel replaces control bytes and limits how much of the boot log task output may use, but nothing that reads the console or the log, including `tools/qemu-boot-test.sh`, can treat a `k0:` line printed after `k0: entering root task (el0)` as written by the kernel.
+- Isolation covers confidentiality and integrity, not availability. A trap to EL2 after the kernel has stepped down to EL1 parks the whole machine by design.
+- Entry at EL2 relies on the firmware contract that Linux also uses: an EL3 firmware must enable the fine-grained-trap and HCRX controls when those features exist.
 - The root task is still trusted and holds the initial `Untyped` capabilities, and `write_bootinfo` still exposes their physical addresses to it.
 
 Even on `main`, treat running untrusted code as experimental. The isolation is exercised by the host tests and the boot self-tests, and the availability limits above still apply. Isolation bypasses on `main` are welcome reports.
@@ -75,7 +80,7 @@ The current `main` branch contains changes that address the subject of some of t
 Please do not open a public issue for a security problem.
 
 - Preferred: open a draft security advisory at <https://github.com/Quant-Off/k0/security/advisories/new>.
-- Alternative: email the maintainer at <qtfelix@qu4nt.space>. Include the affected commit hash, the platform (QEMU virt or Apple Silicon), and a reproduction if you have one.
+- Alternative: email the maintainer at <qtfelix@qu4nt.space>. Include the affected commit hash, the platform (QEMU machine and CPU model, hypervisor, or board), the entry level (EL1 or EL2), the page size (4 KiB or 16 KiB), the `k0: platform ...` line from the boot log, and a reproduction if you have one.
 
 Isolation gaps in `v0.1.0` and earlier commits, and the availability and resource limits listed under "What is still NOT provided on `main`", are already known and do not need to be filed again. Isolation bypasses on the current `main` branch are welcome, for example a task reaching another task's memory or capabilities, a revoked capability that keeps working, or a stale mapping that survives unmap, revoke or address space destruction. Reports about anything else, including boot-time memory map validation, exception handling, scheduler policy, and IPC state machines, are welcome.
 
@@ -83,6 +88,6 @@ Isolation gaps in `v0.1.0` and earlier commits, and the availability and resourc
 
 In scope: everything under `kernel/`, `crates/`, and `userspace/root-task/`.
 
-Out of scope: the boot chain before the kernel entry point (m1n1, QEMU firmware), and the integrity of the kernel image itself. Kernel image signing is the boot chain's responsibility.
+Out of scope: the boot chain before the kernel entry point (for example firmware, the boot loader and the hypervisor), and the integrity of the kernel image itself. Kernel image signing is the boot chain's responsibility.
 
 The kernel checks the embedded root task image against a SHA-256 hash at every boot. This is a corruption check, not a signature check. The reference hash lives in the same kernel image as the root task, so anyone who can modify the kernel image can change both. Reports that rely on modifying the kernel image are therefore out of scope.

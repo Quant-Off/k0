@@ -14,13 +14,13 @@ After the handoff, kernel code runs only in response to an exception. This note 
 
 ## The vector table
 
-AArch64 has 16 vector entries: four kinds of exception (synchronous, IRQ, FIQ, SError) for each of four origins. K0 gives each entry one of three behaviors.
+AArch64 has 16 vector entries: four kinds of exception (synchronous, IRQ, FIQ, SError) for each of four origins. K0 gives each entry one of four behaviors. The kernel takes only IRQs, so a FIQ is a state that should not happen: the FIQ entries call a dispatcher that prints `k0: UNEXPECTED fiq intid=0` and parks.
 
 | Origin | Sync | IRQ | FIQ | SError |
 | --- | --- | --- | --- | --- |
 | EL1 using `SP_EL0` | fatal | fatal | fatal | fatal |
-| EL1 using `SP_EL1` | fatal | handled, returns | handled, returns | fatal |
-| EL0, AArch64 | saved, handled, returns | saved, handled, returns | saved, handled, returns | fatal |
+| EL1 using `SP_EL1` | fatal | handled, returns | unexpected, parks | fatal |
+| EL0, AArch64 | saved, handled, returns | saved, handled, returns | saved, unexpected, parks | fatal |
 | EL0, AArch32 | fatal | fatal | fatal | fatal |
 
 The kernel only ever runs on `SP_EL1`, so the `SP_EL0` row should never fire. K0 runs no 32-bit code. An SError means the hardware reported an asynchronous error, and the kernel does not try to recover from one.
@@ -35,7 +35,11 @@ The fatal vector path above is for exceptions the CPU raises. `k0_arch::fatal` i
 
 ### Interrupts while in the kernel
 
-An IRQ or FIQ taken at EL1 saves the caller-saved registers on the kernel stack, calls the handler and returns. After the handoff this does not happen, because exception entry masks interrupts and the kernel never unmasks them while handling an exception. The kernel itself is never preempted.
+An IRQ taken at EL1 saves the caller-saved registers on the kernel stack, calls the handler and returns. After the handoff this does not happen, because exception entry masks interrupts and the kernel never unmasks them while handling an exception. The kernel itself is never preempted.
+
+### Vectors at EL2
+
+If the kernel is entered at EL2, the boot code sets up the EL2 state itself, drops to EL1 once and never returns to EL2. It installs an EL2 vector table before the drop. An entry into EL2 for any reason records the cause and parks the core. After the drop, a trap to EL2 is not part of the design, so it parks the whole machine by design: the kernel does not try to handle or recover from it. When the kernel is entered at EL1 there is no EL2 code.
 
 ## Saving and restoring user state
 
@@ -110,7 +114,9 @@ Cleanup comes before the switch because a revoke can destroy the very address sp
 
 ## Timer interrupts from EL0
 
-An IRQ (on QEMU) or FIQ (on Apple Silicon) taken from EL0 is saved the same way as a system call. The handler acknowledges the interrupt. If it was the timer, it re-arms the timer for one second, prints `k0: tick N` and calls `k0_preempt`, which rotates to the next ready task. Spurious interrupt numbers 1020 to 1023 are ignored. Any other interrupt number, an IRQ on Apple Silicon, or an FIQ on QEMU cannot happen by design, so the kernel prints `k0: UNEXPECTED ...` and parks.
+The only interrupt the kernel enables is the EL1 virtual timer. Its interrupt number comes from the DTB, and the kernel uses no physical timer. The interrupt controller is GICv2 or GICv3, whichever the DTB says is the timer's interrupt parent; before it writes anything, the driver checks the identification registers against that description and refuses to boot if they differ. See [dtb.md](dtb.md).
+
+An IRQ taken from EL0 is saved the same way as a system call. The handler acknowledges the interrupt. If it was the timer, it re-arms the timer for one second, prints `k0: tick N` and calls `k0_preempt`, which rotates to the next ready task. Spurious interrupt numbers 1020 to 1023 are ignored. Any other interrupt number, or any FIQ, cannot happen by design, so the kernel prints `k0: UNEXPECTED ...` and parks.
 
 ## How it is tested
 
@@ -124,4 +130,3 @@ The root task self-tests start tasks that fault in each way that matters and che
 - Any exception at EL1 other than an interrupt is fatal. The kernel does not recover from its own faults: the fatal vector path prints a diagnosis and halts the whole system. A kernel invariant violation found by the kernel's own checks stops the system the same way through `k0_arch::fatal`.
 - A task that faults or makes an unknown system call kills only itself, but if it was the last runnable task the whole system parks (`k0: all tasks exited`). If all tasks are blocked, the kernel also parks (GHSA-q99x-2wrv-358p). Isolation does not cover availability.
 - The fault message includes user addresses. That is useful for debugging, but it goes to a console that every task holding a `Console` capability can also write to.
-- The 16 KiB (Apple) build compiles and passes host tests, but it has not been booted.

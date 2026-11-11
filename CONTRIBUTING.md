@@ -46,16 +46,16 @@ The file [.oss-scanner/Dockerfile](.oss-scanner/Dockerfile) is a complete, teste
 ## Building
 
 ```sh
-cargo virt                                   # build for QEMU virt and boot it
-cargo build -p k0-kernel --offline           # build the QEMU virt image only
-cargo apple                                  # Apple Silicon (m1n1) release build
+cargo virt                                   # build the generic image and boot it on QEMU virt
+cargo build -p k0-kernel --offline           # build the generic 4 KiB image only
+cargo build -p k0-kernel --offline --no-default-features --features granule-16k --target-dir target/g16   # 16 KiB image
 ```
 
 The kernel never exits. Once the root task finishes its self-tests, it yields forever and the kernel prints `k0: tick N` once a second. Stop QEMU with `Ctrl-A X`.
 
 ## Testing
 
-Run all three before you open a pull request.
+Run all three before you open a pull request. If you change the boot path, a driver or the device tree code, also run `tools/boot-matrix.sh`. CI runs it, and [USAGE.md](USAGE.md) describes its rows.
 
 ```sh
 tools/host-test.sh                           # unit tests and DTB fuzzing on the host
@@ -104,7 +104,7 @@ CI builds the scanner image and then runs the tests inside it with networking di
 ```sh
 docker build --file .oss-scanner/Dockerfile --tag k0-ci .
 docker run --rm --network none k0-ci tools/host-test.sh
-docker run --rm --network none k0-ci tools/qemu-boot-test.sh
+docker run --rm --network none k0-ci tools/boot-matrix.sh
 ```
 
 Run this from a clean checkout, because the build context includes everything in the working directory.
@@ -124,7 +124,7 @@ Run this from a clean checkout, because the build context includes everything in
 - One logical change per commit. A reviewer should be able to read each commit on its own.
 - Keep the subject line short and plain. Korean or English are both fine. Do not use type prefixes such as `feat:` or `fix:`.
 - In the pull request, say what changed, why, and how you tested it. Link the issue if there is one.
-- CI must pass. It builds both platform images, runs the host tests on x86-64 and AArch64, and boots the kernel under QEMU on two CPU models.
+- CI must pass. It builds the 4 KiB and the 16 KiB image, runs the host tests on x86-64 and AArch64, and runs the boot matrix (`tools/boot-matrix.sh`) under QEMU.
 
 ## AI-assisted contributions
 

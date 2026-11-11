@@ -141,4 +141,3 @@ The scheduler and the system call paths read system registers, so they are teste
 - A dead TCB is not reclaimed by teardown. Its frame becomes reusable only when its capability is deleted or its untyped is revoked and retyped.
 - There are no hardware address space identifiers, so every switch between address spaces flushes the whole TLB.
 - A task that dies cannot be restarted. A new task needs a new TCB.
-- The 16 KiB (Apple) build compiles and passes host tests, but it has not been booted.

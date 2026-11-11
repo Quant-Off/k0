@@ -20,7 +20,9 @@ body:
       label: Platform
       options:
         - QEMU virt
-        - Apple Silicon (m1n1)
+        - Another QEMU machine
+        - Hypervisor guest (KVM or HVF)
+        - Real board
         - Host unit tests
         - Other
     validations:

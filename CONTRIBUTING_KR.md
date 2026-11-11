@@ -48,16 +48,16 @@ K0는 완전히 오프라인으로 빌드됩니다. 서드파티 크레이트는
 ## 빌드
 
 ```sh
-cargo virt                                   # QEMU virt 빌드 후 부팅
-cargo build -p k0-kernel --offline           # QEMU virt 이미지만 빌드
-cargo apple                                  # Apple Silicon(m1n1) release 빌드
+cargo virt                                   # 범용 이미지를 빌드해 QEMU virt에서 부팅
+cargo build -p k0-kernel --offline           # 범용 4 KiB 이미지만 빌드
+cargo build -p k0-kernel --offline --no-default-features --features granule-16k --target-dir target/g16   # 16 KiB 이미지
 ```
 
 커널은 종료하지 않습니다. 루트 태스크가 자가 테스트를 마치면 계속 양보하고, 커널은 1초마다 `k0: tick N`을 출력합니다. QEMU는 `Ctrl-A X`로 끕니다.
 
 ## 테스트
 
-풀 리퀘스트를 열기 전에 세 가지를 모두 실행해 주세요.
+풀 리퀘스트를 열기 전에 세 가지를 모두 실행해 주세요. 부팅 경로, 드라이버, 디바이스 트리 코드를 바꿨다면 `tools/boot-matrix.sh`도 실행해 주세요. CI가 이것을 실행하며, 행의 내용은 [USAGE_KR.md](USAGE_KR.md)에 있습니다.
 
 ```sh
 tools/host-test.sh                           # 호스트 단위 테스트와 DTB 퍼징
@@ -106,7 +106,7 @@ CI는 스캐너 이미지를 빌드한 뒤 네트워크를 끊은 컨테이너 �
 ```sh
 docker build --file .oss-scanner/Dockerfile --tag k0-ci .
 docker run --rm --network none k0-ci tools/host-test.sh
-docker run --rm --network none k0-ci tools/qemu-boot-test.sh
+docker run --rm --network none k0-ci tools/boot-matrix.sh
 ```
 
 빌드 컨텍스트에 작업 디렉터리의 모든 파일이 들어가므로 깨끗한 체크아웃에서 실행해 주세요.
@@ -126,7 +126,7 @@ docker run --rm --network none k0-ci tools/qemu-boot-test.sh
 - 커밋 하나에는 논리적 변경 하나만 담습니다. 리뷰어가 커밋을 하나씩 따로 읽을 수 있어야 합니다.
 - 제목은 짧고 평이하게 씁니다. 한국어와 영어 모두 괜찮습니다. `feat:`나 `fix:` 같은 접두어는 쓰지 않습니다.
 - 풀 리퀘스트에는 무엇을, 왜 바꿨고, 어떻게 테스트했는지 적고, 관련 이슈가 있으면 연결합니다.
-- CI를 통과해야 합니다. CI는 두 플랫폼 이미지를 빌드하고, x86-64와 AArch64에서 호스트 테스트를 돌리고, 두 가지 CPU 모델의 QEMU로 커널을 부팅합니다.
+- CI를 통과해야 합니다. CI는 4 KiB 이미지와 16 KiB 이미지를 빌드하고, x86-64와 AArch64에서 호스트 테스트를 돌리고, QEMU로 부팅 매트릭스(`tools/boot-matrix.sh`)를 실행합니다.
 
 ## AI 보조 기여
 

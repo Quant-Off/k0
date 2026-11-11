@@ -60,6 +60,8 @@ The EL0 thread pointer registers `TPIDR_EL0` and `TPIDRRO_EL0` are part of each 
 
 `DEBUG_PUTC` requires the `Console` capability and replaces every byte that is neither printable ASCII nor a newline with `?`. A task cannot send terminal escape sequences to whoever reads the console.
 
+The filter does not mark who wrote a line. Kernel output and task output share the console and the boot log, so a task with a `Console` capability can print a newline followed by text that starts with `k0:`. A reader of the console or the log, including `tools/qemu-boot-test.sh`, cannot treat a `k0:` line that appears after `k0: entering root task (el0)` as written by the kernel. Task output is recorded in the boot log only up to a quota, so it cannot push kernel lines out of the log, but it is not marked there either. Give the `Console` capability only to tasks whose output may be mixed with the kernel's.
+
 ## Root task integrity
 
 The kernel contains no ELF loader. `crates/k0-boot/build.rs` builds the root task on the build host, parses its ELF file there, and converts it into a flat image plus a short list of segments. During the conversion it enforces:
@@ -96,4 +98,4 @@ The panic handler masks all interrupts and parks the core. Debug builds print th
 - The same PAC keys serve EL0 and EL1 and every task. Once code starts signing pointers, a task could forge pointers the kernel accepts. Per-task or per-level keys are not implemented.
 - BTI is not enabled.
 - The root task check proves integrity against accidents and limited tampering, not authenticity.
-- None of this has run on real hardware yet. CI uses QEMU only.
+- No real board has been tried. CI uses QEMU only. One manual run on 2026-11-11 used QEMU with HVF on an ARM Mac.

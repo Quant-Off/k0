@@ -34,7 +34,12 @@ K0 is meant to become the isolation core of high-security systems: cross-domain 
 
 ## What works today
 
-- **Starting up**: K0 boots on QEMU's virtual ARM machine (QEMU virt) and uses a single processor core. If it is started at the level meant for virtual machine software (the hypervisor level, EL2), it steps down to the normal kernel level (EL1). If it is started in any state it does not support, it stops instead of guessing.
+- **Starting up**: one generic image boots wherever the following holds. The processor is ARMv8-A or ARMv9-A and little-endian. The boot loader enters the kernel with the memory map switched off (MMU off), at EL1 or at the hypervisor level (EL2), following the Linux arm64 Image protocol, with the address of the device tree in register x0. The interrupt controller is a GICv2 or GICv3, the processor has the ARM generic timer, RAM lies below 2^47 bytes (128 TiB), and the boot loader starts exactly one processor core. K0 uses that one core. The image can be loaded at any physical address that fits the page grid, and it always runs at the virtual address `0xFFFF_8000_0000_0000`. If it is started at EL2, the kernel sets up the EL2 state itself, steps down to EL1 once and never goes back. If it is started in any state it does not support, it stops instead of guessing.
+- **Finding devices**: from the device tree the kernel takes only three things: the console (the node named by `stdout-path` in `/chosen`; PL011, SBSA UART or 16550 family), the interrupt controller (the interrupt parent of the timer node; GICv2 or GICv3) and the interrupt number of the EL1 virtual timer. They go into one platform descriptor that never changes, printed as a `k0: platform ...` line, and it is checked against the memory map before any device page is mapped. The hardware must agree with the device tree (the identification registers of the GIC and the PL011), otherwise the kernel refuses to boot. With any other UART, or without `stdout-path`, there is no console.
+- **Boot log**: every line the kernel prints also goes into a 16 KiB buffer in kernel memory. Lines printed before the console is attached are replayed once it is. With no console, this buffer is the only record. `tools/boot-log.py` reads it from the memory of a QEMU guest. Output of user tasks is recorded only up to a quota.
+- **Timer**: only the EL1 virtual timer is used, so it works inside hypervisor guests. The image never touches the physical timer, and the boot matrix checks that.
+- **Granule**: the page size is 4 KiB by default. A 16 KiB build is a build option (see [USAGE.md](USAGE.md)). It is not chosen at run time, and on a processor without 16 KiB support the 16 KiB image refuses to boot.
+- **Pinned build**: an image built with `K0_PIN` set to the platform line of a boot log refuses to boot when the discovered platform, the entry level or the RAM range differs. This catches a wrong board or a swapped device tree. It is not a defence against a hostile boot chain, because the comparison uses values that come from the device tree.
 - **Protecting its own memory**: no page of kernel memory is both writable and executable (W^X). An empty guard page sits below the kernel's boot stack, so running off the end of the stack stops the kernel instead of damaging other memory. At boot, the kernel asks the processor to look up its own memory map (address translation instructions) to check that these settings really took effect.
 - **Distrusting boot input**: the hardware description handed over at boot (the device tree, DTB) is read as if an attacker wrote it. If it claims memory that overlaps hardware registers (MMIO) or lies beyond what the processor can address, the boot stops.
 - **Processor security features**: when the processor has them, K0 loads the keys that let the processor detect tampered pointers (pointer authentication, PAC) and turns on the guard that keeps the kernel from accidentally using program memory (PAN). Programs cannot read the hardware counters, debug registers or performance counters. The compiler does not produce pointer signing instructions yet, so the places where the kernel's functions return to are not protected yet.
@@ -46,6 +51,14 @@ K0 is meant to become the isolation core of high-security systems: cross-domain 
 - **Checking the first program**: the root task is built into the kernel image, and at every boot its fingerprint (a SHA-256 hash) is checked again. This catches corruption, but it does not prove who made the image the way a signature would. [SECURITY.md](SECURITY.md) explains why under "Scope".
 
 The root task tests every item above with self-tests on every boot.
+
+## Where it has run
+
+Only the first two tiers may be called supported.
+
+- **Tier 1, checked by `tools/boot-matrix.sh` (CI runs it on QEMU 7.2)**: QEMU virt with GICv3 and with GICv2, each entered at EL1 and at EL2; the CPU models cortex-a72, cortex-a53 and max; the security extensions switched on (`secure=on`) for both GIC versions; 4 processor cores started by the machine (K0 still uses one); the 16 KiB image on max and its refusal on cortex-a72; the same image loaded at three other physical addresses (the header `text_offset` patched) and a refusal for an address off the 16 KiB grid; `xlnx-versal-virt` (RAM at address 0, GICv3 and PL011 elsewhere, entered at EL2); a pinned image that boots on its own platform and refuses on another; and a static check that the image does not touch the physical timer. The rows also ran locally on QEMU 11.1.3.
+- **Tier 2, run by hand on 2026-11-11**: Apple M5 Pro, QEMU 11.1.3 with HVF, which runs real Apple cores as a hypervisor guest: the 4 KiB image at EL1, entry at guest EL2, the 16 KiB image and 4 cores (`K0_MATRIX_HVF=1 tools/boot-matrix.sh`).
+- **Tier 3, expected by the contract but never booted**: any real board, KVM, Firecracker, Cloud Hypervisor, crosvm, the 16550 console driver (no machine in the matrix has one), GICs with real security extensions on hardware, and processors whose `HCR_EL2.E2H` is fixed to 1. The EL2 path for such processors follows Linux but has not been run anywhere. As with Linux, an EL3 firmware must enable the fine-grained-trap and HCRX controls when those features exist.
 
 ## How far the isolation goes
 
@@ -71,16 +84,19 @@ Missing features:
 - Loading new executable code after boot. This is the flip side of the write-or-run rule: executable memory exists only for the root task image, so a confined task runs code from that image
 - Multi-level key lookup, and hardware address space tags (ASIDs). Today every switch to another address space empties the processor's cache of memory map lookups (the TLB)
 - Checking a digital signature (Ed25519) once the root task ships separately from the kernel
-- Booting on real Apple Silicon hardware (today the Apple build is only compiled and host-tested)
+- Booting on real boards, and on KVM, Firecracker, Cloud Hypervisor or crosvm (tier 3 above)
+- Entry from EL3, UEFI and ACPI. UEFI and ACPI are planned as the next scope, as a loader outside the kernel
+- Interrupt controllers other than GICv2 and GICv3, confidential VMs, a 64 KiB granule, big-endian, boards whose device tree declares a timer erratum, and RAM above 2^47 bytes. These are excluded by decision
+- Apple Silicon bare metal. There is no plan for it
 - AMD64, the processors in most PCs, and other architectures
 
 Missing protection and assurance:
 
 - Availability guarantees (see the previous section)
-- DMA isolation: some devices read and write memory directly, without the processor (DMA). Once devices are handed to programs, a memory map for devices (an IOMMU: SMMU on ARM, DART on Apple) has to stop such a device from reading all memory. Nothing for this exists yet
+- DMA isolation: some devices read and write memory directly, without the processor (DMA). Once devices are handed to programs, a memory map for devices (an IOMMU, such as the SMMU on ARM) has to stop such a device from reading all memory. Nothing for this exists yet
 - Side channels, where secrets leak through timing or through caches the processor shares, rather than by direct access: a few such leaks are closed (programs cannot read the hardware counters, and the TLB is emptied whenever the address space changes), but there is no general defence against cache or timing side channels, and they have not been analysed
 - Taking a key back does not cancel a sender already waiting at the mailbox. Its message is still delivered once
-- Assurance comes from testing only: unit tests and fuzzing (feeding random, broken input to find crashes) on the build machine, and self-tests at boot in QEMU. There is no formal proof, a mathematical proof that the code does what it should, and nothing has run on real hardware
+- Assurance comes from testing only: unit tests and fuzzing (feeding random, broken input to find crashes) on the build machine, and self-tests at boot in QEMU and in a hypervisor guest on real Apple cores. There is no formal proof, a mathematical proof that the code does what it should, and nothing has run on a real board
 
 ## Where the code lives
 
@@ -96,5 +112,5 @@ Missing protection and assurance:
 | `crates/k0-sched` | Round-robin scheduler |
 | `crates/k0-ipc` | Synchronous messages |
 | `userspace/root-task` | The first program and its self-tests |
-| `tools/` | QEMU runner, boot test, host test |
+| `tools/` | QEMU runner, boot test, boot matrix, boot log reader, host test |
 | `vendor/` | Third-party crates kept in the repository (`sha2` and its dependencies) |
