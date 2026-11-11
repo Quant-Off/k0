@@ -21,12 +21,19 @@ mkdir -p "$(dirname "$log")"
 pid=$!
 trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
 
-fail_re='root: FAIL|k0: EXCEPTION|k0: PANIC|k0: FATAL|k0: UNEXPECTED|rejected|failed|check fail|k0: all tasks|corrupt|overflow|no frame window|too many root task segments'
+fail_re='root: FAIL|k0: EXCEPTION|k0: PANIC|k0: FATAL|k0: UNEXPECTED|rejected|failed|check fail|k0: all tasks|corrupt|overflow|no frame window|too many root task segments|k0-loader: refused'
+
+# UEFI 부팅(.efi)에서는 펌웨어가 같은 직렬 포트에 먼저 출력하고, 그 안에
+# "failed" 같은 낱말이 섞여 있습니다. 실패 판정은 로더의 첫 줄부터 봅니다.
+case "$elf" in
+*.efi) judged() { tr -d '\r' < "$log" | sed -n '/k0-loader: start/,$p'; } ;;
+*) judged() { cat "$log"; } ;;
+esac
 
 elapsed=0
 state=timeout
 while [ "$elapsed" -lt "$timeout_s" ]; do
-    if grep -Eq "$fail_re" "$log"; then
+    if judged | grep -Eq "$fail_re"; then
         state=failure
         break
     fi
@@ -116,7 +123,7 @@ echo "boot-test: FAIL (state $state after ${elapsed}s)" >&2
 if [ -n "$missing" ]; then
     echo "boot-test: first missing marker: $missing" >&2
 fi
-grep -En "$fail_re" "$log" >&2 || true
+judged | grep -En "$fail_re" >&2 || true
 echo "boot-test: last lines of $log" >&2
 tail -n 40 "$log" >&2
 exit 1

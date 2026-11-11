@@ -6,7 +6,7 @@ cd "$root"
 
 host="$(rustc -vV | sed -n 's/^host: //p')"
 
-cargo test --offline --target "$host" -p k0-abi -p k0-cap -p k0-boot "$@"
+cargo test --offline --target "$host" -p k0-abi -p k0-cap -p k0-boot -p k0-efi "$@"
 
 case "$(uname -m)" in
     arm64|aarch64)

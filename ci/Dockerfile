@@ -12,14 +12,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/cargo/bin:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git python3 bash procps gcc libc6-dev \
-      qemu-system-arm ipxe-qemu gdb-multiarch \
+      qemu-system-arm ipxe-qemu qemu-efi-aarch64 gdb-multiarch \
     && rm -rf /var/lib/apt/lists/*
 
-# Pinned toolchain, identical to rust-toolchain.toml: 1.89.0 + rust-src + llvm-tools + bare-metal target.
+# Pinned toolchain, identical to rust-toolchain.toml: 1.89.0 + rust-src + llvm-tools, the bare-metal
+# target for the kernel and the UEFI target for the loader. qemu-efi-aarch64 is the EDK2 firmware
+# that the UEFI rows of the boot matrix boot through.
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal \
       --default-toolchain 1.89.0 \
       --component rust-src --component llvm-tools \
-      --target aarch64-unknown-none-softfloat \
+      --target aarch64-unknown-none-softfloat --target aarch64-unknown-uefi \
     && rustup --version && cargo --version \
     && host="$(rustc -vV | sed -n 's/^host: //p')" \
     && for t in llvm-objcopy llvm-objdump llvm-nm llvm-readelf llvm-size; do \

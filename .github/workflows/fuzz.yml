@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   dtb:
-    name: DTB parser fuzzing
+    name: DTB parser and loader logic fuzzing
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -34,4 +34,4 @@ jobs:
         run: >-
           docker run --rm --network none
           --env K0_FUZZ_ITERS="$CASES" --env K0_FUZZ_SEED="$SEED"
-          k0-ci sh -c 'cargo test --release --offline --target "$(rustc -vV | sed -n "s/^host: //p")" -p k0-boot fuzz -- --nocapture'
+          k0-ci sh -c 'cargo test --release --offline --target "$(rustc -vV | sed -n "s/^host: //p")" -p k0-boot -p k0-efi fuzz -- --nocapture'

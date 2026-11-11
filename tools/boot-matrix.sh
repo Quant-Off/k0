@@ -16,6 +16,9 @@ imgpin="$root/target/pin/aarch64-unknown-none-softfloat/debug/k0-kernel"
 
 cargo build -p k0-kernel --offline || exit 2
 cargo build -p k0-kernel --offline --no-default-features --features granule-16k --target-dir target/g16 || exit 2
+# UEFI 로더: 위에서 빌드한 바로 그 커널을 내장함
+efi4="$(tools/build-loader.sh "$img4" | tail -n 1)" || exit 2
+efi16="$(tools/build-loader.sh "$img16" | tail -n 1)" || exit 2
 
 failed=""
 ran=0
@@ -85,6 +88,37 @@ refuse() {
     fi
 }
 
+# 직렬 로그로 판정하는 거부 행: 이름, 로더, 로그에 있어야 할 사유, 그 뒤는 환경
+# 변수 대입들. 로더는 부트 서비스가 살아 있을 때 거부하므로 사유가 펌웨어
+# 콘솔(직렬 포트)에 나옵니다. 커널의 첫 줄이 나오면 거부가 아닙니다.
+refuse_serial() {
+    name="$1"; elf="$2"; reason="$3"; shift 3
+    want "$name" $only || return 0
+    ran=$((ran + 1))
+    env "$@" tools/qemu-virt-runner.sh "$elf" > "target/matrix-$name.serial" 2>&1 < /dev/null &
+    pid=$!
+    waited=0
+    seen=no
+    while [ "$waited" -lt "${K0_MATRIX_REFUSE_WAIT:-60}" ]; do
+        sleep 1
+        waited=$((waited + 1))
+        if grep -aqF -- "$reason" "target/matrix-$name.serial"; then
+            seen=yes
+            break
+        fi
+        kill -0 "$pid" 2>/dev/null || break
+    done
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    if [ "$seen" = yes ] && ! grep -aq 'k0: entry phase' "target/matrix-$name.serial"; then
+        echo "matrix: $name pass (refused: $reason)"
+    else
+        echo "matrix: $name FAIL (no refusal after ${waited}s)"
+        show "target/matrix-$name.serial"
+        failed="$failed $name"
+    fi
+}
+
 only="$*"
 
 # 물리 타이머를 쓰지 않음: 하이퍼바이저 게스트에는 가상 타이머만 보장되므로
@@ -146,8 +180,37 @@ if want pinned-match $only || want pinned-other $only; then
     fi
 fi
 
+# UEFI: 펌웨어(EDK2)를 거쳐 로더로 부팅. 펌웨어가 디바이스 트리를 넘기는
+# 구성(acpi=off)만 다루고, 로더는 UEFI 메모리 맵으로 메모리 기술을 다시 씀.
+# 메모리 배치가 펌웨어 빌드에 달려 있으므로 재사용 시험은 건너뛰어도 통과로 봄
+if want uefi-pe $only; then
+    ran=$((ran + 1))
+    if tools/pe-check.py "$efi4" > target/matrix-uefi-pe.out 2>&1 && tools/pe-check.py "$efi16" >> target/matrix-uefi-pe.out 2>&1; then
+        echo "matrix: uefi-pe pass"
+    else
+        echo "matrix: uefi-pe FAIL"
+        show target/matrix-uefi-pe.out
+        failed="$failed uefi-pe"
+    fi
+fi
+pass uefi-gic3-el1   "$efi4" K0_BOOT_REUSE=skip
+pass uefi-gic3-el2   "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=3,acpi=off,virtualization=on
+pass uefi-gic2-el1   "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=2,acpi=off
+pass uefi-gic2-el2   "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=2,acpi=off,virtualization=on
+pass uefi-max        "$efi4" K0_BOOT_REUSE=skip K0_QEMU_CPU=max K0_BOOT_REQUIRE="k0: pac=on bti=present pan=on"
+pass uefi-smp4       "$efi4" K0_BOOT_REUSE=skip K0_QEMU_SMP=4
+pass uefi-16k        "$efi16" K0_BOOT_REUSE=skip K0_QEMU_CPU=max
+# 이동식 매체 경로: FAT 드라이브의 EFI/BOOT/BOOTAA64.EFI (부트 매니저 대기가 붙음)
+pass uefi-esp        "$efi4" K0_BOOT_REUSE=skip K0_QEMU_ESP=1
+# 펌웨어가 디바이스 트리를 주지 않는 기본 구성(ACPI)과, 그래뉼이 없는 CPU는 로더가 거부
+refuse_serial uefi-no-dtb     "$efi4" "the firmware provides no device tree" K0_QEMU_MACHINE=virt,gic-version=3
+refuse_serial uefi-16k-on-a72 "$efi16" "this cpu has no 16K translation granule"
+
 # 실제 Apple 코어 (하이퍼바이저 게스트)
 if [ "${K0_MATRIX_HVF:-0}" = 1 ]; then
+    pass uefi-hvf-el1 "$efi4" K0_BOOT_REUSE=skip K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
+    pass uefi-hvf-el2 "$efi4" K0_BOOT_REUSE=skip K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_QEMU_MACHINE=virt,gic-version=3,acpi=off,virtualization=on
+    pass uefi-hvf-16k "$efi16" K0_BOOT_REUSE=skip K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
     pass hvf-el1     "$img4" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
     pass hvf-el2     "$img4" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on
     pass hvf-16k     "$img16" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
