@@ -79,6 +79,14 @@ name = "k0-cap"
 version = "0.1.0"
 
 [[package]]
+name = "k0-efi"
+version = "0.1.0"
+dependencies = [
+ "k0-abi",
+ "k0-boot",
+]
+
+[[package]]
 name = "k0-ipc"
 version = "0.1.0"
 dependencies = [
@@ -102,6 +110,15 @@ dependencies = [
  "k0-mm",
  "k0-sched",
  "k0-task",
+]
+
+[[package]]
+name = "k0-loader"
+version = "0.1.0"
+dependencies = [
+ "k0-boot",
+ "k0-efi",
+ "sha2",
 ]
 
 [[package]]

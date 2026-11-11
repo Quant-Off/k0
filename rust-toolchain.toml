@@ -1,4 +1,4 @@
 [toolchain]
 channel = "1.89.0"
 components = ["rust-src", "llvm-tools"]
-targets = ["aarch64-unknown-none-softfloat"]
+targets = ["aarch64-unknown-none-softfloat", "aarch64-unknown-uefi"]

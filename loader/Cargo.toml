@@ -1,0 +1,23 @@
+[package]
+name = "k0-loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# UEFI 로더. 타겟 aarch64-unknown-uefi로만 빌드하며, 내장할 커널 Image의 경로를
+# 환경 변수 K0_KERNEL_IMAGE로 받음(tools/build-loader.sh가 묶어 줌).
+# 루트 태스크는 커널 Image 안에 있으므로 k0-boot의 기본 feature를 끔
+[dependencies]
+k0-boot = { path = "../crates/k0-boot", default-features = false }
+k0-efi = { path = "../crates/k0-efi" }
+sha2 = { version = "0.10.9", default-features = false }
+
+[build-dependencies]
+k0-efi = { path = "../crates/k0-efi" }
+sha2 = { version = "0.10.9", default-features = false }
+
+[features]
+# 부팅을 거부할 때 펌웨어로 돌아가지 않고 정지함. 기본은 사유를 출력하고
+# 오류를 반환하며, 그러면 펌웨어가 다음 부트 항목으로 넘어감
+refuse-halt = []

@@ -10,6 +10,23 @@ members = [
     "crates/k0-task",
     "crates/k0-boot",
     "crates/k0-abi",
+    "crates/k0-efi",
+    "userspace/root-task",
+    "loader",
+]
+# UEFI 로더는 타겟이 달라(aarch64-unknown-uefi) 기본 빌드 대상에서 뺌.
+# tools/build-loader.sh로 빌드함
+default-members = [
+    "kernel",
+    "crates/k0-arch",
+    "crates/k0-mm",
+    "crates/k0-cap",
+    "crates/k0-ipc",
+    "crates/k0-sched",
+    "crates/k0-task",
+    "crates/k0-boot",
+    "crates/k0-abi",
+    "crates/k0-efi",
     "userspace/root-task",
 ]
 
