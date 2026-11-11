@@ -29,6 +29,7 @@ WORKDIR /src
 
 # Dependencies are vendored (vendor/ via .cargo/config.toml), so both images build offline.
 # dev profile = 4K granule image with debug info; release + granule-16k = 16K granule image.
+# Both are generic: they find the UART, the GIC and the timer in the device tree at boot.
 RUN cargo build -p k0-kernel --offline \
  && cargo build -p k0-kernel --release --no-default-features --features granule-16k --offline
 
