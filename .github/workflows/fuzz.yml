@@ -25,7 +25,7 @@ jobs:
           persist-credentials: false
 
       - name: Build the toolchain image
-        run: docker build --file .oss-scanner/Dockerfile --tag k0-ci .
+        run: docker build --file ci/Dockerfile --tag k0-ci .
 
       - name: Fuzz with a seed taken from the run number and networking disabled
         env:

@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
 
       - name: Build the toolchain image and both kernel images
-        run: docker build --file .oss-scanner/Dockerfile --tag k0-ci .
+        run: docker build --file ci/Dockerfile --tag k0-ci .
 
       - name: Host unit tests and DTB fuzzing with networking disabled
         run: docker run --rm --network none k0-ci tools/host-test.sh

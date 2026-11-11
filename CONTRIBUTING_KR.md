@@ -43,7 +43,7 @@ K0는 완전히 오프라인으로 빌드됩니다. 서드파티 크레이트는
 - 펌웨어 ROM을 포함한 `qemu-system-aarch64`. Debian과 Ubuntu에서는 `qemu-system-arm`과 `ipxe-qemu` 패키지, macOS에서는 `brew install qemu`입니다.
 - 빌드 스크립트용 호스트 C 컴파일러와 링커(`gcc` 또는 Xcode command line tools).
 
-[.oss-scanner/Dockerfile](.oss-scanner/Dockerfile)이 이 환경 전체를 검증된 형태로 담고 있습니다.
+[ci/Dockerfile](ci/Dockerfile)이 이 환경 전체를 검증된 형태로 담고 있습니다.
 
 ## 빌드
 
@@ -103,10 +103,10 @@ K0_FUZZ_ITERS=5000000 cargo test --release --offline --target "$host" -p k0-boot
 
 ### CI와 같은 방식으로 실행
 
-CI는 스캐너 이미지를 빌드한 뒤 네트워크를 끊은 컨테이너 안에서 테스트를 돌립니다. 빌드와 테스트에 저장소 밖의 무엇도 필요하지 않다는 것을 이 방식으로 증명합니다.
+CI는 `ci/Dockerfile`로 컨테이너 이미지를 빌드한 뒤 네트워크를 끊은 컨테이너 안에서 테스트를 돌립니다. 빌드와 테스트에 저장소 밖의 무엇도 필요하지 않다는 것을 이 방식으로 증명합니다.
 
 ```sh
-docker build --file .oss-scanner/Dockerfile --tag k0-ci .
+docker build --file ci/Dockerfile --tag k0-ci .
 docker run --rm --network none k0-ci tools/host-test.sh
 docker run --rm --network none k0-ci tools/boot-matrix.sh
 ```

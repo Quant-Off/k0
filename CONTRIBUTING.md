@@ -41,7 +41,7 @@ You need:
 - `qemu-system-aarch64` with its firmware ROMs. On Debian and Ubuntu this means the `qemu-system-arm` and `ipxe-qemu` packages. On macOS, `brew install qemu`.
 - A host C compiler and linker for build scripts (`gcc` or Xcode command line tools).
 
-The file [.oss-scanner/Dockerfile](.oss-scanner/Dockerfile) is a complete, tested recipe for this environment.
+The file [ci/Dockerfile](ci/Dockerfile) is a complete, tested recipe for this environment.
 
 ## Building
 
@@ -101,10 +101,10 @@ The same command also runs the discovery fuzzer, which mutates four board-shaped
 
 ### Running exactly what CI runs
 
-CI builds the scanner image and then runs the tests inside it with networking disabled. This proves that building and testing need nothing outside the repository.
+CI builds the container image from `ci/Dockerfile` and then runs the tests inside it with networking disabled. This proves that building and testing need nothing outside the repository.
 
 ```sh
-docker build --file .oss-scanner/Dockerfile --tag k0-ci .
+docker build --file ci/Dockerfile --tag k0-ci .
 docker run --rm --network none k0-ci tools/host-test.sh
 docker run --rm --network none k0-ci tools/boot-matrix.sh
 ```
