@@ -1,0 +1,46 @@
+name: CLA bot
+
+# 기여자 라이선스 계약(CLA.md) 서명 확인
+# 판정 결과는 이 작업의 성공 여부가 아니라 커밋 상태 "CLA signatures"로 남음
+# pull_request_target과 issue_comment는 쓰기 토큰으로 돌기 때문에 풀 리퀘스트의 코드를 절대
+# 체크아웃하거나 실행하지 않음
+# 체크아웃하는 github.sha는 pull_request_target에서는 PR base 브랜치의 최신 커밋,
+# issue_comment에서는 기본 브랜치의 최신 커밋
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  bot:
+    name: run
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Check out the trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /.github/scripts/cla.js
+            /CLA.md
+          sparse-checkout-cone-mode: false
+
+      - name: Check signatures
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { run } = require('./.github/scripts/cla.js')
+            await run({ github, context, core })

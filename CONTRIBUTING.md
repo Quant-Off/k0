@@ -27,6 +27,8 @@ I have read the K0 CLA version 1.0 (CLA.md) and I agree to its terms for this an
 
 A pull request that only fixes spelling, grammar, punctuation, broken links or wrong paths and version numbers in documentation or code comments does not need a signature. The exact scope is in [section 12 of the CLA](CLA.md#12-changes-that-do-not-need-a-signature). A change to the code itself or to a log message always needs one, however small.
 
+A bot checks every pull request and reports the result as the `CLA signatures` status check. It names everyone who still has to sign: the author of the pull request and every commit author, so every commit must be authored with an email address that is linked to a GitHub account. When you post the sentence, the bot records your signature (the link to your comment, your account, the agreement version and the date) on the `cla-signatures` branch, as section 11 of the CLA describes. If you signed on another pull request, comment `recheck`. For a trivial pull request, a maintainer adds the `cla: trivial` label instead. The label is removed automatically when new commits are pushed, and a maintainer then looks again.
+
 The agreement is currently a draft pending legal review. If it changes, you will be asked to sign the new version. It is governed by the laws of the Republic of Korea.
 
 ## Setting up

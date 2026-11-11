@@ -43,3 +43,16 @@ jobs:
         run: >-
           docker run --rm --network none --env K0_BOOT_REQUIRE
           k0-ci tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel -cpu max
+
+  cla-bot:
+    name: CLA bot unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the tests with the runner's preinstalled Node.js
+        run: node --test .github/scripts/cla.test.js

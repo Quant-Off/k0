@@ -16,5 +16,5 @@
 
 ## Contributor License Agreement
 
-- [ ] I have signed the [CLA](../CLA.md). If this is the first pull request that needs your signature, comment the sentence from CONTRIBUTING.md on this pull request.
+- [ ] I have signed the [CLA](../CLA.md). If this is the first pull request that needs your signature, comment the sentence from CONTRIBUTING.md on this pull request. The `CLA signatures` check shows who still needs to sign.
 - [ ] Or: every change in this pull request is trivial as defined in [section 12 of the CLA](../CLA.md#12-changes-that-do-not-need-a-signature).
