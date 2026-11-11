@@ -94,7 +94,10 @@ pub fn set_current(ctx: *mut Context) {
 ///
 /// 커널 스택을 최상단으로 되감은 뒤 벡터의 복원 경로(`__user_restore`)를
 /// 그대로 사용합니다. 이후 커널 코드는 예외(트랩/인터럽트/시스템 콜)로만
-/// 실행됩니다.
+/// 실행됩니다. 복원 경로는 ELR_EL1/SPSR_EL1을 쓴 뒤 `eret`하므로 그 사이에
+/// 인터럽트가 들어오면 두 레지스터가 EL1 값으로 덮입니다. 예외 진입으로
+/// 도달하는 평소 경로는 DAIF가 이미 마스크돼 있지만 부트 경로는 타이머를
+/// 켠 뒤라 언마스크 상태이므로 여기서 먼저 전부 마스크합니다.
 ///
 /// # Safety
 /// `set_current`로 유효한 컨텍스트가 지정돼 있어야 하고, 컨텍스트의 ELR/SP가
@@ -104,6 +107,7 @@ pub unsafe fn enter_user() -> ! {
     // SAFETY: 함수 계약 전제 하에 스택을 되감고 복원 경로로 점프함
     unsafe {
         asm!(
+            "msr DAIFSet, #0xf",
             "adrp x0, __boot_stack_top",
             "add x0, x0, :lo12:__boot_stack_top",
             "mov sp, x0",
