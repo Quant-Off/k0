@@ -355,6 +355,19 @@ fn write_memory(w: &mut Writer<'_>, regions: &[MemRegion], addr: u32, size: u32)
 /// 입력의 구조 위반, 둘 이상의 `chosen`, 셀 폭에 안 들어가는 구간, 버퍼 부족은
 /// `RewriteError`
 pub fn rewrite(input: &[u8], edits: &Edits<'_>, out: &mut [u8]) -> Result<usize, RewriteError> {
+    // 펌웨어 씨앗의 사본은 어느 경로로 끝나든 지움
+    let mut fw_seed = [0u8; FIRMWARE_SEED_MAX];
+    let result = rewrite_with(input, edits, out, &mut fw_seed);
+    wipe(&mut fw_seed);
+    result
+}
+
+fn rewrite_with(
+    input: &[u8],
+    edits: &Edits<'_>,
+    out: &mut [u8],
+    fw_seed: &mut [u8; FIRMWARE_SEED_MAX],
+) -> Result<usize, RewriteError> {
     if edits.memory.is_empty() || edits.memory.len() > MAX_MEM_REGIONS {
         return Err(RewriteError::BadRegionCount);
     }
@@ -373,7 +386,6 @@ pub fn rewrite(input: &[u8], edits: &Edits<'_>, out: &mut [u8]) -> Result<usize,
 
     let mut w = Writer::new(out, &[], strings_cap)?;
     let seed = &edits.seed[..edits.seed.len().min(LOADER_SEED_MAX)];
-    let mut fw_seed = [0u8; FIRMWARE_SEED_MAX];
     let mut fw_seed_len = 0;
     let mut skip: Option<usize> = None;
     let mut chosen_seen = false;
@@ -464,6 +476,5 @@ pub fn rewrite(input: &[u8], edits: &Edits<'_>, out: &mut [u8]) -> Result<usize,
             }
         }
     }
-    wipe(&mut fw_seed);
     Ok(w.finish(boot_cpuid)?)
 }

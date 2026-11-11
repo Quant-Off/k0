@@ -12,6 +12,7 @@
 
 use core::ffi::c_void;
 use core::fmt;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub type Handle = *mut c_void;
 
@@ -283,7 +284,8 @@ impl Firmware {
         let rng = interface as *mut RngProtocol;
         // SAFETY: LocateProtocol이 성공하며 돌려준 EFI_RNG_PROTOCOL 인터페이스임
         let status = unsafe { ((*rng).get_rng)(rng, core::ptr::null(), out.len(), out.as_mut_ptr()) };
-        if status != Status::SUCCESS {
+        // 실패했거나, 성공이라면서 한 가지 값으로만 채운 출력은 엔트로피로 치지 않음
+        if status != Status::SUCCESS || out.iter().all(|&b| b == out[0]) {
             wipe(out);
             return false;
         }
@@ -291,9 +293,32 @@ impl Firmware {
     }
 }
 
+/// 패닉 처리기가 쓸 펌웨어 콘솔입니다. 부트 서비스가 살아 있는 동안만 값이
+/// 있습니다.
+static PANIC_CONSOLE: AtomicPtr<TextOutput> = AtomicPtr::new(core::ptr::null_mut());
+
 /// 펌웨어 콘솔 출력입니다. `\n`은 `\r\n`으로 나갑니다.
 pub struct Console {
     out: *mut TextOutput,
+}
+
+impl Console {
+    /// 이 콘솔을 패닉 처리기가 쓸 수 있게 등록하는 함수입니다.
+    pub fn arm_for_panic(&self) {
+        PANIC_CONSOLE.store(self.out, Ordering::Relaxed);
+    }
+
+    /// 패닉 처리기가 더는 콘솔을 쓰지 못하게 하는 함수입니다. 부트 서비스를
+    /// 끝내려고 시도하기 전에 부릅니다.
+    pub fn disarm_for_panic() {
+        PANIC_CONSOLE.store(core::ptr::null_mut(), Ordering::Relaxed);
+    }
+
+    /// 패닉 처리기용 콘솔을 주는 함수입니다. 등록돼 있지 않으면 `None`
+    pub fn for_panic() -> Option<Console> {
+        let out = PANIC_CONSOLE.load(Ordering::Relaxed);
+        (!out.is_null()).then_some(Console { out })
+    }
 }
 
 impl fmt::Write for Console {

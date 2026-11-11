@@ -208,6 +208,10 @@ fn narrow_cells_clip_addresses_and_split_entries() {
     assert_eq!(p.regions().len(), 4);
     assert!(p.regions().iter().all(|r| r.size <= limits.max_entry));
     assert_eq!(p.kept_bytes, 12 * GIB);
+    // 항목 하나의 크기는 크기 셀 하나에 들어가는 최댓값(4GiB에서 정렬 단위를 뺀 값)
+    assert_eq!(limits.max_entry, (1 << 32) - ALIGN);
+    assert_eq!(p.regions().iter().filter(|r| r.size == limits.max_entry).count(), 2);
+    assert_eq!(p.regions().iter().map(|r| r.size).max(), Some(limits.max_entry));
     // 블록은 한 항목 안에 통째로 있음
     assert!(p.regions().iter().any(|r| r.base <= block.base && block.base + block.size <= r.base + r.size));
     // 주소 셀이 하나면 4GiB 위는 말할 수 없으므로 잘라냄
@@ -268,6 +272,13 @@ fn the_verifier_catches_what_a_broken_plan_would_emit() {
     assert_eq!(check(&[mem(0x1000_1000, 16 * MIB)], &[], &block, &WIDE), Err(VerifyError::BadRegion));
     assert_eq!(check(&[good[1], good[0]], &[], &block, &WIDE), Err(VerifyError::Unsorted));
     assert_eq!(check(&[good[0], good[0]], &[], &block, &WIDE), Err(VerifyError::Unsorted));
+    // 항목 크기 한계를 넘는 구간, DTB만 다른 구간에 있는 경우
+    let narrow = Limits { max_addr: 1 << 47, max_entry: 8 * MIB };
+    assert_eq!(check(&good, &[], &block, &narrow), Err(VerifyError::AboveLimit));
+    let stray = Block { dtb: 0x1101_0000..0x1102_0000, ..block.clone() };
+    assert_eq!(check(&good, &[], &stray, &WIDE), Err(VerifyError::BlockSplit));
+    // 크기가 0인 구멍은 아무것도 빼지 않음
+    assert_eq!(plan_of(&descs[..1], &[mem(0x1040_1000, 0)], &mem(0x1000_0000, 4 * MIB), &WIDE).unwrap().regions(), &good[..1]);
     let low = Limits { max_addr: 0x1080_0000, max_entry: 1 << 47 };
     assert_eq!(check(&good[..1], &[], &block, &low), Err(VerifyError::AboveLimit));
     // 런타임 데이터를 삼킨 구간, 부트 서비스 메모리, 맵에 없는 주소
@@ -510,6 +521,7 @@ impl Bench {
             map,
             block_base: self.block_base,
             image_size: MIB,
+            image_len: MIB - 8192,
             tail_size: BOOT_WINDOW_SIZE + ALIGN,
             granule: 4096,
             device_limit: 1 << 40,
@@ -579,6 +591,21 @@ fn prepare_takes_reservations_from_the_kernel_parser() {
     let mut no_timer = virt3();
     no_timer.kids.retain(|k| k.name != "timer");
     assert!(matches!(bench.run(&no_timer.blob()), Err(PrepareError::FirmwareDiscover(_))));
+
+    // 디바이스가 이 CPU의 물리 주소 폭을 넘으면 커널의 대조가 거부함
+    let mut far = virt3();
+    far.kid("pl011@9000000").set("reg", cells(&[0x200, 0, 0, 0x1000]));
+    let mut bench = Bench::new(maps::QEMU_EDK2_512M);
+    assert_eq!(bench.run(&far.blob()).err(), Some(PrepareError::Validate(ValidateError::DeviceAboveLimit)));
+
+    // 커널이 받는 2MiB를 넘는 DTB는 버퍼에 들어가더라도 거부
+    let mut big = virt3();
+    big.kids.push(N::new("blob").p("data", vec![0x5a; 2 * 1024 * 1024]));
+    let mut bench = Bench::new(maps::QEMU_EDK2_512M);
+    bench.out = vec![0; 5 * 1024 * 1024];
+    // 블록이 커졌으므로 넉넉한 구간에 둠
+    bench.block_base = 0x4800_0000;
+    assert_eq!(bench.run(&big.blob()).err(), Some(PrepareError::OutputTooLarge));
 
     // 블록 배치가 어긋나면 시작하지 않음
     let mut bench = Bench::new(maps::QEMU_EDK2_512M);

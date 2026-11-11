@@ -17,8 +17,8 @@ imgpin="$root/target/pin/aarch64-unknown-none-softfloat/debug/k0-kernel"
 cargo build -p k0-kernel --offline || exit 2
 cargo build -p k0-kernel --offline --no-default-features --features granule-16k --target-dir target/g16 || exit 2
 # UEFI 로더: 위에서 빌드한 바로 그 커널을 내장함
-efi4="$(tools/build-loader.sh "$img4" | tail -n 1)" || exit 2
-efi16="$(tools/build-loader.sh "$img16" | tail -n 1)" || exit 2
+efi4="$(tools/build-loader.sh "$img4")" || exit 2
+efi16="$(tools/build-loader.sh "$img16")" || exit 2
 
 failed=""
 ran=0
@@ -200,11 +200,26 @@ pass uefi-gic2-el2   "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version
 pass uefi-max        "$efi4" K0_BOOT_REUSE=skip K0_QEMU_CPU=max K0_BOOT_REQUIRE="k0: pac=on bti=present pan=on"
 pass uefi-smp4       "$efi4" K0_BOOT_REUSE=skip K0_QEMU_SMP=4
 pass uefi-16k        "$efi16" K0_BOOT_REUSE=skip K0_QEMU_CPU=max
+# 펌웨어의 난수 프로토콜에서 받은 32바이트가 커널의 엔트로피에 더해지는지
+# (QEMU의 rng-seed 32 + 로더의 32 + kaslr-seed 8 = 72바이트)
+pass uefi-rng        "$efi4" K0_BOOT_REUSE=skip K0_QEMU_EXTRA="-device virtio-rng-pci" K0_BOOT_REQUIRE="k0-loader: entropy from the firmware|k0: entropy dtb=72B"
 # 이동식 매체 경로: FAT 드라이브의 EFI/BOOT/BOOTAA64.EFI (부트 매니저 대기가 붙음)
 pass uefi-esp        "$efi4" K0_BOOT_REUSE=skip K0_QEMU_ESP=1
 # 펌웨어가 디바이스 트리를 주지 않는 기본 구성(ACPI)과, 그래뉼이 없는 CPU는 로더가 거부
 refuse_serial uefi-no-dtb     "$efi4" "the firmware provides no device tree" K0_QEMU_MACHINE=virt,gic-version=3
 refuse_serial uefi-16k-on-a72 "$efi16" "this cpu has no 16K translation granule"
+# 내장한 커널 이미지의 한 바이트가 바뀐 로더는 해시 불일치로 거부
+if want uefi-corrupt $only; then
+    bad="${efi4%.efi}-corrupt.efi"
+    python3 - "$efi4" "$bad" <<'FLIP'
+import sys
+data = bytearray(open(sys.argv[1], "rb").read())
+at = data.index(b"ARM\x64")  # 내장한 Image 헤더의 매직, 그 뒤는 커널 코드
+data[at + 4096] ^= 0x01
+open(sys.argv[2], "wb").write(data)
+FLIP
+    refuse_serial uefi-corrupt "$bad" "embedded kernel image is corrupt"
+fi
 
 # 실제 Apple 코어 (하이퍼바이저 게스트)
 if [ "${K0_MATRIX_HVF:-0}" = 1 ]; then

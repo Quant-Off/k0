@@ -7,7 +7,9 @@
 //!
 //! MMU를 끄면 데이터 접근이 캐시를 거치지 않습니다. 그러니 방금 복사한 커널
 //! 이미지와 방금 쓴 DTB가 캐시에만 있고 메모리에는 아직 없다면 커널은 옛
-//! 내용을 읽게 됩니다. 그래서 끄기 전에 그 구간을 메모리까지 밀어냅니다.
+//! 내용을 읽게 됩니다. 그래서 끄기 전에 로더가 할당한 블록 전체를 메모리까지
+//! 밀어내고 캐시에서도 비웁니다(dc civac). 비우기까지 하는 것은, 커널이 MMU를
+//! 끈 채 쓴 내용을 캐시에 남은 옛 줄이 나중에 가리지 못하게 하기 위해서입니다.
 //! QEMU의 TCG에는 캐시가 없어 이 단계가 빠져도 부팅이 되므로, 부팅 시험은
 //! 이 단계의 증거가 되지 못합니다. 순서는 Linux가 MMU를 끄고 커널에 들어가던
 //! 때의 arm64 EFI 진입 코드를 따랐고, 빌드 뒤 디스어셈블리로 명령의 존재와
@@ -66,7 +68,7 @@ unsafe extern "C" {
     fn k0_handoff_end();
 }
 
-/// 구간의 데이터 캐시 줄을 메모리까지 밀어내는 함수입니다.
+/// 구간의 데이터 캐시 줄을 메모리까지 밀어내고 캐시에서 비우는 함수입니다.
 ///
 /// # Arguments
 /// `range` - 밀어낼 가상 주소 구간(identity 매핑이라 물리 주소와 같음)
@@ -74,7 +76,7 @@ unsafe extern "C" {
 /// # Safety
 /// 구간 전체가 매핑된 메모리여야 합니다.
 #[inline(never)]
-unsafe fn clean_to_memory(range: &Range<u64>) {
+unsafe fn flush_to_memory(range: &Range<u64>) {
     let ctr: u64;
     // SAFETY: CTR_EL0 읽기는 부작용이 없음
     unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
@@ -82,7 +84,7 @@ unsafe fn clean_to_memory(range: &Range<u64>) {
     let mut at = range.start & !(line - 1);
     while at < range.end {
         // SAFETY: 호출자가 구간이 매핑돼 있음을 보장함
-        unsafe { asm!("dc cvac, {}", in(reg) at, options(nostack)) };
+        unsafe { asm!("dc civac, {}", in(reg) at, options(nostack)) };
         at += line;
     }
     // SAFETY: 배리어는 메모리를 건드리지 않음
@@ -92,26 +94,26 @@ unsafe fn clean_to_memory(range: &Range<u64>) {
 /// 캐시를 정리하고 MMU를 끈 뒤 커널로 넘어가는 함수입니다. 돌아오지 않습니다.
 ///
 /// # Arguments
-/// `image` - 커널 이미지 영역 전체(BSS와 부트 스택 자리 포함)
-/// `dtb` - 커널에 넘길 DTB가 든 버퍼 전체
+/// `block` - 로더가 할당한 블록 전체(DTB 버퍼, 이미지 영역, 부트 윈도우 자리)
+/// `entry` - 블록 안 커널 이미지의 시작 주소
+/// `dtb` - 블록 안 DTB의 시작 주소
 ///
 /// # Safety
-/// ExitBootServices가 성공한 뒤에만 부를 수 있습니다. `image`의 처음에는 이
-/// CPU에서 실행할 수 있는 커널 Image가 복사돼 있어야 하고, 두 구간은 이
-/// 로더가 할당한 메모리여야 합니다.
-pub unsafe fn enter_kernel(image: &Range<u64>, dtb: &Range<u64>) -> ! {
+/// ExitBootServices가 성공한 뒤에만 부를 수 있습니다. `block`은 이 로더가
+/// 할당한 메모리여야 하고, `entry`에는 이 CPU에서 실행할 수 있는 커널 Image가
+/// 복사돼 있어야 합니다.
+pub unsafe fn enter_kernel(block: &Range<u64>, entry: u64, dtb: u64) -> ! {
     // SAFETY: 부트 서비스가 끝났으므로 인터럽트를 받을 곳이 없음. 트램펄린도
     //         처음에 다시 마스크함
     unsafe { asm!("msr daifset, #0xf", options(nomem, nostack)) };
     let trampoline = k0_handoff as usize as u64..k0_handoff_end as usize as u64 + 64;
-    // SAFETY: 세 구간 모두 이 로더의 메모리(할당한 블록과 자신의 .text)임
+    // SAFETY: 두 구간 모두 이 로더의 메모리(할당한 블록과 자신의 .text)임
     unsafe {
-        clean_to_memory(image);
-        clean_to_memory(dtb);
-        clean_to_memory(&trampoline);
+        flush_to_memory(block);
+        flush_to_memory(&trampoline);
         // 복사한 커널 코드에 대해 남아 있을 수 있는 명령 캐시 항목을 버림
         asm!("ic ialluis", "dsb ish", "isb", options(nostack));
-        k0_handoff(image.start, dtb.start)
+        k0_handoff(entry, dtb)
     }
 }
 

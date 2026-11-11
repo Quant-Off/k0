@@ -43,6 +43,7 @@ enum Refusal {
     Granule,
     NoDeviceTree,
     BadDeviceTree,
+    DeviceTreeInBlock,
     Firmware(&'static str, Status),
     Prepare(PrepareError),
     NoPlace,
@@ -59,6 +60,7 @@ impl fmt::Display for Refusal {
                 "the firmware provides no device tree (ACPI-only firmware is not supported, QEMU needs -machine acpi=off)",
             ),
             Refusal::BadDeviceTree => f.write_str("the firmware device tree has a bad header"),
+            Refusal::DeviceTreeInBlock => f.write_str("the firmware device tree lies in memory the firmware gave to the loader"),
             Refusal::Firmware(what, status) => write!(f, "{what} failed: {status:?}"),
             Refusal::Prepare(e) => write!(f, "device tree for the kernel: {e:?}"),
             Refusal::NoPlace => f.write_str("no usable memory for the kernel image block"),
@@ -96,6 +98,13 @@ struct Ready {
     image: Range<u64>,
     tail_size: u64,
     device_limit: u64,
+}
+
+impl Ready {
+    /// 로더가 할당해 쓰는 블록 전체의 범위
+    fn block(&self) -> Range<u64> {
+        self.dtb.start..self.image.end + self.tail_size
+    }
 }
 
 fn align_up(v: u64, to: u64) -> u64 {
@@ -189,6 +198,7 @@ fn prepare_now(l: &Loader, r: &mut Ready) -> Result<(Prepared, usize), Refusal> 
         map,
         block_base: r.dtb.start,
         image_size: r.image.end - r.image.start,
+        image_len: KERNEL_IMAGE_SIZE,
         tail_size: r.tail_size,
         granule: KERNEL_GRANULE,
         device_limit: r.device_limit,
@@ -241,6 +251,14 @@ fn get_ready(l: &mut Loader) -> Result<Ready, Refusal> {
         ready.dtb = base..base + dtb_cap;
         ready.image = ready.dtb.end..ready.dtb.end + image_size;
         l.dtb = ready.dtb.clone();
+        // 펌웨어가 준 DTB가 방금 받은 메모리와 겹치면 펌웨어의 맵이 틀린 것.
+        // 읽으면서 덮어쓰게 되므로 진행하지 않음
+        let source = firmware_dtb.as_ptr() as u64..firmware_dtb.as_ptr() as u64 + firmware_dtb.len() as u64;
+        let work = l.work.map_or(0..0, |w| w.base..w.base + w.count as u64 * PAGE);
+        let taken = raw..raw + count as u64 * PAGE;
+        if [&taken, &work].iter().any(|r| source.start < r.end && r.start < source.end) {
+            return Err(Refusal::DeviceTreeInBlock);
+        }
         match prepare_now(l, &mut ready) {
             Ok((p, _)) => {
                 report(l, &ready, &p);
@@ -256,6 +274,8 @@ fn get_ready(l: &mut Loader) -> Result<Ready, Refusal> {
             }
             // 펌웨어의 예약이나 디바이스 구간이 블록에 걸침. 더 낮은 곳에 다시 잡음
             Err(Refusal::Prepare(PrepareError::Plan(PlanError::BlockNotUsable))) => {
+                // SAFETY: DTB 버퍼는 아직 풀지 않은 블록 안의 구간임
+                wipe(unsafe { core::slice::from_raw_parts_mut(ready.dtb.start as *mut u8, dtb_cap as usize) });
                 l.fw.free(raw, count);
                 l.block = None;
                 below = raw;
@@ -289,6 +309,8 @@ fn report(l: &mut Loader, r: &Ready, p: &Prepared) {
 fn exit_and_enter(l: &mut Loader, mut ready: Ready) -> Result<core::convert::Infallible, Refusal> {
     let _ = writeln!(l.con, "k0-loader: exiting boot services");
     l.fw.disable_watchdog();
+    // 여기서부터는 펌웨어 콘솔에 기대지 않음
+    Console::disarm_for_panic();
     let mut attempted = false;
     for _ in 0..EXIT_ATTEMPTS {
         // 맵이 바뀌었을 수 있으므로 새 맵으로 DTB를 다시 만듦. 여기서부터 성공할
@@ -302,9 +324,9 @@ fn exit_and_enter(l: &mut Loader, mut ready: Ready) -> Result<core::convert::Inf
         match l.fw.exit_boot_services(key) {
             Status::SUCCESS => {
                 wipe(&mut l.seed);
-                // SAFETY: 부트 서비스가 끝났고, 두 구간은 이 로더가 할당해 채운
-                //         블록 안이며, 이미지는 헤더와 해시와 그래뉼 지원을 확인함
-                unsafe { enter_kernel(&ready.image, &ready.dtb) }
+                // SAFETY: 부트 서비스가 끝났고, 블록은 이 로더가 할당해 채운
+                //         메모리이며, 이미지는 헤더와 해시와 그래뉼 지원을 확인함
+                unsafe { enter_kernel(&ready.block(), ready.image.start, ready.dtb.start) }
             }
             Status::INVALID_PARAMETER => {}
             _ => park(),
@@ -348,6 +370,7 @@ pub extern "efiapi" fn efi_main(image: Handle, table: *mut SystemTable) -> Statu
     };
     let mut l =
         Loader { fw, con: fw.console(), work: None, block: None, dtb: 0..0, seed: [0; SEED_LEN], seed_len: 0 };
+    l.con.arm_for_panic();
     // 펌웨어가 화면 제어 문자열을 남긴 줄과 섞이지 않게 빈 줄부터 씀
     let _ = writeln!(
         l.con,
@@ -370,7 +393,20 @@ pub extern "efiapi" fn efi_main(image: Handle, table: *mut SystemTable) -> Statu
     }
 }
 
+/// 패닉 처리기입니다. 부트 서비스가 살아 있으면 위치를 펌웨어 콘솔에 남기고
+/// 멈춥니다. 펌웨어의 감시 타이머가 살아 있는 시점이라면 기계가 재시작됩니다.
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    if let Some(mut con) = Console::for_panic() {
+        Console::disarm_for_panic();
+        match info.location() {
+            Some(at) => {
+                let _ = writeln!(con, "k0-loader: panic at {}:{}", at.file(), at.line());
+            }
+            None => {
+                let _ = writeln!(con, "k0-loader: panic");
+            }
+        }
+    }
     park()
 }

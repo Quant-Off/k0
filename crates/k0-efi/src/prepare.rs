@@ -41,6 +41,8 @@ pub enum PrepareError {
     Plan(PlanError),
     /// DTB 재작성 실패
     Rewrite(RewriteError),
+    /// 만든 DTB가 커널이 받는 크기(2MiB)를 넘음
+    OutputTooLarge,
     /// 만든 DTB를 커널의 파서가 거부함
     Output(BootError),
     /// 만든 DTB의 메모리가 계획과 다르거나 예약 구간이 남아 있음
@@ -67,6 +69,8 @@ pub struct Request<'a> {
     pub block_base: u64,
     /// 이미지 영역의 크기(헤더의 image_size를 정렬 단위로 올린 값)
     pub image_size: u64,
+    /// 헤더의 image_size 그대로. 커널이 자기 심볼로 계산하는 이미지 범위와 같음
+    pub image_len: u64,
     /// 이미지 영역 뒤 여유 공간의 크기
     pub tail_size: u64,
     /// 내장한 커널의 변환 그래뉼
@@ -176,7 +180,11 @@ pub fn prepare(req: &Request<'_>, work: Work<'_>, out: &mut [u8]) -> Result<Prep
     let image_end = image_start.checked_add(req.image_size).ok_or(PrepareError::BadLayout)?;
     let block_end = image_end.checked_add(req.tail_size).ok_or(PrepareError::BadLayout)?;
     let block = MemRegion { base: req.block_base, size: block_end - req.block_base };
-    let image = image_start..image_end;
+    if req.image_len == 0 || req.image_len > req.image_size {
+        return Err(PrepareError::BadLayout);
+    }
+    // 커널은 자기 이미지를 헤더의 image_size만큼으로 봄. 검사도 그 범위로 함
+    let image = image_start..image_start + req.image_len;
 
     // 1. 펌웨어 DTB를 커널의 파서와 발견으로 읽음. 예약과 디바이스의 출처는 이것 하나
     let fw = req.firmware_dtb;
@@ -198,6 +206,10 @@ pub fn prepare(req: &Request<'_>, work: Work<'_>, out: &mut [u8]) -> Result<Prep
         .map_err(PrepareError::Plan)?;
     let edits = Edits { memory: plan.regions(), seed: req.seed };
     let dtb_len = rewrite(fw, &edits, out).map_err(PrepareError::Rewrite)?;
+    // 커널은 2MiB를 넘는 DTB를 헤더 단계에서 거부함(버퍼는 그보다 클 수 있음)
+    if dtb_len > MAX_DTB_SIZE as usize {
+        return Err(PrepareError::OutputTooLarge);
+    }
     let dtb = req.block_base..req.block_base + dtb_len as u64;
 
     // 3. 만든 DTB에 커널의 파서와 발견을 다시 돌림

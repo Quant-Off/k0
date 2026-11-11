@@ -386,7 +386,7 @@ pub fn plan(
     len = kept;
 
     // 4. 구멍을 바깥쪽으로 정렬해 뺌
-    for h in holes {
+    for h in holes.iter().filter(|h| h.size != 0) {
         let he = h.base.checked_add(h.size).map_or(u64::MAX, align_up);
         subtract(ranges, &mut len, align_down(h.base), he)?;
     }

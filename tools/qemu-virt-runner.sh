@@ -10,6 +10,7 @@
 #   K0_QEMU_MEM          기본 512M
 #   K0_QEMU_ACCEL        기본 없음(TCG)
 #   K0_QEMU_MONITOR      모니터용 유닉스 소켓 경로(부트 로그를 메모리에서 읽을 때)
+#   K0_QEMU_EXTRA        QEMU에 더 넘길 인자(공백으로 나눔)
 #   K0_IMAGE_TEXT_OFFSET Image 헤더의 text_offset을 이 값으로 바꾼 사본을 부팅
 #                        (같은 이미지를 다른 물리 주소에 적재시키는 시험)
 #
@@ -82,4 +83,5 @@ esac
 [ -z "${K0_QEMU_SMP-1}" ] || set -- -smp "${K0_QEMU_SMP-1}" "$@"
 [ -z "${K0_QEMU_CPU-cortex-a72}" ] || set -- -cpu "${K0_QEMU_CPU-cortex-a72}" "$@"
 
-exec qemu-system-aarch64 -machine "$machine" -nographic "$@"
+# shellcheck disable=SC2086
+exec qemu-system-aarch64 -machine "$machine" -nographic "$@" ${K0_QEMU_EXTRA:-}

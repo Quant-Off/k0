@@ -10,7 +10,7 @@ use core::ops::Range;
 
 use k0_boot::{MemRegion, MAX_MEM_REGIONS};
 
-use crate::memmap::{Limits, Map, ALIGN};
+use crate::memmap::{Desc, Limits, Map, ALIGN};
 
 /// 검증이 실패한 이유를 나타내는 열거형입니다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +41,16 @@ pub struct Block {
     pub dtb: Range<u64>,
     pub image: Range<u64>,
     pub window: Range<u64>,
+}
+
+/// RAM으로 써도 되는 디스크립터인지 판정하는 함수입니다. 계획이 쓰는
+/// [crate::memmap::Desc::usable]을 부르지 않고 규칙을 따로 적어, 한쪽의 판정이
+/// 잘못 바뀌면 다른 쪽에서 걸리게 합니다.
+fn ram(d: &Desc) -> bool {
+    // 1 LoaderCode, 2 LoaderData, 7 ConventionalMemory
+    let free = d.kind == 1 || d.kind == 2 || d.kind == 7;
+    // 0x8 WB, 0x8000 NV, 0x40000 SP, 최상위 비트 RUNTIME
+    free && d.attr & 0x8 != 0 && d.attr & (0x8000 | 0x4_0000 | 1 << 63) == 0
 }
 
 fn overlaps(r: &MemRegion, start: u64, end: u64) -> bool {
@@ -90,7 +100,7 @@ pub fn verify(
         while cursor < end {
             let next = map
                 .iter()
-                .filter(|d| d.usable() && d.start <= cursor && cursor < d.end)
+                .filter(|d| ram(d) && d.start <= cursor && cursor < d.end)
                 .map(|d| d.end)
                 .max()
                 .ok_or(VerifyError::NotUsable)?;
@@ -101,7 +111,7 @@ pub fn verify(
             }
         }
 
-        if map.iter().any(|d| !d.usable() && overlaps(r, d.start, d.end)) {
+        if map.iter().any(|d| !ram(&d) && overlaps(r, d.start, d.end)) {
             return Err(VerifyError::Denied);
         }
         for h in holes {
