@@ -1,6 +1,10 @@
 # K0
 
+<div align="center">
+
 English | [한국어](README_KR.md)
+
+</div>
 
 K0 is a capability microkernel for AArch64, written in `no_std` Rust. Its resource model follows seL4. The kernel has no heap: it hands all free physical memory to the first user task as untyped capabilities, and every kernel object created after boot lives in memory that the task retyped. Beyond that, the kernel uses only fixed static storage: a pool of 32 page tables for its own mappings, a registry with 256 entries for address spaces (entry 0 is unused), and the scheduler state. The first targets are QEMU virt (4 KiB granule) and Apple Silicon (16 KiB granule). AMD64 and other architectures come after those targets are complete.
 
