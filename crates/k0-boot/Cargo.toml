@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["roottask"]
+# 루트 태스크 이미지를 빌드해 내장함. 커널이 씀
+roottask = []
+# 테스트용 DTB 빌더와 퍼즈 도우미를 다른 크레이트의 테스트에 공개함(std 필요)
+test-support = []
+
 [dependencies]
 sha2 = { version = "0.10.9", default-features = false }
 

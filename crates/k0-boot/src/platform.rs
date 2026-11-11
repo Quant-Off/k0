@@ -191,7 +191,17 @@ struct TimerNode<'a> {
     parent: u32,
 }
 
-pub(crate) fn discover_blob(blob: &[u8]) -> Result<Discovery, DiscoverError> {
+/// 메모리에 있는 DTB 바이트열에서 플랫폼을 발견하는 함수입니다.
+///
+/// [discover]가 주소로 읽어 온 뒤 하는 일과 같습니다. 커널 밖의 코드가 커널과
+/// 같은 규칙으로 판정할 때 씁니다.
+///
+/// # Arguments
+/// `blob` - DTB 전체(헤더의 totalsize 길이)
+///
+/// # Errors
+/// 구조 위반과 규약에 맞지 않는 하드웨어 기술은 `DiscoverError`
+pub fn discover_blob(blob: &[u8]) -> Result<Discovery, DiscoverError> {
     let fdt = Fdt::new(blob)?;
 
     // 1차 순회: /chosen의 stdout-path와 타이머 노드

@@ -199,7 +199,18 @@ fn is_memory(node: &Node<'_>) -> bool {
         && node.available()
 }
 
-fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
+/// 메모리에 있는 DTB 바이트열을 파싱하는 함수입니다.
+///
+/// [parse]가 주소로 읽어 온 뒤 하는 일과 같습니다. 커널 밖의 코드(UEFI 로더,
+/// 호스트 도구)가 커널과 같은 규칙으로 DTB를 판정할 때 씁니다.
+///
+/// # Arguments
+/// `blob` - DTB 전체(헤더의 totalsize 길이)
+/// `dtb` - 결과에 기록할 DTB의 물리 범위
+///
+/// # Errors
+/// 헤더와 구조 블록의 형식 위반, 한계 초과는 `BootError`
+pub fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError> {
     let fdt = Fdt::new(blob)?;
     let mut info = BootInfo {
         dtb,
@@ -362,8 +373,8 @@ pub(crate) mod tests_support {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod builder;
+#[cfg(any(test, feature = "test-support"))]
+pub mod builder;
 #[cfg(test)]
 pub(crate) mod fuzz;
 #[cfg(test)]

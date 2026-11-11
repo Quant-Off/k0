@@ -208,7 +208,14 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     //
 
     // 부트 프레임 윈도우: 루트 태스크 적재와 사용자 페이지 테이블 전용
-    let window = match pick_window(&bootinfo, &kernel_image) {
+    // 윈도우 탐색은 k0-boot에 있어 UEFI 로더가 같은 함수로 미리 확인함
+    let window = match k0_boot::boot_window(
+        bootinfo.memory(),
+        bootinfo.reserved(),
+        &(kernel_image.start as u64..kernel_image.end as u64),
+        &(bootinfo.dtb.start as u64..bootinfo.dtb.end as u64),
+        k0_mm::GRANULE as u64,
+    ) {
         Some(w) => w,
         None => {
             let _ = writeln!(con, "k0: no frame window in memory map");
@@ -796,75 +803,6 @@ fn setup_irq(
     // SAFETY: 주소들은 DTB에서 발견해 메모리 맵과의 대조(validate)를 마친
     //         디바이스를 방금 Device로 매핑한 것임
     unsafe { k0_arch::irq::init(traps, &gic, platform.timer.intid, counter_hz) }
-}
-
-/// 커널 이미지 끝 바로 뒤(DTB와 겹치면 DTB 끝 뒤)의 그래뉼 정렬 구간을
-/// 메모리 맵 안에서 찾습니다. 윈도우는 루트 태스크 적재가 끝나면 더 자라지
-/// 않는 고정 예산입니다.
-///
-/// # Arguments
-/// `bootinfo` - 파싱을 마친 부트 정보
-/// `kernel_image` - 커널 이미지의 물리 범위
-fn pick_window(bootinfo: &k0_boot::BootInfo, kernel_image: &Range<usize>) -> Option<Range<u64>> {
-    // 이미지 바로 뒤를 먼저 보고, 거기서 위로 자리가 없으면(이미지가 RAM의
-    // 끝 가까이 적재된 경우) 가장 낮은 메모리부터 다시 찾음
-    let lowest = bootinfo.memory().iter().map(|m| m.base).min()?;
-    scan_window(bootinfo, kernel_image, kernel_image.end as u64)
-        .or_else(|| scan_window(bootinfo, kernel_image, lowest))
-}
-
-fn scan_window(
-    bootinfo: &k0_boot::BootInfo,
-    kernel_image: &Range<usize>,
-    from: u64,
-) -> Option<Range<u64>> {
-    const WINDOW_SIZE: u64 = 2 * 1024 * 1024;
-    let g = k0_mm::GRANULE as u64;
-    let align_up = |v: u64| v.checked_add(g - 1).map(|x| x & !(g - 1));
-    let dtb = k0_boot::MemRegion {
-        base: bootinfo.dtb.start as u64,
-        size: (bootinfo.dtb.end - bootinfo.dtb.start) as u64,
-    };
-    let image = k0_boot::MemRegion {
-        base: kernel_image.start as u64,
-        size: (kernel_image.end - kernel_image.start) as u64,
-    };
-    // 물리 주소 0의 그래뉼은 오브젝트로 내주지 않으므로 윈도우에도 넣지 않음
-    let zero = k0_boot::MemRegion { base: 0, size: g };
-
-    let mut start = align_up(from)?;
-    // 장애물(DTB, 펌웨어 예약)을 넘어가며 안정될 때까지 전진, 반복은 유한
-    for _ in 0..64 {
-        let end = start.checked_add(WINDOW_SIZE)?;
-        let mut bumped = false;
-        for r in [&dtb, &image, &zero].into_iter().chain(bootinfo.reserved()) {
-            // 파서가 base + size 오버플로를 이미 거부함
-            let r_end = r.base.checked_add(r.size)?;
-            if r_end > start && r.base < end {
-                start = start.max(align_up(r_end)?);
-                bumped = true;
-            }
-        }
-        if bumped {
-            continue;
-        }
-        if bootinfo
-            .memory()
-            .iter()
-            .any(|m| start >= m.base && end <= m.base + m.size)
-        {
-            return Some(start..end);
-        }
-        // 어느 메모리 구간에도 안 들어가면 다음 구간의 시작으로 전진
-        let next = bootinfo
-            .memory()
-            .iter()
-            .map(|m| m.base)
-            .filter(|&b| b > start)
-            .min()?;
-        start = align_up(next)?;
-    }
-    None
 }
 
 /// 사용자 매핑의 W^X / 가드 / 격리를 AT 명령으로 자가 검증하는 함수입니다.

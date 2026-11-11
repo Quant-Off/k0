@@ -131,6 +131,13 @@ fn main() {
     assert_eq!(digest(b"abc"), ABC_DIGEST, "sha2 크레이트 검증 실패");
     assert_eq!(digest(b""), EMPTY_DIGEST, "sha2 크레이트 검증 실패");
 
+    // 루트 태스크를 싣지 않는 빌드(UEFI 로더가 파서만 쓰는 경우)는 여기서 끝.
+    // 위의 sha2 교차 검증은 어느 구성에서나 실행됨
+    println!("cargo::rerun-if-env-changed=CARGO_FEATURE_ROOTTASK");
+    if env::var_os("CARGO_FEATURE_ROOTTASK").is_none() {
+        return;
+    }
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let workspace = manifest.parent().unwrap().parent().unwrap();

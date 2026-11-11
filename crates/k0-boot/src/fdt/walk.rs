@@ -31,12 +31,12 @@ const FDT_PROP: u32 = 0x3;
 const FDT_NOP: u32 = 0x4;
 const FDT_END: u32 = 0x9;
 
-pub(crate) fn be32(blob: &[u8], off: usize) -> Result<u32, BootError> {
+pub fn be32(blob: &[u8], off: usize) -> Result<u32, BootError> {
     let b = blob.get(off..off.wrapping_add(4)).ok_or(BootError::Truncated)?;
     Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
 
-pub(crate) fn be64(blob: &[u8], off: usize) -> Result<u64, BootError> {
+pub fn be64(blob: &[u8], off: usize) -> Result<u64, BootError> {
     let b = blob.get(off..off.wrapping_add(8)).ok_or(BootError::Truncated)?;
     Ok(u64::from_be_bytes([
         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
@@ -49,7 +49,7 @@ fn align4(off: usize) -> Result<usize, BootError> {
 
 /// 셀 열(big-endian u32 묶음)을 정수 하나로 읽는 함수입니다. 호출자가 셀 수를
 /// 2 이하로 제한합니다.
-pub(crate) fn read_cells(bytes: &[u8]) -> u64 {
+pub fn read_cells(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b))
 }
 
@@ -57,7 +57,7 @@ pub(crate) fn read_cells(bytes: &[u8]) -> u64 {
 ///
 /// 구조 블록과 문자열 블록의 범위가 blob 안에 있음이 보장됩니다.
 #[derive(Clone, Copy)]
-pub(crate) struct Fdt<'a> {
+pub struct Fdt<'a> {
     blob: &'a [u8],
     struct_start: usize,
     struct_end: usize,
@@ -71,7 +71,7 @@ impl<'a> Fdt<'a> {
     ///
     /// # Errors
     /// 매직, 버전, 블록 오프셋과 크기가 형식에 맞지 않으면 `BootError`
-    pub(crate) fn new(blob: &'a [u8]) -> Result<Self, BootError> {
+    pub fn new(blob: &'a [u8]) -> Result<Self, BootError> {
         if be32(blob, 0)? != FDT_MAGIC {
             return Err(BootError::BadMagic);
         }
@@ -116,7 +116,7 @@ impl<'a> Fdt<'a> {
     ///
     /// # Errors
     /// 종결 쌍 없이 blob이 끝나면 `Truncated`, 콜백의 오류는 그대로 전달
-    pub(crate) fn memreserve(
+    pub fn memreserve(
         &self,
         mut f: impl FnMut(u64, u64) -> Result<(), BootError>,
     ) -> Result<(), BootError> {
@@ -134,7 +134,8 @@ impl<'a> Fdt<'a> {
         }
     }
 
-    pub(crate) fn cursor(&self) -> Cursor<'a> {
+    /// 구조 블록의 처음을 가리키는 커서를 만드는 함수입니다.
+    pub fn cursor(&self) -> Cursor<'a> {
         Cursor {
             fdt: *self,
             off: self.struct_start,
@@ -160,14 +161,14 @@ impl<'a> Fdt<'a> {
 }
 
 /// 구조 블록의 토큰 하나를 나타내는 열거형입니다.
-pub(crate) enum Token<'a> {
+pub enum Token<'a> {
     Begin { name: &'a [u8] },
     Prop { name: &'a [u8], value: &'a [u8] },
     End,
 }
 
 /// 구조 블록을 토큰 단위로 읽으며 중첩 규칙을 강제하는 커서입니다.
-pub(crate) struct Cursor<'a> {
+pub struct Cursor<'a> {
     fdt: Fdt<'a>,
     off: usize,
     depth: usize,
@@ -178,7 +179,7 @@ pub(crate) struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     /// 직전 토큰까지 읽은 뒤의 열린 노드 수를 주는 함수입니다.
-    pub(crate) fn depth(&self) -> usize {
+    pub fn depth(&self) -> usize {
         self.depth
     }
 
@@ -187,7 +188,7 @@ impl<'a> Cursor<'a> {
     /// # Errors
     /// 알 수 없는 토큰, 블록을 벗어나는 길이, 깊이 초과, 이름 있는 루트,
     /// 두 번째 루트, 자식 뒤의 프로퍼티, 닫히지 않은 노드는 `BootError`
-    pub(crate) fn next(&mut self) -> Result<Option<Token<'a>>, BootError> {
+    pub fn next(&mut self) -> Result<Option<Token<'a>>, BootError> {
         let blob = self.fdt.blob;
         let struct_end = self.fdt.struct_end;
         loop {

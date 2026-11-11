@@ -2,6 +2,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use super::builder::*;
 use super::*;
+use crate::testing::{env_u64, mutate, splitmix, Rng};
 
 const DEFAULT_CASES: u64 = 20_000;
 const BASE_SEED: u64 = 0x6B30_5F44_5442_465A;
@@ -40,49 +41,6 @@ const NOISE_PROPS: [&str; 12] = [
     "stdout-path",
     "model",
 ];
-
-pub(crate) struct Rng(u64);
-
-impl Rng {
-    pub(crate) fn new(seed: u64) -> Self {
-        Self(splitmix(seed) | 1)
-    }
-
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    pub(crate) fn below(&mut self, n: u64) -> u64 {
-        if n == 0 { 0 } else { self.next() % n }
-    }
-
-    fn index(&mut self, n: usize) -> usize {
-        self.below(n as u64) as usize
-    }
-
-    fn bytes(&mut self, n: usize) -> Vec<u8> {
-        (0..n).map(|_| self.next() as u8).collect()
-    }
-}
-
-pub(crate) fn splitmix(mut x: u64) -> u64 {
-    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    x ^ (x >> 31)
-}
-
-pub(crate) fn env_u64(name: &str) -> Option<u64> {
-    let v = std::env::var(name).ok()?;
-    let v = v.trim().replace('_', "");
-    match v.strip_prefix("0x") {
-        Some(hex) => u64::from_str_radix(hex, 16).ok(),
-        None => v.parse().ok(),
-    }
-}
 
 /// 파서가 뜻을 두는 노드(루트, chosen, memory, reserved-memory) 안에 끼워도
 /// 해석 결과가 달라지지 않는 프로퍼티 이름
@@ -194,93 +152,6 @@ fn random_board(rng: &mut Rng) -> Board {
         rsv_children,
         rng_seed: seed(rng),
         kaslr_seed: seed(rng),
-    }
-}
-
-fn interesting(rng: &mut Rng, len: usize) -> u32 {
-    let len = len as u32;
-    let pool = [
-        0,
-        1,
-        2,
-        3,
-        4,
-        8,
-        9,
-        16,
-        17,
-        32,
-        33,
-        40,
-        0x7F,
-        0x80,
-        0xFF,
-        0xFFFF,
-        0x7FFF_FFFF,
-        0x8000_0000,
-        u32::MAX,
-        u32::MAX - 3,
-        len,
-        len.wrapping_sub(4),
-        len.wrapping_add(4),
-        0xd00d_feed,
-        MAX_DTB_SIZE,
-        MAX_DTB_SIZE + 1,
-    ];
-    if rng.below(4) == 0 { rng.next() as u32 } else { pool[rng.index(pool.len())] }
-}
-
-pub(crate) fn mutate(rng: &mut Rng, blob: &mut Vec<u8>) {
-    for _ in 0..1 + rng.below(4) {
-        let len = blob.len();
-        if len < 8 {
-            blob.extend(rng.bytes(8));
-            continue;
-        }
-        match rng.below(10) {
-            0 => {
-                let i = rng.index(len);
-                blob[i] ^= 1 << rng.below(8);
-            }
-            1 => {
-                let i = rng.index(len);
-                blob[i] = [0x00, 0x01, 0x7F, 0x80, 0xFF][rng.index(5)];
-            }
-            2 => {
-                let i = rng.index(len / 4) * 4;
-                let v = interesting(rng, len);
-                set_be32(blob, i, v);
-            }
-            3 if len >= 40 => {
-                let field = rng.index(10) * 4;
-                let v = interesting(rng, len);
-                set_be32(blob, field, v);
-            }
-            4 => blob.truncate(rng.index(len)),
-            5 => {
-                let n = rng.index(64);
-                blob.extend(rng.bytes(n));
-            }
-            6 => {
-                let a = rng.index(len);
-                let b = rng.index(len);
-                let n = rng.index((len - a.max(b)).min(64) + 1);
-                blob.copy_within(a..a + n, b);
-            }
-            7 => {
-                let i = rng.index(len / 4) * 4;
-                let v = interesting(rng, len);
-                blob.splice(i..i, v.to_be_bytes());
-            }
-            8 => {
-                let i = rng.index(len - 3);
-                blob.drain(i..i + 4);
-            }
-            _ if len >= 8 => {
-                set_be32(blob, OFF_TOTALSIZE, len as u32);
-            }
-            _ => {}
-        }
     }
 }
 
