@@ -150,3 +150,11 @@ fn kernel_alias_covers_the_upper_half_only() {
     assert_eq!(KERNEL_VA_OFFSET & ((1 << 48) - 1), 0);
     assert_eq!(KERNEL_VA_OFFSET >> 48, 0xFFFF);
 }
+
+#[test]
+fn the_image_sits_above_every_alias_address() {
+    assert_eq!(PA_CEILING, 1 << 47);
+    assert_eq!(KERNEL_IMAGE_VA >> 47, 0x1_FFFF);
+    // 별칭이 닿는 가장 높은 주소도 이미지의 시작보다 아래
+    assert!(KERNEL_VA_OFFSET + (PA_CEILING - 1) < KERNEL_IMAGE_VA);
+}

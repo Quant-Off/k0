@@ -69,7 +69,7 @@ const PULSE_HOLDER: u64 = 0x401D_0000;
 const PULSE_VIOLATOR: u64 = 0x0710_0000;
 const PULSE_SURVIVED: u64 = 0x0BAD_0BAD;
 /// EL0가 읽으려 시도할 커널 절반의 주소(커널 이미지가 놓이는 별칭 근처)
-const KERNEL_PROBE: u64 = k0_abi::KERNEL_VA_OFFSET + 0x4008_0000;
+const KERNEL_PROBE: u64 = k0_abi::KERNEL_IMAGE_VA;
 
 // 다음에 쓸 빈 슬롯 번호와 재사용 검증 구간의 시작 (루트 CNode의 슬롯은
 // 루트 태스크가 직접 관리)

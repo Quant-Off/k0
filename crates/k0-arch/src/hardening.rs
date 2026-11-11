@@ -58,6 +58,15 @@ fn normalize_el0_exposure() {
         unsafe { asm!("msr pmuserenr_el0, xzr", options(nomem, nostack)) };
     }
 
+    // 활동 모니터(AMU)가 있으면 EL0의 카운터 읽기도 막음 (AMUSERENR_EL0 = 0)
+    let pfr0: u64;
+    // SAFETY: ID 레지스터 읽기는 부작용이 없음
+    unsafe { asm!("mrs {}, id_aa64pfr0_el1", out(reg) pfr0, options(nomem, nostack)) };
+    if (pfr0 >> 44) & 0xF != 0 {
+        // SAFETY: AMU 구현을 확인한 뒤에만 접근함 (S3_3_C13_C2_3 = AMUSERENR_EL0)
+        unsafe { asm!("msr S3_3_C13_C2_3, xzr", options(nomem, nostack)) };
+    }
+
     // SAFETY: 시스템 레지스터 변경 반영
     unsafe { asm!("isb", options(nomem, nostack)) };
 }

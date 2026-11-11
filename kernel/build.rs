@@ -2,8 +2,10 @@
 //!
 //! # Features
 //! 섹션 경계와 가드 페이지의 정렬은 변환 그래뉼을 따라야 합니다. 그래뉼
-//! feature(granule-4k / granule-16k)를 검사해 `kernel.ld` 앞에 그래뉼 상수를
-//! 붙인 스크립트를 OUT_DIR에 만들고 절대 경로로 링커에 넘깁니다.
+//! feature(granule-4k / granule-16k)를 검사해 `kernel.ld` 앞에 그래뉼 상수와
+//! 이미지의 고정 가상 주소(k0-abi의 값 그대로)를 붙인 스크립트를 OUT_DIR에
+//! 만들고 절대 경로로 링커에 넘깁니다. 고정 모드의 기대값(`K0_PIN`)이 바뀌면
+//! 다시 빌드되게 합니다.
 //!
 //! # Errors
 //! feature가 둘 다 켜지거나 둘 다 꺼진 구성은 잘못된 이미지가 조용히 만들어
@@ -17,10 +19,10 @@ fn main() {
     let g4 = env::var_os("CARGO_FEATURE_GRANULE_4K").is_some();
     let g16 = env::var_os("CARGO_FEATURE_GRANULE_16K").is_some();
 
-    // (그래뉼 크기, Image 헤더 flags: 리틀 엔디언 + 페이지 크기 힌트)
+    // (그래뉼 크기, Image 헤더 flags: 리틀 엔디언 + 페이지 크기 + 임의 물리 배치)
     let (granule, flags) = match (g4, g16) {
-        (true, false) => (0x1000u64, 2u64),
-        (false, true) => (0x4000, 4),
+        (true, false) => (0x1000u64, 2u64 | 8),
+        (false, true) => (0x4000, 4 | 8),
         (true, true) => {
             panic!("granule-4k와 granule-16k는 동시에 활성화 할 수 없음(--no-default-features 필요)")
         }
@@ -32,10 +34,14 @@ fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let template = manifest.join("kernel.ld");
     let body = fs::read_to_string(&template).expect("kernel.ld 읽기 실패");
-    let script = format!("__granule = {granule:#x};\n__image_flags = {flags};\n{body}");
+    let image_va = k0_abi::KERNEL_IMAGE_VA;
+    let script = format!(
+        "__granule = {granule:#x};\n__image_flags = {flags};\n__image_va = {image_va:#x};\n{body}"
+    );
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("kernel.ld");
     fs::write(&out, script).expect("링커 스크립트 쓰기 실패");
 
     println!("cargo::rustc-link-arg=-T{}", out.display());
     println!("cargo::rerun-if-changed={}", template.display());
+    println!("cargo::rerun-if-env-changed=K0_PIN");
 }

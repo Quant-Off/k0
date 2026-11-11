@@ -264,7 +264,7 @@ fn sys_putc(slot: u64, byte: u64) -> i64 {
         }
         let b = byte as u8;
         let safe = if b == b'\n' || (0x20..=0x7E).contains(&b) { b } else { b'?' };
-        EarlyCon.put_byte(safe);
+        EarlyCon.put_user_byte(safe);
         Ok(())
     })())
 }

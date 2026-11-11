@@ -21,6 +21,7 @@ fn fresh_pool() -> Box<Pool> {
     unsafe {
         let p = std::alloc::alloc_zeroed(layout).cast::<Pool>();
         assert!(!p.is_null());
+        (*p).base_pa = 0x4020_0000;
         Box::from_raw(p)
     }
 }
@@ -216,4 +217,37 @@ fn map_range_requires_granule_alignment() {
     }
     pool.map_range(root, 4 * G, 0x8000_0000, 3 * G, Perm::Ro, false).unwrap();
     assert_eq!(pool.used, 4);
+}
+
+#[test]
+fn table_addresses_come_from_the_recorded_base() {
+    // 이미지가 2^47 위의 물리 주소에 있어도(가상 주소의 비트와 무관하게)
+    // 테이블의 물리 주소는 기록해 둔 기준에서만 나옴
+    for base in [0x4020_0000u64, 0x7FFF_FFE0_0000] {
+        let mut pool = fresh_pool();
+        pool.base_pa = base;
+        let root = pool.alloc().unwrap();
+        pool.map_page(root, 0xFFFF_8000_0000_0000, 0x8000_0000, Perm::Rw.attrs(), false).unwrap();
+        for i in 0..pool.used {
+            assert_eq!(pool.pa(i), base + (i as u64) * G);
+            assert_eq!(pool.index_of(pool.pa(i)), Ok(i));
+        }
+        assert_eq!(pool.index_of(base - G), Err(MmuError::BadTable));
+        assert_eq!(pool.index_of(base + 1), Err(MmuError::BadTable));
+        assert_eq!(pool.index_of(pool.pa(pool.used)), Err(MmuError::BadTable));
+        let (t, i) = pool.leaf_of(root, 0xFFFF_8000_0000_0000).unwrap();
+        assert_eq!(pool.tables[t].0[i] & ADDR_MASK, 0x8000_0000);
+        assert_eq!(pool.leaf_of(root, 0xFFFF_0000_0000_0000), Err(MmuError::MissingTable));
+    }
+}
+
+#[test]
+fn the_image_range_is_closed_to_aliases() {
+    let mut pool = fresh_pool();
+    pool.image = (0x4008_0000, 0x4030_0000);
+    assert!(pool.overlaps_image(0x4008_0000, 0x4008_1000));
+    assert!(pool.overlaps_image(0x402F_F000, 0x4030_1000));
+    assert!(pool.overlaps_image(0x4000_0000, 0x5000_0000));
+    assert!(!pool.overlaps_image(0x4007_F000, 0x4008_0000));
+    assert!(!pool.overlaps_image(0x4030_0000, 0x4030_1000));
 }

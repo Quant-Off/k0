@@ -32,3 +32,6 @@ k0-ipc = { path = "../crates/k0-ipc", default-features = false }
 k0-mm = { path = "../crates/k0-mm", default-features = false }
 k0-sched = { path = "../crates/k0-sched", default-features = false }
 k0-task = { path = "../crates/k0-task", default-features = false }
+
+[build-dependencies]
+k0-abi = { path = "../crates/k0-abi" }

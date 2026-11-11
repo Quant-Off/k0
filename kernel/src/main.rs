@@ -5,9 +5,9 @@
 //! fail-secure panic 핸들러만 담습니다. 그 밖의 로직은 `crates/` 아래의 라이브러리
 //! 크레이트(k0-*)에 위치해 있습니다.
 //!
-//! 초기화는 higher-half 점프를 경계로 두 단으로 나뉩니다. 커널은 higher-half VA에
-//! 링크되지만 물리 주소로 적재되기 때문에, 점프 전 구간(`kernel_init`)에는 제약이
-//! 하나 있습니다. 주소를 만드는 코드(adr / adrp)는 PC 상대라 물리 주소가 맞게
+//! 초기화는 higher-half 점프를 경계로 두 단으로 나뉩니다. 커널은 고정 가상 주소에
+//! 링크되지만 부트로더가 고른 임의의 물리 주소에 적재되기 때문에, 점프 전
+//! 구간(`kernel_init`)에는 제약이 하나 있습니다. 주소를 만드는 코드(adr / adrp)는 PC 상대라 물리 주소가 맞게
 //! 나오지만, 포인터 값을 담고 있는 데이터(fat 포인터 static, vtable, 이중
 //! 참조 리터럴 등)는 링크된 절대 VA로 재배치되어 있어 점프 전에 역참조하면
 //! 주소 크기 폴트가 납니다. 그래서 점프 전에는 문자열 리터럴 출력과 정수
@@ -19,6 +19,7 @@
 
 use core::fmt::Write;
 use core::ops::Range;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use k0_arch::earlycon::EarlyCon;
 
@@ -35,9 +36,19 @@ unsafe extern "C" {
     static __kernel_end: u8;
     static __rodata_start: u8;
     static __data_start: u8;
+    static __bss_start: u8;
     static __boot_stack_bottom: u8;
     static __boot_stack_top: u8;
 }
+
+/// 진입 시점의 예외 레벨(1 또는 2)입니다. `boot.S`가 .bss 소거 뒤에 기록합니다.
+#[unsafe(no_mangle)]
+static K0_ENTRY_EL: AtomicU64 = AtomicU64::new(0);
+
+/// EL2 벡터가 남기는 기록(ESR_EL2, ELR_EL2, FAR_EL2)입니다. 강하 뒤에 EL2로
+/// 들어온 일이 있었다면 그 원인이 여기 남고 코어는 정지해 있습니다.
+#[unsafe(no_mangle)]
+static K0_EL2_TRAP: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 
 /// 진입 페이즈 0(`boot.S`)에서 점프해 들어오는 유일한 Rust 진입점입니다.
 ///
@@ -47,6 +58,9 @@ unsafe extern "C" {
 /// - `dtb_phys` = 부트로더가 전달한 DTB 물리 주소
 ///
 /// 이 함수는 점프 전 구간이기 때문에 재배치된 데이터를 건드리지 않습니다.
+/// DTB도 읽지 않습니다. 부트로더가 DTB를 캐시에만 써 두었을 수 있어, MMU와
+/// 캐시를 켠 뒤에 매핑을 통해서만 읽습니다. 콘솔을 아직 모르므로 여기서의
+/// 출력은 부트 로그에만 쌓였다가 콘솔이 붙을 때 재생됩니다.
 #[unsafe(no_mangle)]
 extern "C" fn kernel_init(dtb_phys: usize) -> ! {
     // 예외 벡터 최우선 설치 (지금은 물리 주소, 점프 후 VA로 재설치)
@@ -59,32 +73,22 @@ extern "C" fn kernel_init(dtb_phys: usize) -> ! {
     con.put_hex(dtb_phys as u64);
     con.put_str("\n");
 
-    // 본 파싱은 점프 이후에 하고, 여기서는 매핑에 필요한 크기만 헤더에서 얻음
-    let dtb = match k0_boot::dtb_span(dtb_phys) {
-        Ok(dtb) => dtb,
-        Err(e) => {
-            con.put_str("k0: dtb header rejected, code = ");
-            con.put_hex(e as u64);
-            con.put_str("\n");
-            park()
-        }
-    };
-
-    enable_mmu(&mut con, &dtb);
+    let load_pa = enable_mmu(&mut con);
     con.put_str("k0: jumping to higher half\n");
 
-    // SAFETY: enable_mmu가 TTBR1에 커널 별칭을 매핑했고 kernel_main의 링크
-    //         주소는 higher-half VA임. SP도 같은 오프셋으로 올려 별칭 위로 옮기고,
-    //         x0으로 DTB 물리 주소를 그대로 넘김 (extern "C" 첫 인자)
+    // SAFETY: enable_mmu가 TTBR1의 고정 주소에 이미지를 매핑했고 kernel_main의
+    //         링크 주소가 그 안에 있음. SP도 같은 차이만큼 옮겨 이미지 매핑 위로
+    //         올리고, x0으로 DTB 물리 주소를 그대로 넘김 (extern "C" 첫 인자).
+    //         입력을 x9로 고정해 분기 주소를 만드는 x8과 겹치지 않게 함
     unsafe {
         core::arch::asm!(
-            "add sp, sp, {off}",
+            "add sp, sp, x9",
             "movz x8, #:abs_g3:kernel_main",
             "movk x8, #:abs_g2_nc:kernel_main",
             "movk x8, #:abs_g1_nc:kernel_main",
             "movk x8, #:abs_g0_nc:kernel_main",
             "br x8",
-            off = in(reg) k0_mm::KERNEL_VA_OFFSET,
+            in("x9") k0_mm::KERNEL_IMAGE_VA.wrapping_sub(load_pa),
             in("x0") dtb_phys,
             options(noreturn),
         )
@@ -93,8 +97,8 @@ extern "C" fn kernel_init(dtb_phys: usize) -> ! {
 
 /// higher-half로 점프한 뒤의 초기화 후반부 함수입니다.
 ///
-/// PC와 SP가 TTBR1 별칭 위에 있으므로 여기서부터 재배치된 데이터가 유효해져
-/// 전체 Rust를 제약 없이 쓸 수 있습니다. 점프가 typestate 토큰 전달을
+/// PC와 SP가 이미지의 고정 매핑 위에 있으므로 여기서부터 재배치된 데이터가
+/// 유효해져 전체 Rust를 제약 없이 쓸 수 있습니다. 점프가 typestate 토큰 전달을
 /// 끊으므로 초기화 순서는 이 함수의 호출 순서로 강제합니다.
 ///
 /// # Arguments
@@ -103,8 +107,6 @@ extern "C" fn kernel_init(dtb_phys: usize) -> ! {
 extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     // 벡터 재설치: 같은 테이블이지만 이제 PC가 higher-half라 VBAR도 VA가 됨
     let traps = k0_arch::vectors::install();
-    // 콘솔도 TTBR1 별칭으로 이행, TTBR0을 회수해도 살아 있어야 함
-    k0_arch::earlycon::use_higher_half();
 
     let mut con = EarlyCon;
     let pc: u64;
@@ -114,8 +116,10 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
 
     check_wx(&mut con);
 
-    // DTB도 TTBR1 별칭으로 읽음(겹침 검사와 메모리 맵은 물리 주소 기준)
-    let kernel_image = pa(&raw const __kernel_start)..pa(&raw const __kernel_end);
+    // DTB는 여기서 처음 읽음. 별칭 매핑으로 읽고 결과의 메모리 맵은 물리 주소 기준
+    let image = k0_mm::image_range();
+    let kernel_image = image.start as usize..image.end as usize;
+    map_dtb(&mut con, dtb_phys);
     let bootinfo = match k0_boot::parse(
         dtb_phys,
         kernel_image.clone(),
@@ -134,7 +138,9 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     for r in bootinfo.reserved() {
         let _ = writeln!(con, "k0: dtb reserved {:#x} + {:#x}", r.base, r.size);
     }
-    check_memory_map(&mut con, &bootinfo);
+
+    // 디바이스 발견, 메모리 맵과의 대조, 고정 모드 대조, 콘솔 연결
+    let (platform, counter_hz) = bring_up_platform(&mut con, dtb_phys, &bootinfo, &image);
 
     // 루트 태스크 무결성(손상) 검사: 빌드 및 적재 경로의 변형을 걸러내는 단계
     // 커널 이미지 자체를 수정할 수 있는 공격자는 부트 체인의 커널 서명
@@ -152,10 +158,10 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     }
     let _ = writeln!(con, "..)");
 
-    // PAC 부트 키 파생: DTB 엔트로피 + CNTPCT + RNDR(있으면)을 SHA-256으로 혼합
+    // PAC 부트 키 파생: DTB 엔트로피 + 가상 카운터 + RNDR(있으면)을 SHA-256으로 혼합
     let cntpct: u64;
-    // SAFETY: CNTPCT_EL0 읽기는 부작용이 없음
-    unsafe { core::arch::asm!("mrs {}, cntpct_el0", out(reg) cntpct, options(nomem, nostack)) };
+    // SAFETY: CNTVCT_EL0 읽기는 부작용이 없음
+    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntpct, options(nomem, nostack)) };
     let rndr = k0_arch::hardening::rndr();
     let mut pac_keys = k0_boot::derive_pac_keys(bootinfo.entropy(), &[cntpct, rndr.unwrap_or(0)]);
     let _ = writeln!(
@@ -165,8 +171,8 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         if rndr.is_some() { "on" } else { "absent" }
     );
     if bootinfo.entropy().is_empty() && rndr.is_none() {
-        // 재료가 CNTPCT뿐이면 키가 추측 가능한 수준이라 명시적으로 드러냄
-        let _ = writeln!(con, "k0: WARNING pac key entropy low (cntpct only)");
+        // 재료가 카운터뿐이면 키가 추측 가능한 수준이라 명시적으로 드러냄
+        let _ = writeln!(con, "k0: WARNING pac key entropy low (counter only)");
     }
 
     let hard = k0_arch::hardening::enable(&pac_keys);
@@ -186,7 +192,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         if hard.pan { "on" } else { "absent" }
     );
 
-    match k0_arch::irq::init(&traps) {
+    match setup_irq(&traps, &platform, counter_hz) {
         Ok(_irq) => {
             let _ = writeln!(con, "k0: irq on (timer 1s)");
         }
@@ -291,8 +297,10 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         dst.size = r.size;
     }
     let memory = &mem_buf[..bootinfo.memory().len()];
-    // 고정 예약(커널/DTB/윈도우) 뒤에 DTB의 펌웨어 예약 구간을 병합
-    const FIXED_RSV: usize = 3;
+    // 고정 예약(커널/DTB/윈도우/물리 주소 0의 그래뉼) 뒤에 DTB의 펌웨어 예약
+    // 구간을 병합. 물리 주소 0은 커널 안에서 "없음"을 뜻하는 값과 같아서, RAM이
+    // 0에서 시작하는 보드에서도 그 그래뉼은 오브젝트로 내주지 않음
+    const FIXED_RSV: usize = 4;
     let mut rsv_buf =
         [k0_cap::PhysRegion { base: 0, size: 0 }; FIXED_RSV + k0_boot::MAX_RSV_REGIONS];
     rsv_buf[0] = k0_cap::PhysRegion {
@@ -306,6 +314,10 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     rsv_buf[2] = k0_cap::PhysRegion {
         base: window.start,
         size: window.end - window.start,
+    };
+    rsv_buf[3] = k0_cap::PhysRegion {
+        base: 0,
+        size: k0_mm::GRANULE as u64,
     };
     for (dst, r) in rsv_buf[FIXED_RSV..].iter_mut().zip(bootinfo.reserved()) {
         dst.base = r.base;
@@ -521,32 +533,22 @@ fn write_bootinfo(frame_pa: u64, cnode: &k0_cap::CNodeRef, count: u64, image: &I
     true
 }
 
-/// 링커 심볼의 주소를 물리 주소로 환산하는 함수입니다.
-///
-/// 점프 이후에는 심볼 주소가 higher-half VA로 나오기 때문에 오프셋을 뺍니다.
-/// 점프 전에는 그대로 물리 주소이기 때문에 호출하면 안 됩니다.
-///
-/// # Arguments
-/// `sym` - 링커 심볼의 주소
-fn pa(sym: *const u8) -> usize {
-    sym as usize - k0_mm::KERNEL_VA_OFFSET as usize
-}
-
 /// 초기 페이지 테이블을 구성해 MMU를 켜는 함수입니다. (점프 전 구간)
 ///
-/// # Arguments
-/// `dtb` - RO로 매핑할 DTB 물리 범위
+/// 이미지가 적재된 물리 주소를 반환합니다. 점프 전이라 링커 심볼의 주소가 곧
+/// 실제로 적재된 물리 주소입니다(PC 상대로 계산됨).
 ///
 /// # Errors
 /// 활성화 실패는 주소 공간을 신뢰할 수 없다는 의미이기 때문에 fail-secure
 /// 파킹으로 이어집니다.
-fn enable_mmu(con: &mut EarlyCon, dtb: &Range<usize>) {
-    // 점프 전이므로 심볼 주소가 곧 물리 주소다
+fn enable_mmu(con: &mut EarlyCon) -> u64 {
     let text_start = &raw const __kernel_start as u64;
     let rodata_start = &raw const __rodata_start as u64;
     let data_start = &raw const __data_start as u64;
+    let bss_start = &raw const __bss_start as u64;
     let stack_bottom = &raw const __boot_stack_bottom as u64;
     let stack_top = &raw const __boot_stack_top as u64;
+    let end = &raw const __kernel_end as u64;
     let granule = k0_mm::GRANULE as u64;
 
     let layout = k0_mm::KernelLayout {
@@ -554,13 +556,12 @@ fn enable_mmu(con: &mut EarlyCon, dtb: &Range<usize>) {
         rodata: rodata_start..data_start,
         // 두 구간 사이의 가드 페이지는 의도적으로 매핑안함
         rw: [data_start..stack_bottom - granule, stack_bottom..stack_top],
-        dtb: dtb.start as u64..dtb.end as u64,
-        devices: device_windows(),
+        cold: bss_start..end,
     };
 
     match k0_mm::enable_paging(&layout) {
         Ok(_mmu) => {
-            con.put_str("k0: mmu on (identity + higher-half alias)\n");
+            con.put_str("k0: mmu on (identity + fixed image address)\n");
         }
         Err(e) => {
             con.put_str("k0: mmu enable failed, code = ");
@@ -569,72 +570,234 @@ fn enable_mmu(con: &mut EarlyCon, dtb: &Range<usize>) {
             park()
         }
     }
+    text_start
 }
 
-/// 커널이 디바이스로 매핑하는 MMIO 창(플랫폼 고정 주소)을 주는 함수입니다.
+/// DTB를 TTBR1 별칭에 읽기 전용으로 매핑하는 함수입니다.
 ///
-/// 진입 페이즈 1의 디바이스 매핑과 DTB 메모리 맵 검증이 같은 목록을 씁니다.
-/// 빈 범위(start == end)는 자리 표시자입니다.
-fn device_windows() -> [Range<u64>; 3] {
-    use k0_arch::irq::gic;
-    let uart = k0_arch::earlycon::MMIO_BASE as u64;
-    let granule = k0_mm::GRANULE as u64;
-    [
-        uart..uart + granule,
-        gic::GICD_BASE..gic::GICD_BASE + gic::GICD_SIZE,
-        gic::GICR_BASE..gic::GICR_BASE + gic::GICR_SIZE,
-    ]
+/// 크기를 알려면 헤더를 읽어야 하므로 첫 그래뉼을 먼저 열고, 헤더가 말하는
+/// 크기(상한 2MiB)만큼 다시 엽니다. 포인터가 RAM이 아닌 곳을 가리키면 여기서의
+/// 읽기가 폴트로 정지합니다. 그 주소가 선언된 메모리 안인지는 메모리 맵을
+/// 읽은 뒤에 확인합니다.
+fn map_dtb(con: &mut EarlyCon, dtb_phys: usize) {
+    let fail = |con: &mut EarlyCon, what: &str| -> ! {
+        let _ = writeln!(con, "k0: dtb rejected: {what}");
+        park()
+    };
+    if dtb_phys == 0 || dtb_phys % 8 != 0 {
+        fail(con, "bad pointer");
+    }
+    let start = dtb_phys as u64;
+    if k0_mm::map_dtb(start..start + 8).is_err() {
+        fail(con, "header not mappable");
+    }
+    let span = match k0_boot::dtb_span(dtb_phys + k0_mm::KERNEL_VA_OFFSET as usize) {
+        Ok(span) => span,
+        Err(e) => {
+            let _ = writeln!(con, "k0: dtb rejected: {e:?}");
+            park()
+        }
+    };
+    if k0_mm::map_dtb(start..start + (span.end - span.start) as u64).is_err() {
+        fail(con, "not mappable");
+    }
 }
 
-/// DTB 메모리 맵이 커널의 MMIO 창과 겹치지 않고 이 코어의 물리 주소 폭
-/// 안에 있는지 검증하는 함수입니다.
+/// 고정 모드의 기대값입니다. 빌드할 때 환경 변수 `K0_PIN`에 부트 로그의
+/// `k0: platform` 줄 내용을 넣으면, 그와 다른 플랫폼에서는 부팅을 거부합니다.
+const PIN: Option<&str> = option_env!("K0_PIN");
+
+/// 한 줄을 스택에서 조립하는 버퍼입니다. 넘치면 넘쳤다는 사실만 기억합니다.
+struct Line {
+    buf: [u8; 240],
+    len: usize,
+    overflow: bool,
+}
+
+impl Line {
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl core::fmt::Write for Line {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for &b in s.as_bytes() {
+            if self.len == self.buf.len() {
+                self.overflow = true;
+                break;
+            }
+            self.buf[self.len] = b;
+            self.len += 1;
+        }
+        Ok(())
+    }
+}
+
+/// 발견한 콘솔을 매핑하고 연결하는 함수입니다.
 ///
-/// 메모리 노드는 그대로 untyped가 되어 EL0에 매핑될 수 있으므로, MMIO를
-/// 메모리라고 주장하는 DTB는 사용자 공간에 디바이스 접근을 열어 주는
-/// 권한 확대입니다. 제로 트러스트 원칙대로 자원 축소가 아닌 확대는
-/// 거부합니다.
+/// 식별 레지스터가 있는 PL011은 쓰기 전에 그 값을 확인합니다. 확인에
+/// 실패하면 콘솔 없이 계속합니다(로그에만 남음).
+fn attach_console(con: &mut EarlyCon, c: &k0_boot::Console, counter_hz: u64) {
+    use k0_arch::earlycon::Uart;
+    let Ok(va) = k0_mm::map_device(c.base) else {
+        let _ = writeln!(con, "k0: console not mapped");
+        return;
+    };
+    let uart = match c.kind {
+        k0_boot::ConsoleKind::Pl011 => {
+            // 식별 레지스터는 4KiB 프레임의 끝에 있음. 선언된 구간이 프레임
+            // 전체일 때만 읽음
+            let framed = c.base % 0x1000 == 0 && c.reg.size >= 0x1000;
+            // SAFETY: 방금 Device로 매핑한 PL011 프레임의 시작 주소
+            if framed && !unsafe { k0_arch::earlycon::pl011_identity_ok(va as usize) } {
+                let _ = writeln!(con, "k0: console is not a pl011, ignored");
+                return;
+            }
+            Uart::Pl011
+        }
+        k0_boot::ConsoleKind::SbsaUart => Uart::Pl011,
+        k0_boot::ConsoleKind::Ns16550 { reg_shift, io_width } => Uart::Ns16550 {
+            shift: reg_shift,
+            width: io_width,
+        },
+    };
+    // SAFETY: 드라이버가 건드리는 범위가 한 그래뉼 안임을 검증했고(validate),
+    //         그 그래뉼을 방금 Device로 매핑함
+    unsafe { k0_arch::earlycon::attach(uart, va as usize, counter_hz) };
+}
+
+/// DTB에서 플랫폼을 발견해 검증하고 콘솔을 연결하는 함수입니다.
+///
+/// 순서는 발견, 메모리 맵과의 대조, 고정 모드 대조, 콘솔 연결입니다. 디바이스
+/// 페이지는 대조를 통과한 뒤에만 매핑합니다. 플랫폼과 카운터 주파수를
+/// 반환합니다.
 ///
 /// # Errors
-/// 겹침이나 범위 초과가 있으면 부트 정보를 신뢰할 수 없으므로 fail-secure
-/// 파킹합니다
-fn check_memory_map(con: &mut EarlyCon, bootinfo: &k0_boot::BootInfo) {
-    // 이 코어가 변환할 수 없는 물리 주소를 메모리라고 주장하는 DTB도 거부함.
-    // 그런 구간이 untyped가 되면 재분류의 별칭 매핑이 주소 크기 폴트로
-    // 커널을 세움
-    let limit = 1u64 << k0_mm::pa_bits();
-    for m in bootinfo.memory() {
-        // 파서가 base + size 오버플로를 이미 거부함
-        if m.base + m.size > limit {
-            let _ = writeln!(
-                con,
-                "k0: dtb memory {:#x} + {:#x} rejected: beyond {}-bit physical addresses",
-                m.base,
-                m.size,
-                k0_mm::pa_bits()
-            );
+/// 어느 단계든 실패하면 부팅을 거부하고 파킹합니다. 인터럽트 컨트롤러나
+/// 타이머 때문에 거부할 때도, 지원하는 콘솔이 있고 대조를 통과하면 사유를
+/// 볼 수 있게 그 콘솔을 먼저 연결합니다.
+fn bring_up_platform(
+    con: &mut EarlyCon,
+    dtb_phys: usize,
+    bootinfo: &k0_boot::BootInfo,
+    image: &Range<u64>,
+) -> (k0_boot::Platform, u64) {
+    let off = k0_mm::KERNEL_VA_OFFSET as usize;
+    let layout = k0_boot::Layout {
+        memory: bootinfo.memory(),
+        reserved: bootinfo.reserved(),
+        image: image.clone(),
+        dtb: bootinfo.dtb.start as u64..bootinfo.dtb.end as u64,
+        granule: k0_mm::GRANULE as u64,
+        ram_limit: k0_mm::PA_CEILING,
+        device_limit: 1u64 << k0_mm::pa_bits(),
+    };
+
+    let found = match k0_boot::discover(dtb_phys, off) {
+        Ok(found) => found,
+        Err(e) => {
+            if let Some(c) = k0_boot::discover_console(dtb_phys, off) {
+                if c.check(&layout).is_ok() && PIN.is_none() {
+                    attach_console(con, &c, 0);
+                }
+            }
+            let _ = writeln!(con, "k0: platform rejected: {e:?}");
+            park()
+        }
+    };
+    let platform = found.platform;
+    if let Err(e) = platform.validate(&layout) {
+        let _ = writeln!(con, "k0: platform rejected: {e:?} ({platform})");
+        park()
+    }
+
+    // 고정 모드가 대조하는 한 줄: 디바이스, 진입 EL, RAM이 놓인 범위
+    let lo = bootinfo.memory().iter().map(|m| m.base).min().unwrap_or(0);
+    let hi = bootinfo.memory().iter().map(|m| m.base + m.size).max().unwrap_or(0);
+    let mut line = Line {
+        buf: [0; 240],
+        len: 0,
+        overflow: false,
+    };
+    let _ = write!(
+        line,
+        "{platform} el={} ram={lo:#x}-{hi:#x}",
+        K0_ENTRY_EL.load(Ordering::Relaxed)
+    );
+    if let Some(pin) = PIN {
+        if line.overflow || pin != line.as_str() {
+            // 기대와 다른 하드웨어의 콘솔에는 쓰지 않음. 사유는 로그에만 남음
+            let _ = writeln!(con, "k0: platform rejected: differs from the pinned build");
+            let _ = writeln!(con, "k0: found  {}", line.as_str());
+            let _ = writeln!(con, "k0: pinned {pin}");
             park()
         }
     }
-    for dev in device_windows() {
-        if dev.end <= dev.start {
-            continue;
-        }
-        for m in bootinfo.memory() {
-            // 파서가 base + size 오버플로를 이미 거부함
-            if m.base < dev.end && dev.start < m.base + m.size {
-                let _ = writeln!(
-                    con,
-                    "k0: dtb memory {:#x} + {:#x} overlaps device window {:#x}",
-                    m.base, m.size, dev.start
-                );
-                park()
-            }
+
+    let counter_hz = k0_arch::irq::counter_hz(platform.timer.clock_hz);
+    if let Some(c) = &platform.console {
+        attach_console(con, c, counter_hz.unwrap_or(0));
+    }
+    let _ = writeln!(con, "k0: platform {}", line.as_str());
+    if let Some(why) = found.no_console {
+        let _ = writeln!(con, "k0: no console ({why:?})");
+    }
+    match counter_hz {
+        Ok(hz) => (platform, hz),
+        Err(e) => {
+            let _ = writeln!(con, "k0: timer rejected: {e:?}");
+            park()
         }
     }
 }
 
-/// 부트 프레임 윈도우로 쓸 물리 구간을 고르는 함수입니다.
+/// 인터럽트 컨트롤러의 레지스터 페이지를 매핑하고 초기화하는 함수입니다.
 ///
+/// 필요한 페이지만 매핑합니다. GICv3의 리디스트리뷰터 구간은 CPU 수만큼
+/// 커지므로 통째로 매핑하지 않고, 프로브 페이지로 한 프레임씩 들여다봐 부트
+/// 코어의 프레임을 찾은 뒤 그 두 페이지만 매핑합니다.
+///
+/// # Errors
+/// 매핑 실패는 `ProbeFailed`, 그 밖은 드라이버의 `IrqError`
+fn setup_irq(
+    traps: &k0_arch::vectors::Vectors,
+    platform: &k0_boot::Platform,
+    counter_hz: u64,
+) -> Result<k0_arch::irq::Irq, k0_arch::irq::IrqError> {
+    use k0_arch::irq::{gicv3, Gic, IrqError};
+    let map = |pa: u64| k0_mm::map_device(pa).map(|va| va as usize).map_err(|_| IrqError::ProbeFailed);
+
+    let gic = match &platform.intc {
+        k0_boot::Intc::GicV2 { dist, cpu } => Gic::V2 {
+            dist: map(dist.base)?,
+            cpu: map(cpu.base)?,
+        },
+        k0_boot::Intc::GicV3 { dist, stride, .. } => {
+            let mut regions = [(0u64, 0u64); k0_boot::MAX_REDIST_REGIONS];
+            let list = platform.intc.redist();
+            for (slot, r) in regions.iter_mut().zip(list) {
+                *slot = (r.base, r.size);
+            }
+            let rd = gicv3::find_redistributor(&regions[..list.len()], *stride, &mut |pa| {
+                k0_mm::probe_map(pa).ok().map(|va| va as usize)
+            });
+            // 마지막으로 들여다본 프레임이 매핑된 채 남지 않게 함
+            k0_mm::probe_clear();
+            let rd = rd?;
+            Gic::V3(gicv3::Frames {
+                dist: map(dist.base)?,
+                dist_pidr2: map(dist.base + gicv3::PIDR2)?,
+                rd: map(rd)?,
+                sgi: map(rd + gicv3::SGI_OFFSET)?,
+            })
+        }
+    };
+    // SAFETY: 주소들은 DTB에서 발견해 메모리 맵과의 대조(validate)를 마친
+    //         디바이스를 방금 Device로 매핑한 것임
+    unsafe { k0_arch::irq::init(traps, &gic, platform.timer.intid, counter_hz) }
+}
+
 /// 커널 이미지 끝 바로 뒤(DTB와 겹치면 DTB 끝 뒤)의 그래뉼 정렬 구간을
 /// 메모리 맵 안에서 찾습니다. 윈도우는 루트 태스크 적재가 끝나면 더 자라지
 /// 않는 고정 예산입니다.
@@ -643,6 +806,18 @@ fn check_memory_map(con: &mut EarlyCon, bootinfo: &k0_boot::BootInfo) {
 /// `bootinfo` - 파싱을 마친 부트 정보
 /// `kernel_image` - 커널 이미지의 물리 범위
 fn pick_window(bootinfo: &k0_boot::BootInfo, kernel_image: &Range<usize>) -> Option<Range<u64>> {
+    // 이미지 바로 뒤를 먼저 보고, 거기서 위로 자리가 없으면(이미지가 RAM의
+    // 끝 가까이 적재된 경우) 가장 낮은 메모리부터 다시 찾음
+    let lowest = bootinfo.memory().iter().map(|m| m.base).min()?;
+    scan_window(bootinfo, kernel_image, kernel_image.end as u64)
+        .or_else(|| scan_window(bootinfo, kernel_image, lowest))
+}
+
+fn scan_window(
+    bootinfo: &k0_boot::BootInfo,
+    kernel_image: &Range<usize>,
+    from: u64,
+) -> Option<Range<u64>> {
     const WINDOW_SIZE: u64 = 2 * 1024 * 1024;
     let g = k0_mm::GRANULE as u64;
     let align_up = |v: u64| v.checked_add(g - 1).map(|x| x & !(g - 1));
@@ -650,13 +825,19 @@ fn pick_window(bootinfo: &k0_boot::BootInfo, kernel_image: &Range<usize>) -> Opt
         base: bootinfo.dtb.start as u64,
         size: (bootinfo.dtb.end - bootinfo.dtb.start) as u64,
     };
+    let image = k0_boot::MemRegion {
+        base: kernel_image.start as u64,
+        size: (kernel_image.end - kernel_image.start) as u64,
+    };
+    // 물리 주소 0의 그래뉼은 오브젝트로 내주지 않으므로 윈도우에도 넣지 않음
+    let zero = k0_boot::MemRegion { base: 0, size: g };
 
-    let mut start = align_up(kernel_image.end as u64)?;
+    let mut start = align_up(from)?;
     // 장애물(DTB, 펌웨어 예약)을 넘어가며 안정될 때까지 전진, 반복은 유한
     for _ in 0..64 {
         let end = start.checked_add(WINDOW_SIZE)?;
         let mut bumped = false;
-        for r in core::iter::once(&dtb).chain(bootinfo.reserved()) {
+        for r in [&dtb, &image, &zero].into_iter().chain(bootinfo.reserved()) {
             // 파서가 base + size 오버플로를 이미 거부함
             let r_end = r.base.checked_add(r.size)?;
             if r_end > start && r.base < end {
@@ -733,7 +914,7 @@ fn check_user_wx(con: &mut EarlyCon, segs: &[k0_task::LoadSeg], hard: &k0_arch::
         ("binfo+r", k0_mm::can_user_read(k0_abi::bootinfo::VA), true),
         ("binfo+w", k0_mm::can_user_write(k0_abi::bootinfo::VA), false),
         utext_k,
-        ("id+r", k0_mm::can_read(ktext_va - k0_mm::KERNEL_VA_OFFSET), false),
+        ("id+r", k0_mm::can_read(k0_mm::image_pa(ktext_va)), false),
     ];
     let mut ok = true;
     for (name, got, want) in checks {
@@ -764,13 +945,15 @@ fn check_wx(con: &mut EarlyCon) {
     let granule = k0_mm::GRANULE as u64;
 
     // (이름, 실측, 기대) 형태의 검증표
-    let checks: [(&str, bool, bool); 6] = [
+    let checks: [(&str, bool, bool); 7] = [
         ("text+r", k0_mm::can_read(text), true),
         ("text+w", k0_mm::can_write(text), false),
         ("rodata+w", k0_mm::can_write(rodata), false),
         ("guard+r", k0_mm::can_read(stack_bottom - granule), false),
         ("stack+w", k0_mm::can_write(stack_top - granule), true),
-        ("id+r", k0_mm::can_read(text - k0_mm::KERNEL_VA_OFFSET), true),
+        ("id+r", k0_mm::can_read(k0_mm::image_pa(text)), true),
+        // 이미지에는 선형 별칭이 없어야 함(재분류의 소거가 닿을 수 없게)
+        ("alias+r", k0_mm::can_read(k0_mm::image_pa(text) + k0_mm::KERNEL_VA_OFFSET), false),
     ];
     let mut ok = true;
     for (name, got, want) in checks {

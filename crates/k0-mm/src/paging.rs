@@ -1,13 +1,16 @@
 //! 진입 페이즈 1 초기 페이지 테이블 구성과 MMU 활성화 모듈입니다.
 //!
 //! # Features
-//! 커널 이미지(W^X 분리), DTB(RO), earlycon MMIO(Device)만 담는 최소 테이블을
-//! .bss의 정적 풀에서 구성합니다. 블록 매핑 없이 최하위 레벨 페이지로만 매핑해
-//! 코드 경로를 하나로 유지합니다. TTBR0은 identity 매핑(전환과 MMIO용, 진입
-//! 페이즈 3에서 사용자 공간용으로 교체 예정), TTBR1은 higher-half 선형
-//! 별칭(PA + `KERNEL_VA_OFFSET`)입니다. `SCTLR_EL1.WXN`을 켜서 쓰기 가능한
-//! 페이지는 하드웨어 수준에서 실행이 거부됩니다. 부트 스택 아래 가드 페이지는
-//! 어느 반쪽에도 매핑하지 않아 스택 오버플로가 즉시 폴트가 됩니다.
+//! 커널 이미지(W^X 분리)만 담는 최소 테이블을 .bss의 정적 풀에서 구성합니다.
+//! 블록 매핑 없이 최하위 레벨 페이지로만 매핑해 코드 경로를 하나로 유지합니다.
+//! 이미지는 적재된 물리 주소와 무관하게 TTBR1의 고정 주소 `KERNEL_IMAGE_VA`에
+//! 매핑되고, TTBR0에는 전환 순간에만 쓰는 identity 매핑이 놓입니다(진입 페이즈
+//! 3에서 사용자 공간용으로 교체). TTBR1의 나머지는 세 구역으로 나뉩니다.
+//! 선형 별칭(PA + `KERNEL_VA_OFFSET`)은 커널이 건드리는 RAM(부트 윈도우,
+//! 재분류된 오브젝트, DTB)에만 쓰고, 디바이스는 이미지 위쪽의 디바이스 창에
+//! 페이지 단위로 모아 매핑합니다. `SCTLR_EL1.WXN`을 켜서 쓰기 가능한 페이지는
+//! 하드웨어 수준에서 실행이 거부됩니다. 부트 스택 아래 가드 페이지는 어느
+//! 반쪽에도 매핑하지 않아 스택 오버플로가 즉시 폴트가 됩니다.
 //!
 //! # Errors
 //! 테이블 풀 고갈, 정렬 위반, 중복 매핑, 미지원 그래뉼, 재진입은 전부
@@ -30,13 +33,21 @@ pub const GRANULE: usize = 4096;
 #[cfg(feature = "granule-16k")]
 pub const GRANULE: usize = 16384;
 
-/// TTBR1 higher-half 선형 별칭의 VA 오프셋 (정의는 k0-abi, 링커 스크립트와 일치)
-pub use k0_abi::KERNEL_VA_OFFSET;
+/// TTBR1 선형 별칭의 VA 오프셋과 이미지의 고정 VA (정의는 k0-abi)
+pub use k0_abi::{KERNEL_IMAGE_VA, KERNEL_VA_OFFSET, PA_CEILING};
+
+/// 디바이스 창의 시작 VA입니다. 이미지와 같은 상위 테이블을 나눠 쓰도록
+/// 이미지 1GiB 위에 둡니다. 0번 칸은 프로브 페이지입니다.
+const DEVICE_VA: u64 = KERNEL_IMAGE_VA + (1 << 30);
+
+/// 디바이스 창의 칸 수(프로브 칸 포함). 커널이 매핑하는 디바이스 페이지는
+/// 콘솔 1, GIC 최대 4라서 여유를 둔 값입니다.
+const DEVICE_SLOTS: usize = 16;
 
 const PAGE_SHIFT: u32 = GRANULE.trailing_zeros();
 const BITS_PER_LEVEL: u32 = PAGE_SHIFT - 3;
 const ENTRIES: usize = GRANULE / 8;
-const POOL_LEN: usize = 32;
+const POOL_LEN: usize = 40;
 pub(crate) const ADDR_MASK: u64 = ((1u64 << 48) - 1) & !(GRANULE as u64 - 1);
 
 pub(crate) const DESC_TABLE: u64 = 0b11;
@@ -91,6 +102,7 @@ pub enum MmuError {
     AlreadyEnabled,
     NotEnabled,
     GranuleUnsupported,
+    AboveCeiling,
     OutOfTables,
     OutOfFrames,
     Misaligned,
@@ -102,15 +114,15 @@ pub enum MmuError {
 
 /// 매핑 대상 커널 레이아웃을 담는 구조체입니다.
 ///
-/// 모든 경계는 링커 스크립트가 그래뉼 정렬을 보장하는 물리 주소입니다.
+/// 모든 경계는 이미지가 실제로 적재된 물리 주소이며 그래뉼 정렬이어야 합니다
+/// (링커 스크립트가 이미지 안의 간격을, 부트로더가 적재 주소를 맞춤).
 /// `rw`의 두 구간 사이(가드 페이지)는 의도적으로 매핑되지 않습니다.
-/// `devices`는 그래뉼 정렬된 MMIO 범위이며 빈 범위(start == end)는 무시됩니다.
 pub struct KernelLayout {
     pub text: Range<u64>,
     pub rodata: Range<u64>,
     pub rw: [Range<u64>; 2],
-    pub dtb: Range<u64>,
-    pub devices: [Range<u64>; 3],
+    /// MMU가 꺼진 동안 커널이 쓴 구간(.bss의 시작부터 이미지 끝까지)
+    pub cold: Range<u64>,
 }
 
 /// MMU가 켜진 상태를 증명하는 typestate 토큰 구조체입니다.
@@ -133,6 +145,19 @@ struct Pool {
     root1: usize,
     /// 어떤 사용자 매핑도 없는 빈 TTBR0 루트(주소 공간이 사라질 때의 대피처)
     null_root: usize,
+    /// 0번 테이블의 물리 주소. MMU 이전에 한 번 잡아 두고 이후의 테이블
+    /// 주소 계산은 전부 이 값에서 출발함(가상 주소 산술을 쓰지 않음)
+    base_pa: u64,
+    /// 커널 이미지가 차지하는 물리 구간 [시작, 끝)
+    image: (u64, u64),
+    /// 이미지의 VA에서 PA를 뺀 값
+    image_delta: u64,
+    /// 디바이스 창에서 쓴 칸 수(0번 프로브 칸 제외)와 각 칸의 물리 페이지
+    dev_used: usize,
+    dev_pages: [u64; DEVICE_SLOTS],
+    /// 프로브 칸의 리프 위치(테이블 번호, 엔트리 번호)와 사용 여부
+    probe_leaf: (usize, usize),
+    probe_live: bool,
 }
 
 struct SyncCell(UnsafeCell<Pool>);
@@ -148,6 +173,13 @@ static POOL: SyncCell = SyncCell(UnsafeCell::new(Pool {
     enabled: false,
     root1: 0,
     null_root: 0,
+    base_pa: 0,
+    image: (0, 0),
+    image_delta: 0,
+    dev_used: 0,
+    dev_pages: [0; DEVICE_SLOTS],
+    probe_leaf: (0, 0),
+    probe_live: false,
 }));
 
 pub(crate) fn index(va: u64, level: u32) -> usize {
@@ -167,8 +199,25 @@ impl Pool {
     }
 
     fn pa(&self, i: usize) -> u64 {
-        // 점프 전에는 심볼 주소가 곧 PA고, 점프 후에는 VA라 오프셋을 벗겨냄
-        core::ptr::from_ref(&self.tables[i]) as u64 & !KERNEL_VA_OFFSET
+        self.base_pa + (i * GRANULE) as u64
+    }
+
+    /// `va`를 변환하는 리프 엔트리의 위치(테이블 번호, 엔트리 번호)를 찾는
+    /// 함수입니다. 중간 테이블이 없으면 `MissingTable`입니다.
+    fn leaf_of(&self, root: usize, va: u64) -> Result<(usize, usize), MmuError> {
+        let mut t = root;
+        for level in 0..3 {
+            let entry = self.tables[t].0[index(va, level)];
+            if entry & 0b11 != DESC_TABLE {
+                return Err(MmuError::MissingTable);
+            }
+            t = self.index_of(entry & ADDR_MASK)?;
+        }
+        Ok((t, index(va, 3)))
+    }
+
+    fn overlaps_image(&self, start: u64, end: u64) -> bool {
+        start < self.image.1 && self.image.0 < end
     }
 
     fn index_of(&self, pa: u64) -> Result<usize, MmuError> {
@@ -321,13 +370,18 @@ fn tcr(ips: u64) -> u64 {
 
 /// 초기 페이지 테이블을 구성하고 MMU를 활성화하는 함수입니다.
 ///
+/// 이미지를 TTBR0에는 identity로, TTBR1에는 `KERNEL_IMAGE_VA`부터 매핑합니다.
+/// MMU가 꺼진 동안 쓴 메모리(.bss, 부트 스택, 이 풀의 테이블)는 캐시를 거치지
+/// 않았으므로, 캐시를 켜기 전에 그 구간의 데이터 캐시 라인을 무효화해 펌웨어가
+/// 남긴 낡은 라인이 방금 쓴 내용을 가리지 못하게 합니다.
+///
 /// # Arguments
-/// `layout` - 링커 심볼과 부트 정보로 채운 매핑 대상 레이아웃
+/// `layout` - 이미지가 적재된 물리 주소로 채운 매핑 대상 레이아웃
 ///
 /// # Errors
-/// 그래뉼 미지원, 풀 고갈, 정렬 위반, 중복 매핑, 재호출 시 `MmuError`.
-/// 이 함수가 실패하면 주소 공간 상태를 신뢰할 수 없기 때문에 호출자는
-/// 부팅을 중단해야 합니다.
+/// 그래뉼 미지원, 풀 고갈, 정렬 위반, 물리 주소 상한 초과, 재호출 시
+/// `MmuError`. 이 함수가 실패하면 주소 공간 상태를 신뢰할 수 없기 때문에
+/// 호출자는 부팅을 중단해야 합니다.
 pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
     let ips = check_features()?;
 
@@ -338,21 +392,30 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
         return Err(MmuError::AlreadyEnabled);
     }
 
+    let g = GRANULE as u64;
+    let load = layout.text.start;
+    let end = layout.rw[1].end;
+    if load % g != 0 || end % g != 0 || end <= load {
+        return Err(MmuError::Misaligned);
+    }
+    if end > PA_CEILING {
+        return Err(MmuError::AboveCeiling);
+    }
+    // MMU가 꺼져 있어 정적의 주소가 곧 물리 주소임. 이후에는 다시 계산하지 않음
+    pool.base_pa = core::ptr::from_ref(&pool.tables[0]) as u64;
+    pool.image = (load, end);
+    pool.image_delta = KERNEL_IMAGE_VA.wrapping_sub(load);
+
     let root0 = pool.alloc()?;
     let root1 = pool.alloc()?;
     // 풀 항목은 소거 상태로 시작하므로 그대로 빈 루트임
     let null_root = pool.alloc()?;
 
-    let g = GRANULE as u64;
-    let dtb_base = layout.dtb.start & !(g - 1);
-    let dtb_end = layout.dtb.end.div_ceil(g) * g;
-
-    let segments: [(u64, u64, Perm); 5] = [
+    let segments: [(u64, u64, Perm); 4] = [
         (layout.text.start, layout.text.end, Perm::Text),
         (layout.rodata.start, layout.rodata.end, Perm::Ro),
         (layout.rw[0].start, layout.rw[0].end, Perm::Rw),
         (layout.rw[1].start, layout.rw[1].end, Perm::Rw),
-        (dtb_base, dtb_end, Perm::Ro),
     ];
     for (start, end, perm) in segments {
         if end < start {
@@ -363,15 +426,7 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
             continue;
         }
         pool.map_range(root0, start, start, len, perm, false)?;
-        pool.map_range(root1, start + KERNEL_VA_OFFSET, start, len, perm, false)?;
-    }
-    for dev in &layout.devices {
-        if dev.end <= dev.start {
-            continue;
-        }
-        let len = dev.end - dev.start;
-        pool.map_range(root0, dev.start, dev.start, len, Perm::Device, false)?;
-        pool.map_range(root1, dev.start + KERNEL_VA_OFFSET, dev.start, len, Perm::Device, false)?;
+        pool.map_range(root1, start.wrapping_add(pool.image_delta), start, len, perm, false)?;
     }
 
     let ttbr0 = pool.pa(root0);
@@ -383,10 +438,51 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
     // E0PD1은 EL0가 커널 절반의 매핑 유무를 변환 타이밍으로 구별하지 못하게 함
     let tcr = if has_e0pd() { tcr(ips) | TCR_E0PD1 } else { tcr(ips) };
 
-    // SAFETY: 현재 PC(text)와 SP(부트 스택)를 포함한 필수 매핑이 identity로
-    //         구성돼 있고, 배리어 순서는 ARMv8 MMU 활성화 절차를 따름
-    unsafe { switch_on(ttbr0, ttbr1, tcr) };
+    // SAFETY: 구간은 이 이미지의 쓰기 가능한 부분이고, 현재 PC(text)와 SP(부트
+    //         스택)를 포함한 필수 매핑이 identity로 구성돼 있으며, 배리어 순서는
+    //         ARMv8 MMU 활성화 절차를 따름
+    unsafe {
+        invalidate_dcache(layout.cold.start, layout.cold.end);
+        switch_on(ttbr0, ttbr1, tcr);
+    }
     Ok(Mmu { _sealed: () })
+}
+
+/// 물리 구간의 데이터 캐시 라인을 무효화하는 함수입니다. (MMU 이전 전용)
+///
+/// # Safety
+/// MMU와 데이터 캐시가 꺼진 상태에서, 메모리의 내용이 곧 진실인 구간에만
+/// 써야 합니다. 캐시에만 있는 내용은 버려집니다.
+unsafe fn invalidate_dcache(start: u64, end: u64) {
+    let ctr: u64;
+    // SAFETY: CTR_EL0 읽기는 부작용이 없음
+    unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
+    let line = 4u64 << ((ctr >> 16) & 0xF);
+    let mut addr = start & !(line - 1);
+    while addr < end {
+        // SAFETY: 함수 계약대로 MMU 이전의 물리 주소에 대한 캐시 유지보수 명령
+        unsafe { asm!("dc ivac, {}", in(reg) addr, options(nostack)) };
+        addr += line;
+    }
+    // SAFETY: 무효화가 끝난 뒤에 캐시를 켜도록 완료를 기다림
+    unsafe { asm!("dsb sy", "isb", options(nostack)) };
+}
+
+/// 이미지 안의 가상 주소를 물리 주소로 바꾸는 함수입니다.
+///
+/// higher-half 점프 이후의 링커 심볼 주소에 씁니다. 점프 전에는 심볼 주소가
+/// 그대로 물리 주소이므로 부르면 안 됩니다.
+pub fn image_pa(va: u64) -> u64 {
+    // SAFETY: 읽기만 하고 enable_paging 이후에는 값이 바뀌지 않음
+    let pool = unsafe { &*POOL.0.get() };
+    va.wrapping_sub(pool.image_delta)
+}
+
+/// 커널 이미지가 차지하는 물리 구간을 주는 함수입니다.
+pub fn image_range() -> Range<u64> {
+    // SAFETY: 읽기만 하고 enable_paging 이후에는 값이 바뀌지 않음
+    let pool = unsafe { &*POOL.0.get() };
+    pool.image.0..pool.image.1
 }
 
 /// MMU 활성화 이후 TTBR1에 커널 RW 매핑을 추가하는 함수입니다.
@@ -402,7 +498,7 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
 /// # Errors
 /// MMU 비활성 상태, 정렬 위반, 풀 고갈, 기존 매핑과의 겹침 시 `MmuError`
 pub fn map_kernel_window(window: Range<u64>) -> Result<(), MmuError> {
-    map_alias(window, false)
+    map_alias(window, Perm::Rw, false)
 }
 
 /// 재분류(retype)된 오브젝트 한 그래뉼을 TTBR1 별칭으로 여는 함수입니다.
@@ -417,17 +513,35 @@ pub fn map_kernel_window(window: Range<u64>) -> Result<(), MmuError> {
 /// [map_kernel_window]와 같되 같은 매핑의 재요청은 성공
 pub fn alias_object(pa: u64) -> Result<(), MmuError> {
     let end = pa.checked_add(GRANULE as u64).ok_or(MmuError::Misaligned)?;
-    map_alias(pa..end, true)
+    map_alias(pa..end, Perm::Rw, true)
 }
 
-fn map_alias(window: Range<u64>, same_ok: bool) -> Result<(), MmuError> {
+/// DTB가 놓인 물리 구간을 TTBR1 별칭에 읽기 전용으로 여는 함수입니다.
+///
+/// 구간은 그래뉼 경계로 넓혀 매핑합니다. 헤더를 읽기 위해 첫 그래뉼만 먼저
+/// 열고 크기를 안 뒤 전체를 다시 요청하는 쓰임을 위해, 이미 같은 매핑이 있는
+/// 페이지는 성공으로 칩니다.
+///
+/// # Arguments
+/// `range` - DTB의 물리 구간(정렬 불필요)
+///
+/// # Errors
+/// [map_kernel_window]와 같음
+pub fn map_dtb(range: Range<u64>) -> Result<(), MmuError> {
+    let g = GRANULE as u64;
+    let start = range.start & !(g - 1);
+    let end = range.end.checked_add(g - 1).ok_or(MmuError::Misaligned)? & !(g - 1);
+    map_alias(start..end, Perm::Ro, true)
+}
+
+fn map_alias(window: Range<u64>, perm: Perm, same_ok: bool) -> Result<(), MmuError> {
     let g = GRANULE as u64;
     if window.end <= window.start || window.start % g != 0 || window.end % g != 0 {
         return Err(MmuError::Misaligned);
     }
-    // 변환 가능한 물리 주소 범위 밖은 별칭을 만들 수 없음
-    if window.end > 1u64 << 48 {
-        return Err(MmuError::Misaligned);
+    // 별칭은 이미지의 가상 주소 영역 아래에서 끝나야 함
+    if window.end > PA_CEILING {
+        return Err(MmuError::AboveCeiling);
     }
 
     // SAFETY: 부트 코어의 초기화 시퀀스 또는 이양 후 시스템 콜 컨텍스트에서만
@@ -437,14 +551,132 @@ fn map_alias(window: Range<u64>, same_ok: bool) -> Result<(), MmuError> {
     if !pool.enabled {
         return Err(MmuError::NotEnabled);
     }
+    // 커널 이미지에는 별칭을 만들지 않음. untyped 목록이 이미지를 빼놓는 것과
+    // 별개로, 재분류의 소거가 커널 자신을 지우는 길을 매핑 단계에서도 막음
+    if pool.overlaps_image(window.start, window.end) {
+        return Err(MmuError::Overlap);
+    }
 
     let root1 = pool.root1;
     let len = window.end - window.start;
-    pool.map_range(root1, window.start + KERNEL_VA_OFFSET, window.start, len, Perm::Rw, same_ok)?;
+    pool.map_range(root1, window.start + KERNEL_VA_OFFSET, window.start, len, perm, same_ok)?;
 
     // SAFETY: 새로 유효해진 테이블 엔트리를 워커가 보기 전에 쓰기를 완료시킴
     unsafe { asm!("dsb ishst", "isb", options(nostack)) };
     Ok(())
+}
+
+/// 디바이스 레지스터가 있는 물리 페이지를 디바이스 창에 매핑하는 함수입니다.
+///
+/// `pa`가 속한 그래뉼 페이지 하나를 Device 속성으로 매핑하고 `pa`에 해당하는
+/// 가상 주소를 반환합니다. 같은 페이지를 다시 요청하면 기존 매핑을 돌려줍니다.
+/// 호출자는 그 구간이 메모리 맵과 겹치지 않음을 먼저 검증해야 합니다.
+///
+/// # Arguments
+/// `pa` - 디바이스 레지스터의 물리 주소(정렬 불필요)
+///
+/// # Errors
+/// MMU 비활성, 물리 주소 폭 초과, 이미지와의 겹침, 창 소진, 풀 고갈 시 `MmuError`
+pub fn map_device(pa: u64) -> Result<u64, MmuError> {
+    let g = GRANULE as u64;
+    let page = pa & !(g - 1);
+    // SAFETY: 부트 코어의 초기화 시퀀스에서만 호출되어 이 가변 참조는 유일함
+    let pool = unsafe { &mut *POOL.0.get() };
+    pool.check_device_page(page)?;
+    if let Some(i) = pool.dev_pages[..pool.dev_used].iter().position(|&p| p == page) {
+        return Ok(DEVICE_VA + (i as u64 + 1) * g + (pa - page));
+    }
+    if pool.dev_used + 1 >= DEVICE_SLOTS {
+        return Err(MmuError::OutOfTables);
+    }
+    let va = DEVICE_VA + (pool.dev_used as u64 + 1) * g;
+    let root1 = pool.root1;
+    pool.map_page(root1, va, page, Perm::Device.attrs(), false)?;
+    pool.dev_pages[pool.dev_used] = page;
+    pool.dev_used += 1;
+    // SAFETY: 새로 유효해진 테이블 엔트리를 워커가 보기 전에 쓰기를 완료시킴
+    unsafe { asm!("dsb ishst", "isb", options(nostack)) };
+    Ok(va + (pa - page))
+}
+
+/// 프로브 칸을 `pa`가 속한 페이지로 돌려 놓는 함수입니다.
+///
+/// 크기를 모르는 디바이스 구간(GICv3 리디스트리뷰터)을 통째로 매핑하지 않고
+/// 한 페이지씩 들여다보는 데 씁니다. 칸 하나를 다시 가리키게 하므로
+/// break-before-make 순서(무효 엔트리, TLB 무효화, 새 엔트리)를 지킵니다.
+///
+/// # Arguments
+/// `pa` - 들여다볼 레지스터의 물리 주소(정렬 불필요)
+///
+/// # Errors
+/// [map_device]와 같음
+pub fn probe_map(pa: u64) -> Result<u64, MmuError> {
+    let g = GRANULE as u64;
+    let page = pa & !(g - 1);
+    // SAFETY: 부트 코어의 초기화 시퀀스(인터럽트 마스크 상태)에서만 호출되어
+    //         이 가변 참조는 유일하고, 프로브 칸의 VA를 걷는 다른 실행이 없음
+    let pool = unsafe { &mut *POOL.0.get() };
+    pool.check_device_page(page)?;
+    let attrs = Perm::Device.attrs();
+    if pool.probe_leaf == (0, 0) {
+        let root1 = pool.root1;
+        pool.map_page(root1, DEVICE_VA, page, attrs, false)?;
+        pool.probe_leaf = pool.leaf_of(root1, DEVICE_VA)?;
+    } else {
+        pool.retire_probe();
+        let (t, i) = pool.probe_leaf;
+        pool.tables[t].0[i] = page | attrs;
+    }
+    pool.probe_live = true;
+    // SAFETY: 새 엔트리를 워커가 보기 전에 쓰기를 완료시킴
+    unsafe { asm!("dsb ishst", "isb", options(nostack)) };
+    Ok(DEVICE_VA + (pa - page))
+}
+
+/// 프로브 칸의 매핑을 없애는 함수입니다. 탐색이 끝나면 불러서 마지막으로
+/// 들여다본 디바이스 페이지가 매핑된 채 남지 않게 합니다.
+pub fn probe_clear() {
+    // SAFETY: probe_map과 같은 전제
+    let pool = unsafe { &mut *POOL.0.get() };
+    pool.retire_probe();
+}
+
+impl Pool {
+    fn check_device_page(&self, page: u64) -> Result<(), MmuError> {
+        if !self.enabled {
+            return Err(MmuError::NotEnabled);
+        }
+        let end = page.checked_add(GRANULE as u64).ok_or(MmuError::Misaligned)?;
+        if end > 1u64 << pa_bits() {
+            return Err(MmuError::AboveCeiling);
+        }
+        if self.overlaps_image(page, end) {
+            return Err(MmuError::Overlap);
+        }
+        Ok(())
+    }
+
+    /// 프로브 칸의 리프를 무효로 만들고 그 변환을 TLB에서 지움
+    fn retire_probe(&mut self) {
+        if !self.probe_live {
+            return;
+        }
+        let (t, i) = self.probe_leaf;
+        self.tables[t].0[i] = 0;
+        self.probe_live = false;
+        // SAFETY: 무효 엔트리 쓰기를 완료시킨 뒤 해당 VA의 마지막 레벨 변환만
+        //         지우고, 그 완료를 기다림 (TLBI의 피연산자는 VA를 12비트 내린 값)
+        unsafe {
+            asm!(
+                "dsb ishst",
+                "tlbi vale1is, {va}",
+                "dsb ish",
+                "isb",
+                va = in(reg) (DEVICE_VA >> 12) & ((1 << 44) - 1),
+                options(nostack),
+            );
+        }
+    }
 }
 
 /// 사용자 매핑이 하나도 없는 빈 TTBR0 루트의 PA를 주는 함수입니다.
@@ -459,7 +691,8 @@ pub fn null_user_root() -> u64 {
 }
 
 /// 이 코어가 구현한 물리 주소 폭(비트)을 주는 함수입니다. 커널의 변환
-/// 설정에 맞춰 최대 48로 제한합니다.
+/// 설정에 맞춰 최대 48로 제한합니다. 디바이스 주소의 상한으로 쓰이고, RAM의
+/// 상한은 이보다 낮은 `PA_CEILING`입니다.
 pub fn pa_bits() -> u32 {
     let mmfr0: u64;
     // SAFETY: ID 레지스터 읽기는 부작용 없음
@@ -491,8 +724,8 @@ pub fn table_pool_usage() -> (usize, usize) {
 ///
 /// # Safety
 /// 호출 시점의 PC와 SP가 identity 매핑에 포함돼 있어야 하며, 부트 경로에서
-/// 단 한 번만 호출해야 합니다. 실 하드웨어에서는 진입 전 D-캐시가 클린/
-/// 무효화돼 있어야 합니다.
+/// 단 한 번만 호출해야 합니다. MMU가 꺼진 동안 쓴 구간의 D-캐시 라인은 호출
+/// 전에 무효화돼 있어야 합니다. (`enable_paging`이 수행)
 unsafe fn switch_on(ttbr0: u64, ttbr1: u64, tcr: u64) {
     let mut sctlr: u64;
     // SAFETY: 시스템 레지스터 읽기, 부작용 없음

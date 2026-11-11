@@ -46,9 +46,18 @@ kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
 trap - EXIT INT TERM
 
-missing="$(tr -d '\r' < "$log" | awk '
+# 맞는 크기의 untyped가 없는 메모리 배치에서는 루트 태스크가 재사용 시험을
+# 건너뜁니다. 그런 구성임을 호출자가 K0_BOOT_REUSE=skip으로 선언한 경우에만
+# 건너뜀 줄을 통과로 칩니다. 기본은 엄격합니다.
+if [ "${K0_BOOT_REUSE:-run}" = skip ]; then
+    reuse_sed='s/^root: untyped reuse test skipped.*/root: untyped reuse test pass/'
+else
+    reuse_sed=''
+fi
+
+missing="$(tr -d '\r' < "$log" | sed "$reuse_sed" | awk '
 BEGIN {
-    n = split("k0: entry phase 1 (pre-MMU)|k0: dtb = |k0: mmu on (identity + higher-half alias)|k0: jumping to higher half|k0: higher half (pc = |k0: w^x checks pass|k0: memory |k0: root task integrity ok|k0: entropy dtb=|k0: pac=|k0: irq on (timer 1s)|k0: kernel table pool |k0: root task loaded|k0: untyped |k0: root cnode ready|k0: bootinfo page ready|k0: user w^x checks pass|k0: entering root task (el0)|root: hello from EL0|root: control byte filter [?]|root: retype/map tests pass|root: capability tests pass|root: untyped reuse test pass|root: child exit test pass|root: ipc tests pass|k0: task fault dabort-lower|k0: task fault fp-simd|root: fault isolation tests pass|root: preempt test pass|root: secret at |root: confined task reported|k0: task fault dabort-lower|root: isolation tests pass|k0: task fault dabort-lower|k0: task fault iabort-lower|k0: task fault dabort-lower|k0: unknown syscall 65535, killing task|root: violation tests pass|root: teardown tests pass|root: revocation tests pass|root: sched tests pass|k0: tick ", want, "|")
+    n = split("k0: entry phase 1 (pre-MMU)|k0: dtb = |k0: mmu on (identity + fixed image address)|k0: jumping to higher half|k0: higher half (pc = |k0: w^x checks pass|k0: memory |k0: platform |k0: root task integrity ok|k0: entropy dtb=|k0: pac=|k0: irq on (timer 1s)|k0: kernel table pool |k0: root task loaded|k0: untyped |k0: root cnode ready|k0: bootinfo page ready|k0: user w^x checks pass|k0: entering root task (el0)|root: hello from EL0|root: control byte filter [?]|root: retype/map tests pass|root: capability tests pass|root: untyped reuse test pass|root: child exit test pass|root: ipc tests pass|k0: task fault dabort-lower|k0: task fault fp-simd|root: fault isolation tests pass|root: preempt test pass|root: secret at |root: confined task reported|k0: task fault dabort-lower|root: isolation tests pass|k0: task fault dabort-lower|k0: task fault iabort-lower|k0: task fault dabort-lower|k0: unknown syscall 65535, killing task|root: violation tests pass|root: teardown tests pass|root: revocation tests pass|root: sched tests pass|k0: tick ", want, "|")
     i = 1
 }
 i <= n && index($0, want[i]) == 1 { i++ }

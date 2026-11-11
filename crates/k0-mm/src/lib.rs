@@ -17,8 +17,9 @@ pub mod paging;
 pub mod user;
 
 pub use paging::{
-    alias_object, can_read, can_write, enable_paging, map_kernel_window, null_user_root, pa_bits,
-    table_pool_usage, KernelLayout, Mmu, MmuError, GRANULE, KERNEL_VA_OFFSET,
+    alias_object, can_read, can_write, enable_paging, image_pa, image_range, map_device, map_dtb,
+    map_kernel_window, null_user_root, pa_bits, probe_clear, probe_map, table_pool_usage,
+    KernelLayout, Mmu, MmuError, GRANULE, KERNEL_IMAGE_VA, KERNEL_VA_OFFSET, PA_CEILING,
 };
 pub use user::{
     addr_spaces, can_read_pan_checked, can_user_read, can_user_write, current_user_root,
