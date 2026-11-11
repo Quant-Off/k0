@@ -154,7 +154,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     // SAFETY: CNTPCT_EL0 읽기는 부작용이 없음
     unsafe { core::arch::asm!("mrs {}, cntpct_el0", out(reg) cntpct, options(nomem, nostack)) };
     let rndr = k0_arch::hardening::rndr();
-    let pac_keys = k0_boot::derive_pac_keys(bootinfo.entropy(), &[cntpct, rndr.unwrap_or(0)]);
+    let mut pac_keys = k0_boot::derive_pac_keys(bootinfo.entropy(), &[cntpct, rndr.unwrap_or(0)]);
     let _ = writeln!(
         con,
         "k0: entropy dtb={}B rndr={}",
@@ -167,6 +167,14 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     }
 
     let hard = k0_arch::hardening::enable(&pac_keys);
+    // 키는 이제 시스템 레지스터에만 있어야 함. 부트 스택은 이후 시스템 콜
+    // 스택으로 재사용되므로 사본을 남기지 않음 (volatile이라 소거가 최적화로
+    // 사라지지 않음)
+    for k in pac_keys.iter_mut() {
+        // SAFETY: k는 이 스택 프레임의 유효한 배열 원소임
+        unsafe { core::ptr::write_volatile(k, 0) };
+    }
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     let _ = writeln!(
         con,
         "k0: pac={} bti={} pan={}",
@@ -257,11 +265,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
             park()
         }
     };
-    let _ = writeln!(
-        con,
-        "k0: root task loaded (entry {:#x}, ttbr0 {:#x})",
-        root_task.entry, user_root
-    );
+    let _ = writeln!(con, "k0: root task loaded (entry {:#x})", root_task.entry);
 
     // 케이퍼빌리티 부트스트랩: 커널/DTB/윈도우를 뺀 물리 메모리 전부가 untyped
     let mut mem_buf = [k0_cap::PhysRegion { base: 0, size: 0 }; k0_boot::MAX_MEM_REGIONS];
@@ -814,8 +818,26 @@ fn device_windows() -> [Range<u64>; 3] {
 /// 거부합니다.
 ///
 /// # Errors
-/// 겹침이 있으면 부트 정보를 신뢰할 수 없으므로 fail-secure 파킹합니다
+/// 겹침이나 범위 초과가 있으면 부트 정보를 신뢰할 수 없으므로 fail-secure
+/// 파킹합니다
 fn check_memory_map(con: &mut EarlyCon, bootinfo: &k0_boot::BootInfo) {
+    // 이 코어가 변환할 수 없는 물리 주소를 메모리라고 주장하는 DTB도 거부함.
+    // 그런 구간이 untyped가 되면 재분류의 별칭 매핑이 주소 크기 폴트로
+    // 커널을 세움
+    let limit = 1u64 << k0_mm::pa_bits();
+    for m in bootinfo.memory() {
+        // 파서가 base + size 오버플로를 이미 거부함
+        if m.base + m.size > limit {
+            let _ = writeln!(
+                con,
+                "k0: dtb memory {:#x} + {:#x} rejected: beyond {}-bit physical addresses",
+                m.base,
+                m.size,
+                k0_mm::pa_bits()
+            );
+            park()
+        }
+    }
     for dev in device_windows() {
         if dev.end <= dev.start {
             continue;
