@@ -1,0 +1,100 @@
+# Introduction to K0
+
+<div align="center">
+
+English | [한국어](INTRODUCTION_KR.md)
+
+</div>
+
+This document explains in plain words what K0 is, what it can do today and what it cannot do yet. Each technical term appears once in parentheses, so that you can look it up in [SECURITY.md](SECURITY.md) and the [design notes](design/en/README.md).
+
+## What K0 is
+
+An operating system kernel is the program that controls the hardware and decides what every other program may do. Most kernels are large and do many jobs themselves. K0 is a microkernel: it does only the few jobs that must be done inside the kernel and leaves everything else to ordinary programs. The kernel side is about 7,400 lines of Rust and assembly (comments included, tests excluded), small enough to read from start to end.
+
+The most important of those jobs is keeping programs apart. Think of a dormitory. Each room is a block of memory, each key opens one thing, and the kernel is the caretaker. A resident can open only the doors they hold a key for, cannot turn a copy into a stronger key, and when a key is taken back, every copy made from it stops working too. In K0 these keys are called capabilities. The idea comes from the seL4 kernel.
+
+## Words used here
+
+| Word | Meaning |
+| --- | --- |
+| Task | One running program |
+| Root task | The first program. It starts with every key the kernel hands out at boot |
+| Capability | A key to one resource. A program names a key only by its slot number, and the key itself stays in memory that only the kernel can touch, so it cannot be forged |
+| CNode | A key ring: a table of slots that holds capabilities |
+| Address space | The memory map of one program. Memory that is not on the map does not exist for that program |
+| Untyped memory | Free memory with no purpose yet. A program turns it into kernel objects (retype) |
+| Endpoint | A mailbox through which tasks exchange messages (IPC) |
+| System call | A request that a program makes to the kernel |
+| Interrupt | A signal from the hardware, such as a timer, that makes the processor stop and run the kernel |
+
+## Goals
+
+K0 is meant to become the isolation core of high-security systems: cross-domain guards and data diodes (a separation kernel), key vaults and signing oracles (something like a software HSM), measured-boot components on top of a hardware root of trust, and a base for formal verification and certification research. None of these works yet. Today K0 is a research platform: it boots and checks its own security properties, but it does no useful work of its own yet.
+
+## What works today
+
+- **Starting up**: K0 boots on QEMU's virtual ARM machine (QEMU virt) and uses a single processor core. If it is started at the level meant for virtual machine software (the hypervisor level, EL2), it steps down to the normal kernel level (EL1). If it is started in any state it does not support, it stops instead of guessing.
+- **Protecting its own memory**: no page of kernel memory is both writable and executable (W^X). An empty guard page sits below the kernel's boot stack, so running off the end of the stack stops the kernel instead of damaging other memory. At boot, the kernel asks the processor to look up its own memory map (address translation instructions) to check that these settings really took effect.
+- **Distrusting boot input**: the hardware description handed over at boot (the device tree, DTB) is read as if an attacker wrote it. If it claims memory that overlaps hardware registers (MMIO) or lies beyond what the processor can address, the boot stops.
+- **Processor security features**: when the processor has them, K0 loads the keys that let the processor detect tampered pointers (pointer authentication, PAC) and turns on the guard that keeps the kernel from accidentally using program memory (PAN). Programs cannot read the hardware counters, debug registers or performance counters. The compiler does not produce pointer signing instructions yet, so the places where the kernel's functions return to are not protected yet.
+- **Keys**: free memory can be turned into blocks of memory (frames), the tables that make up memory maps (page tables), tasks (TCB), mailboxes (Endpoint), key rings (CNode) and address spaces (AddrSpace). Memory is placed on an address space's map only by showing that address space's key (MAP, UNMAP). Keys carry rights (read, write, execute). A mailbox key can carry a tag that tells the receiver who sent a message (badge). Keys can be copied with the same or fewer rights, or moved between slots (CAP_COPY, CAP_MOVE).
+- **Running tasks**: a task is tied to one key ring and one address space when it is set up (TCB_CONFIGURE) and then started (TCB_RESUME). Tasks take turns, and a timer interrupts a task that runs too long (round-robin scheduling with timer preemption). A task can give up its turn (YIELD) or finish (EXIT).
+- **Messages**: tasks exchange short messages that travel in processor registers. The sender waits until the receiver takes the message (synchronous IPC: SEND, RECV, CALL, REPLY_RECV). Sending needs the write right on the mailbox key and receiving needs the read right. The receiver learns the tag of the sender's key, and the right to reply can be used only once.
+- **Crash containment**: when a task crashes, makes a system call the kernel does not know, or exits, only that task is stopped (fault isolation).
+- **Task isolation and taking keys back**: tasks tied to different key rings and address spaces cannot reach each other's memory or keys. Every key remembers which key it was copied from (derivation list). Taking a key back (CAP_REVOKE) or deleting it (CAP_DELETE) also removes every key copied from it, takes memory off the maps, shuts down objects whose original key is gone, stops tasks that lose their key ring or address space, and fills freed memory with zeros before it can be used again. No memory is ever writable in one place and executable in another.
+- **Checking the first program**: the root task is built into the kernel image, and at every boot its fingerprint (a SHA-256 hash) is checked again. This catches corruption, but it does not prove who made the image the way a signature would. [SECURITY.md](SECURITY.md) explains why under "Scope".
+
+The root task tests every item above with self-tests on every boot.
+
+## How far the isolation goes
+
+What it stops:
+
+- A task cannot use a resource it holds no key for, and it cannot see memory that is not on its own map.
+
+What it does not stop:
+
+- **Availability**: a task can still bring everything to a halt. If every task ends up waiting for a message, the kernel stops the processor core, and a confined task can cause this by being the last one to wait. A task given a lot of free memory can also use up the kernel's fixed tables (32 page tables for the kernel's own use, 256 address space entries), and then nobody can create new objects.
+- Tasks that share one key ring and one address space are not isolated from each other. They behave like threads, parts of one program that share everything.
+- Whoever holds the key to a task, to its key ring or to its address space controls that task.
+
+## Not there yet
+
+Missing features:
+
+- Handing a key to another task inside a message (capability transfer over IPC)
+- Telling a program about hardware interrupts (Notification objects)
+- Reporting a crashed task to a handler task instead of only stopping it
+- Timeouts, and more than one processor core
+- Giving programs access to hardware devices (device memory and interrupts). Until this exists, K0 cannot exchange data with the outside world except through the text console that prints these messages
+- Loading new executable code after boot. This is the flip side of the write-or-run rule: executable memory exists only for the root task image, so a confined task runs code from that image
+- Multi-level key lookup, and hardware address space tags (ASIDs). Today every switch to another address space empties the processor's cache of memory map lookups (the TLB)
+- Checking a digital signature (Ed25519) once the root task ships separately from the kernel
+- Booting on real Apple Silicon hardware (today the Apple build is only compiled and host-tested)
+- AMD64, the processors in most PCs, and other architectures
+
+Missing protection and assurance:
+
+- Availability guarantees (see the previous section)
+- DMA isolation: some devices read and write memory directly, without the processor (DMA). Once devices are handed to programs, a memory map for devices (an IOMMU: SMMU on ARM, DART on Apple) has to stop such a device from reading all memory. Nothing for this exists yet
+- Side channels, where secrets leak through timing or through caches the processor shares, rather than by direct access: a few such leaks are closed (programs cannot read the hardware counters, and the TLB is emptied whenever the address space changes), but there is no general defence against cache or timing side channels, and they have not been analysed
+- Taking a key back does not cancel a sender already waiting at the mailbox. Its message is still delivered once
+- Assurance comes from testing only: unit tests and fuzzing (feeding random, broken input to find crashes) on the build machine, and self-tests at boot in QEMU. There is no formal proof, a mathematical proof that the code does what it should, and nothing has run on real hardware
+
+## Where the code lives
+
+| Path | Contents |
+| --- | --- |
+| `kernel/` | The kernel program: startup assembly, the order of initialization, system call handling (`syscall.rs`), cleanup when a key is removed (`object.rs`), files that describe the memory layout of the kernel image (linker scripts) |
+| `crates/k0-abi` | System call numbers, error codes and the boot information layout that programs share with the kernel |
+| `crates/k0-arch` | Handling of errors, system calls and interrupts (exceptions), entering and leaving user mode, interrupt controller and timer, PAC and PAN, early console |
+| `crates/k0-boot` | Device tree parser, the built-in root task image and its integrity check, PAC key derivation |
+| `crates/k0-cap` | Keys and their rights, key rings, the derivation list, untyped memory, retype, revoke and delete |
+| `crates/k0-mm` | Kernel page tables, turning memory maps on (MMU), program address spaces and their registry |
+| `crates/k0-task` | Tasks with their key ring and address space, mailboxes, loading the root task |
+| `crates/k0-sched` | Round-robin scheduler |
+| `crates/k0-ipc` | Synchronous messages |
+| `userspace/root-task` | The first program and its self-tests |
+| `tools/` | QEMU runner, boot test, host test |
+| `vendor/` | Third-party crates kept in the repository (`sha2` and its dependencies) |

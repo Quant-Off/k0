@@ -1,4 +1,4 @@
-# K0
+# K0 Microkernel
 
 <div align="center">
 
@@ -6,86 +6,54 @@ English | [한국어](README_KR.md)
 
 </div>
 
-K0 is a capability microkernel for AArch64, written in `no_std` Rust. Its resource model follows seL4. The kernel has no heap: it hands all free physical memory to the first user task as untyped capabilities, and every kernel object created after boot lives in memory that the task retyped. Beyond that, the kernel uses only fixed static storage: a pool of 32 page tables for its own mappings, a registry with 256 entries for address spaces (entry 0 is unused), and the scheduler state. The first targets are QEMU virt (4 KiB granule) and Apple Silicon (16 KiB granule). AMD64 and other architectures come after those targets are complete.
+K0 is a small operating system kernel for 64-bit ARM (AArch64) computers, written in Rust. It is a microkernel: the kernel does only what has to be done inside the kernel, above all keeping programs apart, and everything else is meant to run as ordinary programs on top of it. A program can use only the resources it holds a key for. These keys are called capabilities, and the design follows the seL4 kernel.
 
-K0 is pre-release software. The crate version is 0.1.0, and the current `main` branch is unreleased and goes beyond the 0.1.0 tag. The kernel side is about 7,400 lines of Rust and assembly, comments included and tests excluded, so it can still be read end to end.
+> [!IMPORTANT]
+> K0 runs on QEMU's virtual ARM machine. A build for Apple Silicon compiles, but it has not been booted yet. Today K0 is a research platform for the isolation core of high-security systems. It boots and checks its own security properties, but it does no useful work of its own yet.
 
 ## Security status
 
-The released v0.1.0 tag provides **no isolation between tasks**. A task created there is a thread of the root task, and its published advisories stand for that tag.
+- The version published as the `v0.1.0` tag has **no isolation between programs**. The published security advisories (public notices about known flaws) apply to it.
+- The current `main` branch (unreleased) keeps programs apart in memory and in the keys they can use. It does **not** protect availability. **One program can still bring the whole system to a halt.**
+- Do not run code you do not trust on K0 anywhere an outage would matter.
 
-The current `main` branch (unreleased) isolates tasks. A task is bound to a CNode and an address space when it is configured, and tasks bound to different ones are isolated from each other (tasks that share them, like the root task's helper threads, are not). Slot numbers mean something only in the calling task's own CNode, and revoking or deleting a capability removes everything derived from it. What the design provides and the tests exercise: a confined task cannot name an object it holds no capability for, and it reaches only the memory that the holder of its `AddrSpace` capability mapped into its address space. Whoever holds a task's TCB, CNode or AddrSpace capability controls that task. What it does not provide: **availability**. A confined task can still starve or stall the system, for example by blocking last so that every task is blocked, or by exhausting the static kernel page table pool or the address-space registry. Isolation here covers memory and capabilities only. The 16 KiB (Apple) build is compiled and host-tested but has not been booted. Treat running untrusted code on K0 as experimental, and do not do it in a setting where denial of service matters. [SECURITY.md](SECURITY.md) ([한국어](SECURITY_KR.md)) explains the isolation model, the known advisories, and how to report a vulnerability.
+[SECURITY.md](SECURITY.md) explains the isolation model, the known advisories and how to report a vulnerability.
 
-## What works today
+## Features at a glance
 
-- **Boot**: loads as a Linux arm64 Image under QEMU and m1n1. Only the boot core proceeds. Entry at EL2 drops to EL1, and any unsupported entry state parks the core.
-- **Memory**: kernel mappings are W^X with `SCTLR_EL1.WXN` set. There is a guard page below the boot stack, a higher-half alias, and boot-time self-checks that use address translation instructions.
-- **Untrusted boot input**: the device tree is parsed as hostile input, and a memory map that overlaps a kernel MMIO window stops the boot.
-- **Hardening**: when the CPU supports them, PAC keys are derived and loaded and PAN is enabled. Counter, debug and PMU access from EL0 is disabled. The stable compiler does not yet emit pointer authentication instructions, so kernel return addresses are not signed yet.
-- **Capabilities**: untyped memory, retype into `Frame`, `PageTable`, `TCB`, `Endpoint`, `CNode` and `AddrSpace`, and `MAP` and `UNMAP`, where the target address space is named only by a capability. Capabilities carry rights (read, write, execute), endpoint capabilities can carry a badge, and `CAP_COPY` and `CAP_MOVE` move them between slots.
-- **Tasks and scheduling**: `TCB_CONFIGURE` binds a task to a CNode and an address space, then `TCB_RESUME`, `YIELD`, `EXIT`, and round-robin scheduling with timer preemption.
-- **IPC**: synchronous rendezvous `SEND`, `RECV`, `CALL` and `REPLY_RECV`. Sending needs the write right and receiving needs the read right on the endpoint capability. Messages travel in registers only, the receiver gets the sender capability's badge, and the right to reply is single-use.
-- **Fault isolation**: a fault at EL0, an unknown system call, or `EXIT` terminates that task, not the system.
-- **Task isolation and revocation**: every task runs with the CNode and address space it was bound to, and tasks bound to different ones are isolated from each other. Capabilities form a derivation list, and `CAP_REVOKE` and `CAP_DELETE` remove every capability derived from the target, unmap and finalize objects whose original capability goes away, tear down tasks that lose their CNode or address space, and let untyped memory be retyped again, zeroed each time. A frame is never writable in one place and executable in another.
-- **Root task integrity**: the embedded root task image is hashed again with SHA-256 at boot. This is a corruption check, not a signature check. [SECURITY.md](SECURITY.md) explains why under "Scope".
+- **No kernel heap**: the kernel has no memory allocator of its own (heap). Apart from a small fixed amount of memory, it uses only memory that a program hands to it.
+- **Keys instead of trust**: every resource is reached through a key. A copy of a key never has more rights than the original, and taking a key back removes every copy made from it.
+- **Separated programs**: programs can be given their own key ring and their own memory map, and then they cannot reach each other's memory or keys. When a program crashes, only that program is stopped.
+- **Wiped before reuse**: memory is filled with zeros every time it is handed out again.
+- **Write or run, never both**: no memory is writable and executable at the same time. The flip side is that no new code can become executable after boot, so programs cannot load new code.
+- **Distrust of boot input**: the hardware description handed over at boot is checked as if an attacker wrote it.
 
-The root task checks every item above with self-tests on every boot.
+The first program checks these properties with self-tests on every boot.
 
-## Not yet implemented
-
-- Capability transfer over IPC
-- Notification objects that deliver interrupts to user space
-- Delivery of EL0 faults to a handler task over IPC
-- Timeouts, and more than one core
-- Availability guarantees: the kernel still parks the core when every task is blocked, and a task holding much untyped memory can exhaust the kernel page table pool or the address-space registry
-- Loading new executable code after boot: executable frames exist only for the root task image, so a confined task runs code from that image
-- Multi-level capability lookup and hardware ASIDs (the capability space is single-level, and a `TTBR0` change flushes the whole TLB)
-- Revoking a capability does not cancel a sender that is already queued on the endpoint, which still delivers once
-- Ed25519 verification once the root task ships separately from the kernel
-- Verified boot on Apple Silicon hardware (today the Apple build is only compiled and host-tested)
-- AMD64 and other architectures
-
-## Building and running
+## Quick start
 
 ```sh
-cargo virt    # build for QEMU virt and boot it
-cargo apple   # Apple Silicon (m1n1) release build
+# Clone the repository and enter it
+$ git clone https://github.com/Quant-Off/k0.git
+$ cd k0
+
+# Build K0 and boot it in QEMU (quit with Ctrl-A, then X)
+$ cargo virt
 ```
 
-You need `rustup`, `qemu-system-aarch64` with its firmware ROMs, and a host C compiler. Every dependency is vendored, so building needs no network access. [CONTRIBUTING.md](CONTRIBUTING.md) has the full setup.
+[USAGE.md](USAGE.md) explains what you need, how to read the output and how to run the automatic tests.
 
-## Testing
+## Documents
 
-```sh
-tools/host-test.sh                  # host unit tests and DTB fuzzing
-cargo build -p k0-kernel --offline
-tools/qemu-boot-test.sh             # boot under QEMU and check the root task self-tests
-```
+The table below lists the documents in this repository. The design notes are under `design/`.
 
-The host tests include a model test of the capability derivation list over random retype, copy, move, delete and revoke sequences, and tests of the user page table walkers for both granules. The boot self-tests build confined tasks and check that they cannot reach each other's memory or capabilities, that tasks can be deleted in every state, and that revoked untyped memory is retyped again.
-
-CI runs the same tests on x86-64 and AArch64 inside containers with networking disabled, and runs a longer fuzzing campaign every week.
-
-## Design notes
-
-The [design notes](design/en/README.md) explain each subsystem: how it works, why it is built that way, how it is tested, and what is still missing.
-
-## Repository layout
-
-| Path | Contents |
+| Document | Contents |
 | --- | --- |
-| `kernel/` | Kernel binary: boot assembly, initialization order, system call policy (`syscall.rs`), object finalization on capability removal (`object.rs`), linker scripts |
-| `crates/k0-abi` | System call numbers, error codes and the bootinfo layout shared with user space |
-| `crates/k0-arch` | Exception vectors, EL0 entry and return, GICv3 and timer, PAC and PAN, early console |
-| `crates/k0-boot` | DTB parser, root task image embedding and integrity check, PAC key derivation |
-| `crates/k0-cap` | Capability slots and rights, CNodes, derivation list, untyped memory, retype, revoke and delete |
-| `crates/k0-mm` | Kernel page tables, MMU enable, user address spaces and the address-space registry |
-| `crates/k0-task` | TCBs with their bound CNode and address space, endpoints, root task loading |
-| `crates/k0-sched` | Round-robin scheduler |
-| `crates/k0-ipc` | Synchronous IPC |
-| `userspace/root-task` | The first user task and its self-tests |
-| `tools/` | QEMU runner, boot test, host test |
-| `vendor/` | Vendored third-party crates (`sha2` and its dependencies) |
+| [INTRODUCTION.md](INTRODUCTION.md) | What K0 is, what works today, what is still missing, and where the code lives |
+| [USAGE.md](USAGE.md) | Setting up, building, running and testing |
+| [SECURITY.md](SECURITY.md) | Isolation model, known advisories, reporting a vulnerability |
+| [Design notes](design/en/README.md) | How each part of the kernel works and why it was built that way |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 
 ## Contributing
 
@@ -93,6 +61,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Before your first contribution is merged
 
 ## License
 
-K0 is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, modify and redistribute it for noncommercial purposes, as long as you pass on the license text and the `Required Notice:` line that carries the copyright notice. Commercial use is not permitted. For a commercial license, contact <qtfelix@qu4nt.space>.
+K0 is source-available software under the [PolyForm Noncommercial License 1.0.0](LICENSE). **Noncommercial use**, **modification** and **redistribution** are permitted, as long as you **pass on the license text and the `Required Notice:` line (the copyright notice)**. **Commercial use is not permitted.** If you need a commercial license, please contact <qtfelix@qu4nt.space>.
 
-Third-party crates under `vendor/` keep their own licenses (MIT or Apache-2.0).
+> [!NOTE]
+> Third-party crates under the `vendor/` directory keep their own licenses (MIT or Apache-2.0).
