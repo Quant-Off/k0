@@ -44,24 +44,24 @@ K0는 Linux arm64 Image로 적재됩니다. 이미지의 처음 64바이트는 I
 | --- | --- |
 | `k0: higher half (pc = ...)` | 벡터를 가상 주소로 다시 설치합니다. 초기 콘솔이 별칭으로 전환되므로 identity 매핑이 사라진 뒤에도 계속 동작합니다. |
 | `k0: w^x checks pass (granule 4K, wxn)` | 주소 변환 명령으로 text는 읽을 수 있고 쓸 수 없으며, 읽기 전용 데이터는 쓸 수 없고, 스택 가드 페이지는 매핑되지 않았으며, 스택은 쓸 수 있음을 확인합니다. |
-| `k0: memory ...` | 별칭을 통해 DTB를 파싱합니다. 파서는 [dtb_KR.md](dtb_KR.md)에서 다룹니다. 메모리 맵은 어떤 커널 MMIO 윈도우와도 겹치면 안 됩니다. |
+| `k0: memory ...` | 별칭을 통해 DTB를 파싱합니다. 파서는 [dtb_KR.md](dtb_KR.md)에서 다룹니다. 메모리 맵은 어떤 커널 MMIO 윈도우와도 겹치면 안 되고, 어떤 리전도 CPU의 물리 주소 폭(`k0_mm::pa_bits`)을 넘어서면 안 됩니다. |
 | `k0: root task integrity ok (...)` | 내장 루트 태스크 이미지를 다시 해시하고 빌드 시점에 고정된 해시와 비교합니다. |
-| `k0: entropy ...`, `k0: pac=... bti=... pan=...` | PAC 키를 파생해 적재하고, PAN을 켜고, 카운터·디버그·PMU에 대한 EL0 접근을 끕니다. [hardening_KR.md](hardening_KR.md)를 참고하세요. |
+| `k0: entropy ...`, `k0: pac=... bti=... pan=...` | PAC 키를 파생해 적재하고 키 워드를 부트 스택에서 지우며, PAN을 켜고, 카운터·디버그·PMU에 대한 EL0 접근을 끕니다. [hardening_KR.md](hardening_KR.md)를 참고하세요. |
 | `k0: irq on (timer 1s)` | GIC(QEMU에서)와 타이머를 설정하고 IRQ와 SError의 마스크를 해제합니다. |
-| `k0: kernel table pool N/32` | 2 MiB 부트 프레임 윈도우를 고르고 매핑합니다. |
-| `k0: root task loaded (...)` | 루트 태스크를 윈도우의 프레임에 복사하고 주소 공간을 만듭니다. [user-address-space_KR.md](user-address-space_KR.md)를 참고하세요. |
-| `k0: untyped ...`, `k0: root cnode ready (...)` | 루트 CNode를 채웁니다. 비어 있는 물리 범위는 모두 untyped 케이퍼빌리티가 됩니다. [capabilities_KR.md](capabilities_KR.md)를 참고하세요. |
-| `k0: bootinfo page ready` | 케이퍼빌리티 목록을 읽기 전용 bootinfo 페이지에 씁니다. |
+| `k0: kernel table pool N/32` | 2 MiB 부트 프레임 윈도우를 고르고 매핑한 뒤, 사용 중인 커널 페이지 테이블 수를 출력합니다(QEMU virt에서 `18/32`). |
+| `k0: root task loaded (entry ...)` | 루트 태스크를 윈도우의 프레임에 복사하고, 윈도우에 루트 TCB를 만들고, 주소 공간을 만듭니다. 커널은 사용자 루트 테이블의 물리 주소를 출력하지 않습니다. 이후 이 주소 공간을 주소 공간 등록부에 올립니다. [user-address-space_KR.md](user-address-space_KR.md)를 참고하세요. |
+| `k0: untyped ...`, `k0: root cnode ready (N caps, N untyped, N image frames, N slots)` | 루트 CNode(윈도우 안의 오브젝트이며 슬롯은 `ROOT_CNODE_SLOTS` = 512개, 로그에도 그렇게 나옵니다)를 채웁니다. 슬롯 1은 루트 TCB, 2는 루트 주소 공간, 3은 콘솔, 4는 루트 CNode 자신이고, 이어서 비어 있는 물리 범위마다 untyped 케이퍼빌리티, 루트 태스크 이미지의 매핑된 그래뉼마다 Frame 케이퍼빌리티 하나(text는 R과 X, 읽기 전용 데이터는 R, 데이터는 R과 W)가 들어갑니다. 마지막으로 루트 태스크를 다른 태스크와 똑같이 자신의 CNode와 주소 공간에 묶습니다. 두 케이퍼빌리티의 복사본이 TCB에 들어갑니다. [capabilities_KR.md](capabilities_KR.md)를 참고하세요. |
+| `k0: bootinfo page ready` | 케이퍼빌리티 목록을 읽기 전용 bootinfo 페이지에 씁니다. 헤더와 슬롯마다 하나의 디스크립터이며, 이미지 Frame마다 VA, 크기, 권한이 들어갑니다. |
 | `k0: user w^x checks pass` | `TTBR0`가 사용자 테이블을 가리키고, identity 매핑은 사라졌으며, 사용자 매핑을 EL0와 EL1 양쪽에서 검사합니다. |
 | `k0: entering root task (el0)` | `k0_sched::handoff`가 EL0로 진입합니다. |
 
 ### 부트 프레임 윈도우 고르기
 
-`pick_window`는 커널 이미지 바로 뒤에서 2 MiB의 RAM을 찾습니다. 후보가 DTB나 펌웨어 예약 영역과 겹치면 장애물을 지나친 위치로 옮겨 다시 시도하며, 최대 64라운드까지 반복합니다. 윈도우 전체가 DTB의 메모리 영역 하나 안에 들어갈 때만 범위를 반환합니다. 윈도우에는 루트 태스크 이미지, 스택, 페이지 테이블, bootinfo 페이지가 들어갑니다. 윈도우는 untyped 케이퍼빌리티에서 제외되므로, 커널이 아직 쓰는 메모리를 루트 태스크가 retype하는 일은 없습니다.
+`pick_window`는 커널 이미지 바로 뒤에서 2 MiB의 RAM을 찾습니다. 후보가 DTB나 펌웨어 예약 영역과 겹치면 장애물을 지나친 위치로 옮겨 다시 시도하며, 최대 64라운드까지 반복합니다. 윈도우 전체가 DTB의 메모리 영역 하나 안에 들어갈 때만 범위를 반환합니다. 윈도우에는 루트 태스크 이미지, 스택, 페이지 테이블, bootinfo 페이지, 루트 TCB, 루트 CNode가 들어갑니다. 윈도우는 untyped 케이퍼빌리티에서 제외되므로, 커널이 아직 쓰는 메모리를 루트 태스크가 retype하는 일은 없습니다.
 
 ### 이양 이후
 
-`handoff`는 루트 태스크를 실행 중인 태스크로 기록하고, 벡터 코드가 루트 태스크의 저장된 컨텍스트를 가리키게 하고, 커널 스택을 꼭대기로 되감은 뒤, 이후의 모든 복귀가 쓰는 것과 같은 경로로 EL0에 복귀합니다. 이때부터 커널 코드는 예외에 대한 응답으로만 실행됩니다. 시스템 콜, 폴트, 타이머 인터럽트가 그 예외입니다. 이 경로는 [exceptions_KR.md](exceptions_KR.md)에서 설명합니다.
+`handoff`는 루트 태스크를 실행 중인 태스크로 기록하고, 벡터 코드가 루트 태스크의 저장된 컨텍스트를 가리키게 합니다. 이어서 `enter_user`가 모든 예외를 마스크(`DAIFSet`)하고, 커널 스택을 꼭대기로 되감은 뒤, 이후의 모든 복귀가 쓰는 것과 같은 경로로 EL0에 복귀합니다. 마스크를 먼저 하는 이유는 이 경로가 `eret` 전에 `ELR_EL1`과 `SPSR_EL1`을 쓰기 때문입니다. 부트 경로는 이미 타이머를 언마스크했으므로, 그 사이에 인터럽트가 들어오면 두 레지스터가 EL1 값으로 덮입니다. 이때부터 커널 코드는 예외에 대한 응답으로만 실행됩니다. 시스템 콜, 폴트, 타이머 인터럽트가 그 예외입니다. 이 경로는 [exceptions_KR.md](exceptions_KR.md)에서 설명합니다.
 
 ## 테스트 방법
 

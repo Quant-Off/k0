@@ -12,7 +12,7 @@ The parser follows one principle. Values from the DTB may make the kernel refuse
 
 - **Reserved ranges only remove memory.** A hostile reservation can at worst shrink the memory handed to user space.
 - **Entropy is only one input among several.** The bytes from `/chosen` are mixed with other sources through SHA-256, so hostile entropy cannot weaken the PAC keys. A missing seed does lower their quality, and the kernel says so in the boot log (see [hardening.md](hardening.md)).
-- **Memory nodes grant memory, so they are checked hardest.** Every memory region becomes untyped memory that user space can map. A region that claimed to be RAM but covered a device would hand EL0 direct access to that device. After parsing, the kernel compares every memory region with its own MMIO windows (the UART and, on QEMU, the GIC) and stops the boot on any overlap. The CNode bootstrap also rejects memory regions that overlap each other, so no frame can be retyped twice.
+- **Memory nodes grant memory, so they are checked hardest.** Every memory region becomes untyped memory that user space can map. A region that claimed to be RAM but covered a device would hand EL0 direct access to that device. After parsing, the kernel compares every memory region with its own MMIO windows (the UART and, on QEMU, the GIC) and stops the boot on any overlap. It also stops the boot if a region extends beyond the CPU's physical address width (`check_memory_map` in `kernel/src/main.rs`, using `k0_mm::pa_bits`, capped at 48 bits), because such a region would become untyped memory the kernel cannot map. The CNode bootstrap also rejects memory regions that overlap each other, so no frame can be retyped twice.
 
 ## Two stages
 
@@ -74,5 +74,5 @@ The default test run executes 20,000 cases. CI runs five million cases every wee
 
 ## Known gaps
 
-- Region addresses are not checked against the CPU's physical address width. A DTB that declares RAM above the implemented range can make the kernel panic at boot or during a later retype. This is advisory GHSA-hj3f-38h9-hrpj in [SECURITY.md](../SECURITY.md). Its impact is a denial of service by whoever controls the DTB.
+- The parser itself does not know the CPU's physical address width. The check against it is in `check_memory_map` in `kernel/src/main.rs`, after parsing. See advisory GHSA-hj3f-38h9-hrpj in [SECURITY.md](../SECURITY.md) for its status. A DTB controlled by an attacker can still stop the boot, which is the intended fail-secure result.
 - The MMIO overlap check knows only the windows the kernel maps for itself. A DTB that describes some other device range as RAM is not caught, because the kernel has no independent list of devices.

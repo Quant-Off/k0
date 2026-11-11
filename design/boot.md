@@ -44,24 +44,24 @@ The program counter and stack pointer now sit in the higher half, relocated data
 | --- | --- |
 | `k0: higher half (pc = ...)` | Vectors reinstalled at their virtual address. The early console switches to the alias, so it keeps working after the identity map is gone. |
 | `k0: w^x checks pass (granule 4K, wxn)` | Address translation instructions confirm that text is readable and not writable, read-only data is not writable, the stack guard page is unmapped, and the stack is writable. |
-| `k0: memory ...` | The DTB is parsed through the alias. [dtb.md](dtb.md) covers the parser. The memory map must not overlap any kernel MMIO window. |
+| `k0: memory ...` | The DTB is parsed through the alias. [dtb.md](dtb.md) covers the parser. The memory map must not overlap any kernel MMIO window, and no region may reach beyond the CPU's physical address width (`k0_mm::pa_bits`). |
 | `k0: root task integrity ok (...)` | The embedded root task image is hashed again and compared with the hash fixed at build time. |
-| `k0: entropy ...`, `k0: pac=... bti=... pan=...` | PAC keys are derived and loaded, PAN is enabled and EL0 access to counters, debug and PMU is turned off. See [hardening.md](hardening.md). |
+| `k0: entropy ...`, `k0: pac=... bti=... pan=...` | PAC keys are derived and loaded, and the key words are wiped from the boot stack. PAN is enabled and EL0 access to counters, debug and PMU is turned off. See [hardening.md](hardening.md). |
 | `k0: irq on (timer 1s)` | The GIC (on QEMU) and the timer are set up, and IRQ and SError are unmasked. |
-| `k0: kernel table pool N/32` | A 2 MiB boot frame window is chosen and mapped. |
-| `k0: root task loaded (...)` | The root task is copied into frames from the window and its address space is built. See [user-address-space.md](user-address-space.md). |
-| `k0: untyped ...`, `k0: root cnode ready (...)` | The root CNode is filled. Every free physical range becomes an untyped capability. See [capabilities.md](capabilities.md). |
-| `k0: bootinfo page ready` | The capability list is written into the read-only bootinfo page. |
+| `k0: kernel table pool N/32` | A 2 MiB boot frame window is chosen and mapped, then the number of kernel page tables in use is printed (`18/32` on QEMU virt). |
+| `k0: root task loaded (entry ...)` | The root task is copied into frames from the window, its root TCB is made in the window, and its address space is built. The kernel does not print the physical address of the user root table. The address space is then entered in the address space registry. See [user-address-space.md](user-address-space.md). |
+| `k0: untyped ...`, `k0: root cnode ready (N caps, N untyped, N image frames, N slots)` | The root CNode (an object in the window with `ROOT_CNODE_SLOTS` = 512 slots, as the log shows) is filled: slot 1 the root TCB, slot 2 the root address space, slot 3 the console, slot 4 the root CNode itself, then every free physical range as an untyped capability, then one Frame capability per mapped granule of the root task image (text with R and X, read-only data with R, data with R and W). Finally the root task is bound to its CNode and address space, exactly as any other task is: copies of those two capabilities go into its TCB. See [capabilities.md](capabilities.md). |
+| `k0: bootinfo page ready` | The capability list is written into the read-only bootinfo page: a header and one descriptor per slot, with the VA, size and rights of every image Frame. |
 | `k0: user w^x checks pass` | `TTBR0` now points at the user tables, the identity map is gone, and the user mappings are checked from both EL0 and EL1. |
 | `k0: entering root task (el0)` | `k0_sched::handoff` enters EL0. |
 
 ### Choosing the boot frame window
 
-`pick_window` looks for 2 MiB of RAM right after the kernel image. If the candidate overlaps the DTB or a firmware reserved region, it moves past the obstacle and tries again, for at most 64 rounds. It returns a range only if the whole window fits inside one memory region from the DTB. The window holds the root task image, its stack, its page tables and the bootinfo page. It is excluded from the untyped capabilities, so the root task can never retype memory the kernel is still using.
+`pick_window` looks for 2 MiB of RAM right after the kernel image. If the candidate overlaps the DTB or a firmware reserved region, it moves past the obstacle and tries again, for at most 64 rounds. It returns a range only if the whole window fits inside one memory region from the DTB. The window holds the root task image, its stack, its page tables, the bootinfo page, the root TCB and the root CNode. It is excluded from the untyped capabilities, so the root task can never retype memory the kernel is still using.
 
 ### After the handoff
 
-`handoff` records the root task as the running task, points the vector code at its saved context, rewinds the kernel stack to the top, and returns to EL0 through the same path every later return uses. From then on, kernel code runs only in response to an exception: a system call, a fault, or the timer interrupt. [exceptions.md](exceptions.md) describes that path.
+`handoff` records the root task as the running task and points the vector code at its saved context. `enter_user` then masks all exceptions (`DAIFSet`), rewinds the kernel stack to the top, and returns to EL0 through the same path every later return uses. The mask comes first because that path writes `ELR_EL1` and `SPSR_EL1` before `eret`. The boot path has already unmasked the timer, and an interrupt in between would overwrite both registers with EL1 values. From then on, kernel code runs only in response to an exception: a system call, a fault, or the timer interrupt. [exceptions.md](exceptions.md) describes that path.
 
 ## How it is tested
 

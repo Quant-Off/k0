@@ -17,7 +17,7 @@ The kernel maps only pages, never blocks. Every mapping goes through the same wa
 
 ## The static table pool
 
-The kernel has no heap. Its page tables come from a pool of 32 tables in `.bss`, handed out by a counter that only goes up. Two tables become the roots of the two halves. The rest become intermediate tables as mappings are added. On QEMU virt, 17 of the 32 are in use once boot finishes.
+The kernel has no heap. Its page tables come from a pool of 32 tables in `.bss`, handed out by a counter that only goes up. Three tables are taken when the MMU is set up: the roots of the two halves and an empty `TTBR0_EL1` root with no mappings in it (`null_user_root`). The kernel switches `TTBR0_EL1` to that empty root when the address space that is currently installed is destroyed, so the hardware never walks a table that no longer exists. The rest become intermediate tables as mappings are added. On QEMU virt the boot log line `k0: kernel table pool N/32`, printed after the boot frame window is mapped, shows `18/32`. Later `RETYPE` calls can use more.
 
 When the walk follows an existing table entry, `index_of` converts the address in that entry back into a pool index. It rejects any address that does not land exactly on an allocated table in the pool. A corrupted or forged table address therefore stops the walk with `BadTable`. It is never followed into arbitrary memory.
 
@@ -52,14 +52,18 @@ The boot stack is 64 KiB and sits after `.bss`. The granule just below it is lef
 
 `switch_on` writes `MAIR_EL1`, `TCR_EL1` and both table roots, then issues barriers, invalidates the TLB and invalidates the whole instruction cache before it sets `SCTLR_EL1.M`, `C`, `I` and `WXN`. The instruction cache invalidation is there because the kernel does not trust anything the bootloader may have left in the cache.
 
+If `ID_AA64MMFR2_EL1` reports FEAT_E0PD, `enable_paging` also sets `TCR_EL1.E0PD1`. With it, an EL0 access to the upper half (the `TTBR1_EL1` range) faults without a translation walk, so EL0 cannot tell from timing which kernel alias addresses are mapped. On a core without FEAT_E0PD, such as the default QEMU `cortex-a72`, the bit is left clear and the access still faults on the missing permission.
+
 `enable_paging` can run only once. A second call returns `AlreadyEnabled`. On success it returns an `Mmu` token that is meant to prove paging is on. No later step consumes it yet, because the token cannot be carried across the jump to the higher half, so the order of `kernel_main` enforces that sequence instead.
 
 ## Adding mappings later
 
-`map_kernel_window` adds read-write ranges to the higher half after boot. It is used twice:
+Two functions add read-write ranges to the higher half after boot. Both share one walker and differ in a single flag.
 
-- for the 2 MiB boot frame window, before the root task is loaded, and
-- for every object created by `RETYPE`, so that the kernel can zero and use it through the alias.
+- `map_kernel_window` maps the 2 MiB boot frame window before the root task is loaded. Any existing translation in the range is an error (`Overlap`), identical or not.
+- `alias_object` maps one granule for an object created by `RETYPE`, so that the kernel can zero and use it through the alias. If the leaf already holds exactly the same mapping (same physical address, same attributes), the call succeeds. Any different mapping is still `Overlap`.
+
+The identical case exists because aliases are never removed. When a `CAP_REVOKE` or `CAP_DELETE` returns untyped memory and it is retyped again, the alias of the same physical frame is already there. Accepting only an identical entry keeps reuse working without letting a retype replace a mapping that points somewhere else. The window mapping does not get this leniency, because a boot window overlapping an existing mapping would be a mistake.
 
 These calls only turn invalid entries into valid ones. Existing translations never change, so no break-before-make sequence is needed. A store barrier and an instruction barrier make the new entries visible to the table walker before the memory is used.
 
@@ -80,11 +84,12 @@ Any mismatch stops the boot with the name of the check. These checks test the ta
 
 ## How it is tested
 
-- Host unit tests in `crates/k0-mm/src/paging/tests.rs` check the index arithmetic for both granules, the W^X properties of every kernel permission, the rollback after a failed walk, and the rejection of forged or block entries. They run on AArch64 hosts.
+- Host unit tests in `crates/k0-mm/src/paging/tests.rs` check the index arithmetic for both granules, the W^X properties of every kernel permission, the rollback after a failed walk, the rejection of forged or block entries, and that an identical leaf is accepted only when the caller asks for it (`an_identical_leaf_is_accepted_only_when_asked`). They run on AArch64 hosts.
 - `tools/qemu-boot-test.sh` requires the line `k0: w^x checks pass`.
 
 ## Known gaps
 
 - The pool size is fixed at 32 tables. If retypes spread over enough distinct address ranges, the pool runs out and `RETYPE` returns `KERNEL_RESOURCE`. Nothing leaks, but the pool is never reclaimed.
-- Mappings are never removed. Without `revoke`, a retyped object stays mapped in the kernel alias forever.
+- Kernel alias mappings are never removed. A retyped object stays mapped in the kernel alias even after its capability is revoked and its memory is retyped again. Reuse no longer fails, because an identical alias is accepted, but the alias itself and the tables that hold it stay.
+- Because of the previous two points, a task that holds a lot of untyped memory can retype across enough distinct address ranges to use up the pool. `RETYPE` then returns `KERNEL_RESOURCE` for every task, not only for the one that caused it. Isolation between tasks does not cover this availability limit.
 - Address space identifiers (ASIDs) are not used. Every switch to a different user address space invalidates the whole TLB.

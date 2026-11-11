@@ -16,6 +16,8 @@ Some of these features are groundwork, not working protection yet. The sections 
 
 The derivation is SHA-256 in counter mode. Each 32-byte block hashes a fixed domain string (`k0-pac-boot-key-v1`), a one-byte block counter, the length of the DTB entropy as a little-endian 64-bit value, the DTB entropy itself, and the other inputs as little-endian words. The length prefix keeps DTB bytes from being confused with the words that follow them. Three blocks give the ten words.
 
+After `hardening::enable` has loaded the keys into system registers, `kernel_main` overwrites the ten words on the boot stack with volatile stores followed by a compiler fence. The boot stack becomes the system call stack later, so no copy of the keys is left there. This does not wipe the seed itself: the `rng-seed` and `kaslr-seed` bytes stay in the DTB, which remains mapped read-only.
+
 Because the inputs are hashed together, a hostile or predictable input cannot cancel out the entropy of another input. The result is still no better than the best input. If the DTB provides no seed and the CPU has no `RNDR`, the only input is the counter, and the boot log says `k0: WARNING pac key entropy low (cntpct only)`.
 
 ## Pointer authentication (PAC)
@@ -35,6 +37,8 @@ If the CPU implements FEAT_PAN, the kernel clears `SCTLR_EL1.SPAN`, so that the 
 This is real protection today. It turns a whole class of kernel bugs, dereferencing a pointer supplied by user space, into a fault instead of a silent read or write. K0 never needs such access: it reaches user frames only through its own EL1-only alias (see [user-address-space.md](user-address-space.md)). With FEAT_PAN2, the boot self-check uses `AT S1E1RP` to confirm that PAN really blocks an EL1 read of user text.
 
 ## Closing what EL0 can observe
+
+`TCR_EL1.E0PD1` is set when the CPU implements FEAT_E0PD, so an EL0 access to the upper (kernel) half faults without a translation walk and EL0 cannot probe the kernel layout by timing (see [memory.md](memory.md)). The default QEMU CPU does not implement it.
 
 The bootloader may leave registers in states that let user space observe or control more than it should. K0 resets them to known values instead of trusting them.
 
@@ -72,6 +76,8 @@ At every boot, `verify_root_task` hashes the embedded image again and compares t
 
 The panic handler masks all interrupts and parks the core. Debug builds print the panic message first. Release builds print nothing, so that a panic in the field does not leak internal state.
 
+`k0_arch::fatal` is the fail-secure stop for kernel invariant violations, such as an undecodable capability slot, a broken derivation list link, a corrupt user page table, or a corrupt ready, endpoint or reply queue. It masks all exceptions, prints `k0: FATAL <what>` and halts the core. It prints in release builds too, since it names only the violated invariant. Continuing on a corrupt structure would mean making authority decisions from it. `enter_user` also masks all exceptions before it restores the user context, so a boot-time interrupt cannot land between the restore of `ELR_EL1`/`SPSR_EL1` and `eret`.
+
 ## How it is tested
 
 - `crates/k0-boot/src/entropy/tests.rs` pins the key derivation with known answers computed independently with Python's `hashlib`, and checks that flipping any input bit changes the keys and that the length prefix separates the inputs.
@@ -81,7 +87,8 @@ The panic handler masks all interrupts and parks the core. Debug builds print th
 
 ## Known gaps
 
-- PAC keys are loaded, but no code uses them yet, so return addresses are not protected.
+- PAC keys are loaded, but no code uses them yet, so return addresses are not protected. The key words are wiped from the boot stack, but the seed bytes stay in the read-only DTB mapping.
+- `k0_arch::fatal` and the panic handler stop the whole core. They are the intended response to a corrupt kernel structure, but they also mean one such bug is a denial of service for every task.
 - The same PAC keys serve EL0 and EL1 and every task. Once code starts signing pointers, a task could forge pointers the kernel accepts. Per-task or per-level keys are not implemented.
 - BTI is not enabled.
 - The root task check proves integrity against accidents and limited tampering, not authenticity.
