@@ -17,10 +17,12 @@ pub mod paging;
 pub mod user;
 
 pub use paging::{
-    can_read, can_write, enable_paging, map_kernel_window, table_pool_usage, KernelLayout, Mmu,
-    MmuError, GRANULE, KERNEL_VA_OFFSET,
+    alias_object, can_read, can_write, enable_paging, map_kernel_window, null_user_root, pa_bits,
+    table_pool_usage, KernelLayout, Mmu, MmuError, GRANULE, KERNEL_VA_OFFSET,
 };
 pub use user::{
-    can_read_pan_checked, can_user_read, can_user_write, current_user_root, install_user_ttbr0,
-    user_install_table, user_map_frame, FrameAlloc, UserPerm, UserSpace,
+    addr_spaces, can_read_pan_checked, can_user_read, can_user_write, current_user_root,
+    detach_user_root, flush_user_tlb, install_user_ttbr0, user_install_table, user_map_frame,
+    user_uninstall_table, user_unmap_frame, zero_table, AddrSpaces, FrameAlloc, UserPerm,
+    UserSpace, MAX_ADDR_SPACES,
 };

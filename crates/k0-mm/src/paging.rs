@@ -131,6 +131,8 @@ struct Pool {
     used: usize,
     enabled: bool,
     root1: usize,
+    /// 어떤 사용자 매핑도 없는 빈 TTBR0 루트(주소 공간이 사라질 때의 대피처)
+    null_root: usize,
 }
 
 struct SyncCell(UnsafeCell<Pool>);
@@ -145,6 +147,7 @@ static POOL: SyncCell = SyncCell(UnsafeCell::new(Pool {
     used: 0,
     enabled: false,
     root1: 0,
+    null_root: 0,
 }));
 
 pub(crate) fn index(va: u64, level: u32) -> usize {
@@ -186,7 +189,19 @@ impl Pool {
     ///
     /// 되돌리기가 없으면 실패한 매핑(재분류 경로의 별칭 매핑 등)이 풀을
     /// 조금씩 갉아먹어 사용자가 커널 정적 자원을 소모시키는 경로가 됩니다.
-    fn map_page(&mut self, root: usize, va: u64, pa: u64, attrs: u64) -> Result<(), MmuError> {
+    ///
+    /// `same_ok`이면 리프에 이미 완전히 같은 매핑(같은 PA, 같은 속성)이 있는
+    /// 경우를 성공으로 칩니다. 회수된 untyped 메모리를 다시 재분류할 때 같은
+    /// 물리 프레임의 별칭이 이미 있기 때문입니다. 다른 매핑이 있으면 여전히
+    /// `Overlap`입니다.
+    fn map_page(
+        &mut self,
+        root: usize,
+        va: u64,
+        pa: u64,
+        attrs: u64,
+        same_ok: bool,
+    ) -> Result<(), MmuError> {
         let used_before = self.used;
         // 이번 호출이 새로 쓴 링크(부모 테이블, 인덱스), 레벨당 최대 하나
         let mut links: [(usize, usize); 3] = [(0, 0); 3];
@@ -210,7 +225,11 @@ impl Pool {
                 };
             }
             let idx = index(va, 3);
-            if self.tables[t].0[idx] != 0 {
+            let old = self.tables[t].0[idx];
+            if old == pa | attrs && same_ok {
+                return Ok(());
+            }
+            if old != 0 {
                 return Err(MmuError::Overlap);
             }
             self.tables[t].0[idx] = pa | attrs;
@@ -228,7 +247,15 @@ impl Pool {
         r
     }
 
-    fn map_range(&mut self, root: usize, va: u64, pa: u64, len: u64, perm: Perm) -> Result<(), MmuError> {
+    fn map_range(
+        &mut self,
+        root: usize,
+        va: u64,
+        pa: u64,
+        len: u64,
+        perm: Perm,
+        same_ok: bool,
+    ) -> Result<(), MmuError> {
         let g = GRANULE as u64;
         if va % g != 0 || pa % g != 0 || len % g != 0 {
             return Err(MmuError::Misaligned);
@@ -236,7 +263,7 @@ impl Pool {
         let attrs = perm.attrs();
         let mut off = 0;
         while off < len {
-            self.map_page(root, va + off, pa + off, attrs)?;
+            self.map_page(root, va + off, pa + off, attrs, same_ok)?;
             off += g;
         }
         Ok(())
@@ -263,6 +290,20 @@ fn check_features() -> Result<u64, MmuError> {
     // IPS는 구현된 PARange를 넘지 않게, 최대 48비트(0b101)로 제한
     Ok((mmfr0 & 0xF).min(5))
 }
+
+/// FEAT_E0PD 지원 여부를 ID_AA64MMFR2_EL1로 확인하는 함수입니다.
+///
+/// v8.0 코어에서는 이 ID 레지스터가 0으로 읽히므로 미지원으로 판정됩니다.
+/// 베이스라인 어셈블러가 이름을 거부할 수 있어 generic 인코딩을 씁니다.
+fn has_e0pd() -> bool {
+    let mmfr2: u64;
+    // SAFETY: ID 레지스터 읽기는 부작용 없음 (S3_0_C0_C7_2 = ID_AA64MMFR2_EL1)
+    unsafe { asm!("mrs {}, S3_0_C0_C7_2", out(reg) mmfr2, options(nomem, nostack)) };
+    (mmfr2 >> 60) & 0xF != 0
+}
+
+/// TCR_EL1.E0PD1: EL0의 상위 절반(TTBR1) 접근을 변환 없이 즉시 폴트로 만듦
+const TCR_E0PD1: u64 = 1 << 56;
 
 fn tcr(ips: u64) -> u64 {
     // TG0과 TG1은 같은 그래뉼이라도 인코딩이 다름에 주의
@@ -299,6 +340,8 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
 
     let root0 = pool.alloc()?;
     let root1 = pool.alloc()?;
+    // 풀 항목은 소거 상태로 시작하므로 그대로 빈 루트임
+    let null_root = pool.alloc()?;
 
     let g = GRANULE as u64;
     let dtb_base = layout.dtb.start & !(g - 1);
@@ -319,35 +362,39 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
         if len == 0 {
             continue;
         }
-        pool.map_range(root0, start, start, len, perm)?;
-        pool.map_range(root1, start + KERNEL_VA_OFFSET, start, len, perm)?;
+        pool.map_range(root0, start, start, len, perm, false)?;
+        pool.map_range(root1, start + KERNEL_VA_OFFSET, start, len, perm, false)?;
     }
     for dev in &layout.devices {
         if dev.end <= dev.start {
             continue;
         }
         let len = dev.end - dev.start;
-        pool.map_range(root0, dev.start, dev.start, len, Perm::Device)?;
-        pool.map_range(root1, dev.start + KERNEL_VA_OFFSET, dev.start, len, Perm::Device)?;
+        pool.map_range(root0, dev.start, dev.start, len, Perm::Device, false)?;
+        pool.map_range(root1, dev.start + KERNEL_VA_OFFSET, dev.start, len, Perm::Device, false)?;
     }
 
     let ttbr0 = pool.pa(root0);
     let ttbr1 = pool.pa(root1);
     pool.enabled = true;
     pool.root1 = root1;
+    pool.null_root = null_root;
+
+    // E0PD1은 EL0가 커널 절반의 매핑 유무를 변환 타이밍으로 구별하지 못하게 함
+    let tcr = if has_e0pd() { tcr(ips) | TCR_E0PD1 } else { tcr(ips) };
 
     // SAFETY: 현재 PC(text)와 SP(부트 스택)를 포함한 필수 매핑이 identity로
     //         구성돼 있고, 배리어 순서는 ARMv8 MMU 활성화 절차를 따름
-    unsafe { switch_on(ttbr0, ttbr1, tcr(ips)) };
+    unsafe { switch_on(ttbr0, ttbr1, tcr) };
     Ok(Mmu { _sealed: () })
 }
 
 /// MMU 활성화 이후 TTBR1에 커널 RW 매핑을 추가하는 함수입니다.
 ///
-/// 진입 페이즈 3의 프레임 할당자가 쓸 부트 윈도우와, 재분류(retype)된
-/// 오브젝트의 물리 구간을 TTBR1 별칭(`PA + KERNEL_VA_OFFSET`)으로 열어
-/// 줍니다. 새 매핑 추가만 하기 때문에 기존 변환에 대한 break-before-make는
-/// 필요 없습니다.
+/// 진입 페이즈 3의 프레임 할당자가 쓸 부트 윈도우를 TTBR1 별칭
+/// (`PA + KERNEL_VA_OFFSET`)으로 열어 줍니다. 새 매핑 추가만 하기 때문에
+/// 기존 변환에 대한 break-before-make는 필요 없습니다. 이미 매핑된 구간과
+/// 겹치면 거부합니다.
 ///
 /// # Arguments
 /// `window` - 그래뉼 정렬된 물리 구간(커널 이미지/DTB와 겹치지 않아야 함)
@@ -355,8 +402,31 @@ pub fn enable_paging(layout: &KernelLayout) -> Result<Mmu, MmuError> {
 /// # Errors
 /// MMU 비활성 상태, 정렬 위반, 풀 고갈, 기존 매핑과의 겹침 시 `MmuError`
 pub fn map_kernel_window(window: Range<u64>) -> Result<(), MmuError> {
+    map_alias(window, false)
+}
+
+/// 재분류(retype)된 오브젝트 한 그래뉼을 TTBR1 별칭으로 여는 함수입니다.
+///
+/// 같은 물리 프레임이 회수 뒤에 다시 재분류되면 별칭이 이미 있으므로 완전히
+/// 같은 매핑은 성공으로 칩니다. 별칭은 한 번 생기면 제거하지 않습니다.
+///
+/// # Arguments
+/// `pa` - 그래뉼 정렬된 오브젝트의 PA
+///
+/// # Errors
+/// [map_kernel_window]와 같되 같은 매핑의 재요청은 성공
+pub fn alias_object(pa: u64) -> Result<(), MmuError> {
+    let end = pa.checked_add(GRANULE as u64).ok_or(MmuError::Misaligned)?;
+    map_alias(pa..end, true)
+}
+
+fn map_alias(window: Range<u64>, same_ok: bool) -> Result<(), MmuError> {
     let g = GRANULE as u64;
     if window.end <= window.start || window.start % g != 0 || window.end % g != 0 {
+        return Err(MmuError::Misaligned);
+    }
+    // 변환 가능한 물리 주소 범위 밖은 별칭을 만들 수 없음
+    if window.end > 1u64 << 48 {
         return Err(MmuError::Misaligned);
     }
 
@@ -370,11 +440,38 @@ pub fn map_kernel_window(window: Range<u64>) -> Result<(), MmuError> {
 
     let root1 = pool.root1;
     let len = window.end - window.start;
-    pool.map_range(root1, window.start + KERNEL_VA_OFFSET, window.start, len, Perm::Rw)?;
+    pool.map_range(root1, window.start + KERNEL_VA_OFFSET, window.start, len, Perm::Rw, same_ok)?;
 
     // SAFETY: 새로 유효해진 테이블 엔트리를 워커가 보기 전에 쓰기를 완료시킴
     unsafe { asm!("dsb ishst", "isb", options(nostack)) };
     Ok(())
+}
+
+/// 사용자 매핑이 하나도 없는 빈 TTBR0 루트의 PA를 주는 함수입니다.
+///
+/// 현재 설치된 주소 공간이 종료될 때 TTBR0를 여기로 옮겨, 사라진 테이블을
+/// 하드웨어가 걷는 일이 없게 합니다.
+pub fn null_user_root() -> u64 {
+    // SAFETY: 읽기만 하고, 호출 지점은 단일 코어의 시스템 콜 컨텍스트라
+    //         동시 변이가 없음
+    let pool = unsafe { &*POOL.0.get() };
+    pool.pa(pool.null_root)
+}
+
+/// 이 코어가 구현한 물리 주소 폭(비트)을 주는 함수입니다. 커널의 변환
+/// 설정에 맞춰 최대 48로 제한합니다.
+pub fn pa_bits() -> u32 {
+    let mmfr0: u64;
+    // SAFETY: ID 레지스터 읽기는 부작용 없음
+    unsafe { asm!("mrs {}, id_aa64mmfr0_el1", out(reg) mmfr0, options(nomem, nostack)) };
+    match mmfr0 & 0xF {
+        0 => 32,
+        1 => 36,
+        2 => 40,
+        3 => 42,
+        4 => 44,
+        _ => 48,
+    }
 }
 
 /// 커널 정적 페이지 테이블 풀의 (사용량, 전체) 쌍을 주는 함수입니다.
