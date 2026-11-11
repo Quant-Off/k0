@@ -626,9 +626,13 @@ struct Boot {
     frame_size: u64,
     /// 가장 큰 untyped (수명이 긴 오브젝트용)
     ut_main: u64,
-    /// 가장 작은 untyped와 그 안에 들어가는 프레임 수 (회수·재사용 검증용)
+    /// 격리 검증이 오브젝트를 잘라 쓰는 작은 untyped와 그 프레임 수
     ut_small: u64,
     ut_small_frames: u64,
+    /// 고갈로 재사용을 검증할 untyped와 그 프레임 수. 재사용 슬롯 구간에 다
+    /// 담기는 것 중 가장 큰 것이고, 그런 untyped가 없는 배치에서는 0
+    ut_reuse: u64,
+    ut_reuse_frames: u64,
     /// 이미지 Frame 케이퍼빌리티가 든 슬롯 구간 [first, end)
     image_first: u64,
     image_end: u64,
@@ -690,6 +694,8 @@ extern "C" fn _start() -> ! {
         ut_main: 0,
         ut_small: 0,
         ut_small_frames: 0,
+        ut_reuse: 0,
+        ut_reuse_frames: 0,
         image_first: 0,
         image_end: 0,
     };
@@ -706,6 +712,10 @@ extern "C" fn _start() -> ! {
                 b.ut_small = i;
                 b.ut_small_frames = n;
             }
+            if (2..=REUSE_SLOTS).contains(&n) && n > b.ut_reuse_frames {
+                b.ut_reuse = i;
+                b.ut_reuse_frames = n;
+            }
         }
         if d.kind == kind::FRAME {
             if b.image_first == 0 {
@@ -713,6 +723,11 @@ extern "C" fn _start() -> ! {
             }
             b.image_end = i + 1;
         }
+    }
+    // 재사용 검증은 untyped를 통째로 회수하므로 수명이 긴 오브젝트가 사는
+    // untyped와 같으면 안 됨
+    if b.ut_reuse == b.ut_main {
+        b.ut_reuse = 0;
     }
     check("untyped search", b.ut_main != 0 && main_frames >= 64);
     check("small untyped search", b.ut_small != 0 && b.ut_small != b.ut_main);
@@ -1015,12 +1030,12 @@ fn test_caps(b: &Boot) {
 /// 잘라낼 수 있어야 합니다. 워터마크가 되돌아가지 않으면 두 번째 바퀴의 첫
 /// 재분류가 EXHAUSTED입니다. 재분류된 메모리는 매번 소거돼 있어야 합니다.
 fn test_reuse(b: &Boot) {
-    let (ut, n, fs) = (b.ut_small, b.ut_small_frames, b.frame_size);
+    let (ut, n, fs) = (b.ut_reuse, b.ut_reuse_frames, b.frame_size);
     let va = TEST_VA + 40 * fs;
     let base = REUSE_BASE.load(Ordering::Relaxed);
-    if n > REUSE_SLOTS {
-        // 슬롯 구간에 다 담을 수 없는 배치에서는 고갈 검증을 생략
-        put_str("root: untyped reuse test skipped (untyped too large)\n");
+    if ut == 0 {
+        // 슬롯 구간에 다 담기는 untyped가 없는 배치에서는 고갈 검증을 생략
+        put_str("root: untyped reuse test skipped (no small untyped)\n");
         return;
     }
     for round in 0..3u64 {

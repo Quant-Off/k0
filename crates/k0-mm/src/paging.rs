@@ -25,9 +25,9 @@ use core::cell::UnsafeCell;
 use core::ops::Range;
 
 /// 변환 그래뉼(페이지 크기)
-#[cfg(feature = "plat-virt")]
+#[cfg(feature = "granule-4k")]
 pub const GRANULE: usize = 4096;
-#[cfg(feature = "plat-apple")]
+#[cfg(feature = "granule-16k")]
 pub const GRANULE: usize = 16384;
 
 /// TTBR1 higher-half 선형 별칭의 VA 오프셋 (정의는 k0-abi, 링커 스크립트와 일치)
@@ -120,8 +120,8 @@ pub struct Mmu {
     _sealed: (),
 }
 
-#[cfg_attr(feature = "plat-virt", repr(C, align(4096)))]
-#[cfg_attr(feature = "plat-apple", repr(C, align(16384)))]
+#[cfg_attr(feature = "granule-4k", repr(C, align(4096)))]
+#[cfg_attr(feature = "granule-16k", repr(C, align(16384)))]
 struct PageTable([u64; ENTRIES]);
 
 const EMPTY_TABLE: PageTable = PageTable([0; ENTRIES]);
@@ -279,9 +279,9 @@ fn check_features() -> Result<u64, MmuError> {
     // SAFETY: ID 레지스터 읽기는 부작용 없음
     unsafe { asm!("mrs {}, id_aa64mmfr0_el1", out(reg) mmfr0, options(nomem, nostack)) };
 
-    #[cfg(feature = "plat-virt")]
+    #[cfg(feature = "granule-4k")]
     let granule_ok = matches!((mmfr0 >> 28) & 0xF, 0 | 1); // TGran4
-    #[cfg(feature = "plat-apple")]
+    #[cfg(feature = "granule-16k")]
     let granule_ok = matches!((mmfr0 >> 20) & 0xF, 1 | 2); // TGran16
 
     if !granule_ok {
@@ -307,9 +307,9 @@ const TCR_E0PD1: u64 = 1 << 56;
 
 fn tcr(ips: u64) -> u64 {
     // TG0과 TG1은 같은 그래뉼이라도 인코딩이 다름에 주의
-    #[cfg(feature = "plat-virt")]
+    #[cfg(feature = "granule-4k")]
     const TG: (u64, u64) = (0b00, 0b10);
-    #[cfg(feature = "plat-apple")]
+    #[cfg(feature = "granule-16k")]
     const TG: (u64, u64) = (0b10, 0b01);
 
     16                                                      // T0SZ: 48비트 VA
@@ -492,7 +492,7 @@ pub fn table_pool_usage() -> (usize, usize) {
 /// # Safety
 /// 호출 시점의 PC와 SP가 identity 매핑에 포함돼 있어야 하며, 부트 경로에서
 /// 단 한 번만 호출해야 합니다. 실 하드웨어에서는 진입 전 D-캐시가 클린/
-/// 무효화돼 있어야 합니다. (m1n1은 페이로드 진입 전에 이를 보장)
+/// 무효화돼 있어야 합니다.
 unsafe fn switch_on(ttbr0: u64, ttbr1: u64, tcr: u64) {
     let mut sctlr: u64;
     // SAFETY: 시스템 레지스터 읽기, 부작용 없음

@@ -5,30 +5,27 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# 플랫폼 선택: build.rs가 링커 스크립트를 고르고 잘못된 조합은 빌드 실패
-# 같은 feature를 k0-arch에도 전달해 MMIO 주소를 가름
+# 그래뉼 선택: build.rs가 링커 스크립트의 정렬을 맞추고 잘못된 조합은 빌드 실패
 [features]
-default = ["plat-virt"]
-plat-virt = [
-    "k0-arch/plat-virt",
-    "k0-ipc/plat-virt",
-    "k0-mm/plat-virt",
-    "k0-task/plat-virt",
-    "k0-sched/plat-virt",
+default = ["granule-4k"]
+granule-4k = [
+    "k0-ipc/granule-4k",
+    "k0-mm/granule-4k",
+    "k0-task/granule-4k",
+    "k0-sched/granule-4k",
 ]
-plat-apple = [
-    "k0-arch/plat-apple",
-    "k0-ipc/plat-apple",
-    "k0-mm/plat-apple",
-    "k0-task/plat-apple",
-    "k0-sched/plat-apple",
+granule-16k = [
+    "k0-ipc/granule-16k",
+    "k0-mm/granule-16k",
+    "k0-task/granule-16k",
+    "k0-sched/granule-16k",
 ]
 
 # 커널 크레이트는 외부(third-party) 의존성 0, 워크스페이스 크레이트만 허용
 # 외부가 필요해진 경우: vendored + 해시 고정
 [dependencies]
 k0-abi = { path = "../crates/k0-abi" }
-k0-arch = { path = "../crates/k0-arch", default-features = false }
+k0-arch = { path = "../crates/k0-arch" }
 k0-boot = { path = "../crates/k0-boot" }
 k0-cap = { path = "../crates/k0-cap" }
 k0-ipc = { path = "../crates/k0-ipc", default-features = false }

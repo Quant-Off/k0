@@ -1,12 +1,9 @@
 //! 진입 페이즈 2의 인터럽트 컨트롤러와 제네릭 타이머 모듈입니다.
 //!
 //! # Features
-//! virt에서는 `GICv3`(디스트리뷰터 + 리디스트리뷰터 + 시스템 레지스터 CPU
-//! 인터페이스)를 초기화하고 EL1 물리 타이머(INTID 30)를 IRQ로 받습니다.
-//! Apple Silicon의 타이머는 `AIC`를 거치지 않고 코어에 `FIQ`로 직접 전달되므로
-//! FIQ 경로만 열고, AIC(MMIO) 초기화는 디바이스 `IRQ`가 필요해질 때 추가합니다.
-//! 발생할 수 없는 조합(virt의 FIQ, apple의 IRQ)과 미지의 `INTID`는
-//! fail-secure로 정지합니다.
+//! `GICv3`(디스트리뷰터 + 리디스트리뷰터 + 시스템 레지스터 CPU 인터페이스)를
+//! 초기화하고 EL1 물리 타이머(INTID 30)를 IRQ로 받습니다. 설계상 발생할 수
+//! 없는 FIQ와 미지의 `INTID`는 fail-secure로 정지합니다.
 //!
 //! # Errors
 //! `GIC` 웨이크업이나 레지스터 반영 대기가 한도를 넘으면 `IrqError`로 반환하며
@@ -31,14 +28,12 @@ pub enum IrqError {
     GicWakeTimeout,
 }
 
-/// EL1 물리 타이머의 INTID (PPI 14), apple은 FIQ 직결이라 GIC 경로에만 존재합니다.
-#[cfg(feature = "plat-virt")]
+/// EL1 물리 타이머의 INTID (PPI 14)
 const TIMER_INTID: u64 = 30;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// QEMU virt의 GICv3 MMIO 지도(커널 매핑 구성에도 쓰임) 모듈입니다.
-#[cfg(feature = "plat-virt")]
 pub mod gic {
     pub const GICD_BASE: u64 = 0x0800_0000;
     pub const GICD_SIZE: u64 = 0x1_0000;
@@ -46,7 +41,6 @@ pub mod gic {
     pub const GICR_SIZE: u64 = 0x2_0000;
 }
 
-#[cfg(feature = "plat-virt")]
 mod gicv3 {
     use super::{gic, IrqError, TIMER_INTID};
     use core::arch::asm;
@@ -153,14 +147,6 @@ fn timer_arm(interval: u64) {
     }
 }
 
-#[cfg(feature = "plat-apple")]
-fn timer_pending() -> bool {
-    let ctl: u64;
-    // SAFETY: CNTP_CTL_EL0 읽기는 부작용이 없음
-    unsafe { asm!("mrs {}, cntp_ctl_el0", out(reg) ctl, options(nomem, nostack)) };
-    ctl & (1 << 2) != 0 // ISTATUS
-}
-
 fn timer_tick() {
     let n = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
     let mut con = EarlyCon;
@@ -176,21 +162,12 @@ fn timer_tick() {
 /// # Errors
 /// GIC 초기화 폴링이 한도를 넘으면 `IrqError`
 pub fn init(_vectors: &Vectors) -> Result<Irq, IrqError> {
-    #[cfg(feature = "plat-virt")]
-    {
-        gicv3::init()?;
-        timer_arm(timer_freq());
-        // SAFETY: 벡터와 GIC가 준비된 뒤의 IRQ + SError(A) 언마스크
-        //         SError를 계속 마스크하면 커널 실행 중의 시스템 오류가 조용히
-        //         pending으로 쌓였다가 EL0 진입 후 엉뚱한 문맥에서 터짐
-        unsafe { asm!("msr DAIFClr, #6", options(nomem, nostack)) };
-    }
-    #[cfg(feature = "plat-apple")]
-    {
-        timer_arm(timer_freq());
-        // SAFETY: Apple 타이머는 코어 FIQ 직결이라 FIQ + SError(A)만 언마스크
-        unsafe { asm!("msr DAIFClr, #5", options(nomem, nostack)) };
-    }
+    gicv3::init()?;
+    timer_arm(timer_freq());
+    // SAFETY: 벡터와 GIC가 준비된 뒤의 IRQ + SError(A) 언마스크
+    //         SError를 계속 마스크하면 커널 실행 중의 시스템 오류가 조용히
+    //         pending으로 쌓였다가 EL0 진입 후 엉뚱한 문맥에서 터짐
+    unsafe { asm!("msr DAIFClr, #6", options(nomem, nostack)) };
     Ok(Irq { _sealed: () })
 }
 
@@ -223,37 +200,24 @@ unsafe extern "C" {
 ///
 /// 타이머 틱이었으면 true를 반환합니다(EL0 경로의 선점 판단용).
 fn dispatch_irq() -> bool {
-    #[cfg(feature = "plat-virt")]
-    {
-        let iar = gicv3::ack();
-        match iar & 0xFF_FFFF {
-            TIMER_INTID => {
-                timer_tick();
-                gicv3::eoi(iar);
-                true
-            }
-            1020..=1023 => false, // 스퓨리어스: 승인 없이 복귀
-            other => unexpected("irq", other),
+    let iar = gicv3::ack();
+    match iar & 0xFF_FFFF {
+        TIMER_INTID => {
+            timer_tick();
+            gicv3::eoi(iar);
+            true
         }
+        1020..=1023 => false, // 스퓨리어스: 승인 없이 복귀
+        other => unexpected("irq", other),
     }
-    #[cfg(feature = "plat-apple")]
-    unexpected("irq", 0); // AIC는 아직 초기화하지 않기 때문에 IRQ는 설계상 없음
 }
 
 /// EL1과 EL0 양쪽 FIQ 벡터가 공유하는 실제 분배 함수입니다.
 ///
-/// 타이머 틱이었으면 true를 반환합니다(EL0 경로의 선점 판단용).
+/// 커널은 모든 인터럽트를 Group 1 IRQ로만 받으므로 FIQ는 설계상 없고,
+/// 들어오면 fail-secure로 정지합니다.
 fn dispatch_fiq() -> bool {
-    #[cfg(feature = "plat-apple")]
-    {
-        if timer_pending() {
-            timer_tick();
-            return true;
-        }
-        unexpected("fiq", 0);
-    }
-    #[cfg(feature = "plat-virt")]
-    unexpected("fiq", 0); // virt에서 FIQ는 설계상 없음
+    unexpected("fiq", 0)
 }
 
 /// 커널(EL1) 실행 중 IRQ 벡터(`vectors.S`)가 사용하는 디스패처 함수입니다.

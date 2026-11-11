@@ -28,9 +28,9 @@ COPY . /src
 WORKDIR /src
 
 # Dependencies are vendored (vendor/ via .cargo/config.toml), so both images build offline.
-# dev profile = QEMU virt image with debug info; release + plat-apple = Apple Silicon image (compile only).
+# dev profile = 4K granule image with debug info; release + granule-16k = 16K granule image.
 RUN cargo build -p k0-kernel --offline \
- && cargo build -p k0-kernel --release --no-default-features --features plat-apple --offline
+ && cargo build -p k0-kernel --release --no-default-features --features granule-16k --offline
 
 # Boot check. tools/qemu-boot-test.sh boots the kernel, waits for the root task's self-test
 # lines in order, and stops QEMU as soon as they appear. A failure is a warning, never a

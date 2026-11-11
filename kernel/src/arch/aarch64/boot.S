@@ -12,7 +12,7 @@
 .global _start
 
 // Linux ARM64 Image 헤더(64바이트)
-// QEMU와 m1n1 모두 이 헤더를 인식해 Linux 부트 프로토콜(x0=DTB)로 진입합니다
+// 부트로더는 이 헤더를 인식해 Linux 부트 프로토콜(x0=DTB)로 진입합니다
 // __text_offset / __image_size / __image_flags 값은 링커 스크립트가 채웁니다
 _start:
     b       phase0_entry                // code0: 헤더 선두의 실행 가능한 분기

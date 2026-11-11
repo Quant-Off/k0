@@ -576,19 +576,14 @@ fn enable_mmu(con: &mut EarlyCon, dtb: &Range<usize>) {
 /// 진입 페이즈 1의 디바이스 매핑과 DTB 메모리 맵 검증이 같은 목록을 씁니다.
 /// 빈 범위(start == end)는 자리 표시자입니다.
 fn device_windows() -> [Range<u64>; 3] {
+    use k0_arch::irq::gic;
     let uart = k0_arch::earlycon::MMIO_BASE as u64;
     let granule = k0_mm::GRANULE as u64;
-    #[cfg(feature = "plat-virt")]
-    {
-        use k0_arch::irq::gic;
-        [
-            uart..uart + granule,
-            gic::GICD_BASE..gic::GICD_BASE + gic::GICD_SIZE,
-            gic::GICR_BASE..gic::GICR_BASE + gic::GICR_SIZE,
-        ]
-    }
-    #[cfg(feature = "plat-apple")]
-    [uart..uart + granule, 0..0, 0..0] // AIC는 필요해질 때 추가 ㄱㄱ
+    [
+        uart..uart + granule,
+        gic::GICD_BASE..gic::GICD_BASE + gic::GICD_SIZE,
+        gic::GICR_BASE..gic::GICR_BASE + gic::GICR_SIZE,
+    ]
 }
 
 /// DTB 메모리 맵이 커널의 MMIO 창과 겹치지 않고 이 코어의 물리 주소 폭
