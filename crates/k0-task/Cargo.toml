@@ -15,4 +15,5 @@ plat-apple = ["k0-arch/plat-apple", "k0-mm/plat-apple"]
 [dependencies]
 k0-abi = { path = "../k0-abi" }
 k0-arch = { path = "../k0-arch", default-features = false }
+k0-cap = { path = "../k0-cap" }
 k0-mm = { path = "../k0-mm", default-features = false }

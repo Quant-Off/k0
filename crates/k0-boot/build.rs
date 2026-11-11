@@ -33,6 +33,16 @@ const SEG_ALIGN: u64 = 16 * 1024;
 /// flat 이미지 크기 상한, 부트 프레임 윈도우 예산을 지키기 위한 방어선
 const MAX_FLAT_SIZE: u64 = 1024 * 1024;
 
+/// 매핑되는 이미지 프레임 수의 상한(4KiB 그래뉼 기준)
+///
+/// 커널은 이미지 프레임마다 Frame 케이퍼빌리티 하나를 루트 CNode에 넣고
+/// bootinfo 페이지에 디스크립터 하나를 씁니다. 4KiB 그래뉼에서 bootinfo
+/// 페이지는 (4096 - 32) / 32 = 127개의 디스크립터를 담고, 그중 5개는 고정
+/// 슬롯(null 포함)이며 untyped는 메모리 구간 8개와 예약 구간 11개에서 최대
+/// 19개가 나옵니다. 남는 103개 안쪽으로 잡아, 넘치는 이미지는 부팅이 아니라
+/// 빌드에서 실패하게 합니다.
+const MAX_IMAGE_FRAMES_4K: u64 = 96;
+
 /// SHA-256 해시를 고정 크기 배열로 계산하는 함수입니다.
 ///
 /// # Arguments
@@ -167,6 +177,11 @@ fn main() {
 
     let span = prev_end.div_ceil(SEG_ALIGN) * SEG_ALIGN - base;
     assert!(span <= MAX_FLAT_SIZE, "flat 이미지가 상한 초과");
+    let frames_4k: u64 = segs.iter().map(|s| s.memsz.div_ceil(4096)).sum();
+    assert!(
+        frames_4k <= MAX_IMAGE_FRAMES_4K,
+        "이미지 프레임 {frames_4k}개가 bootinfo 페이지 용량({MAX_IMAGE_FRAMES_4K}) 초과"
+    );
 
     // bss까지 0으로 채운 flat 이미지 구성
     let mut flat = vec![0u8; span as usize];

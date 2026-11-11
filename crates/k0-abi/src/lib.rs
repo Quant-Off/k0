@@ -15,6 +15,10 @@ pub const KERNEL_VA_OFFSET: u64 = 0xFFFF_0000_0000_0000;
 
 /// 시스템 콜 번호(x8) 모듈입니다. 인자는 x0-x5, 반환값은 x0을 사용하고
 /// IPC 수신 계열은 x1-x5로도 돌려받습니다.
+///
+/// 슬롯 번호 인자는 언제나 호출한 태스크 자신의 CNode 안에서 해석됩니다.
+/// 다른 태스크의 케이퍼빌리티를 번호로 가리킬 방법은 없습니다. 0번 슬롯은
+/// null이라 어떤 인자로도 쓸 수 없습니다.
 pub mod syscall {
     /// 바이트 하나를 커널 디버그 콘솔로 출력
     ///
@@ -22,29 +26,35 @@ pub mod syscall {
     /// ASCII(0x20-0x7E)와 개행만 그대로 나가고 그 외 바이트(터미널 제어
     /// 문자 등)는 `?`로 바뀝니다. 성공 시 x0 = 0, 실패 시 음수 에러
     pub const DEBUG_PUTC: u64 = 0;
-    /// 스케줄러 양보(현재는 단일 태스크라 즉시 복귀)
+    /// 스케줄러 양보(준비된 다른 태스크가 없으면 즉시 복귀)
     pub const YIELD: u64 = 1;
     /// 태스크 종료, x0 = 종료 코드
     pub const EXIT: u64 = 2;
     /// untyped를 커널 오브젝트로 재분류(retype)
     ///
-    /// x0 = untyped 슬롯, x1 = 오브젝트 타입([super::obj]). 성공 시 x0 =
-    /// 새 케이퍼빌리티의 슬롯, 실패 시 음수 에러([super::err])
+    /// x0 = untyped 슬롯, x1 = 오브젝트 타입([super::obj]), x2 = 새
+    /// 케이퍼빌리티를 받을 빈 슬롯. 목적지를 호출자가 지정하므로 커널은
+    /// 빈 슬롯을 찾지 않습니다(상수 시간). untyped에서 파생된 케이퍼빌리티가
+    /// 하나도 남아 있지 않으면 그 메모리를 처음부터 재사용합니다. 성공 시
+    /// x0 = 0, 실패 시 음수 에러([super::err])
     pub const RETYPE: u64 = 3;
     /// 케이퍼빌리티를 AddrSpace 케이퍼빌리티가 가리키는 주소 공간에 매핑
     ///
     /// x0 = 슬롯, x1 = 사용자 VA, x2 = 권한([super::perm]), x3 = AddrSpace
-    /// 슬롯. Frame은 리프 매핑을 만들고, PageTable은 x1 경로의 첫 빈
-    /// 레벨에 설치되며 x2를 무시합니다. 대상 주소 공간은 언제나 제시한
-    /// 케이퍼빌리티로만 정해집니다(현재 실행 중인 주소 공간이라는 암묵
-    /// 권한 없음). 성공 시 x0 = 0, 실패 시 음수 에러([super::err])
+    /// 슬롯. Frame은 리프 매핑을 만들고 요청한 권한을 케이퍼빌리티의 권한
+    /// 비트가 덮어야 합니다. PageTable은 x1 경로의 첫 빈 레벨에 설치되며
+    /// x2를 무시합니다. 대상 주소 공간은 언제나 제시한 케이퍼빌리티로만
+    /// 정해집니다(현재 실행 중인 주소 공간이라는 암묵 권한 없음). 성공 시
+    /// x0 = 0, 실패 시 음수 에러([super::err])
     pub const MAP: u64 = 4;
-    /// 재분류된 TCB의 진입 컨텍스트 구성
+    /// 재분류된 TCB의 진입 컨텍스트와 소속 구성
     ///
     /// x0 = TCB 슬롯, x1 = 진입점 VA(4바이트 정렬), x2 = 스택 최상단
-    /// VA(16바이트 정렬), x3 = AddrSpace 슬롯. Inactive 상태에서 한 번만
-    /// 허용됩니다. SPSR과 스레드 포인터(TPIDR_EL0 / TPIDRRO_EL0 = 0)는
-    /// 커널이 강제합니다. 성공 시 x0 = 0, 실패 시 음수 에러
+    /// VA(16바이트 정렬), x3 = AddrSpace 슬롯, x4 = CNode 슬롯, x5 = 태스크가
+    /// x0으로 받을 인자. Inactive 상태에서 한 번만 허용됩니다. 새 태스크는
+    /// x3의 주소 공간에서 실행되고 x4의 CNode만을 자기 케이퍼빌리티 공간으로
+    /// 갖습니다. SPSR과 스레드 포인터(TPIDR_EL0 / TPIDRRO_EL0 = 0)는 커널이
+    /// 강제합니다. 성공 시 x0 = 0, 실패 시 음수 에러
     pub const TCB_CONFIGURE: u64 = 5;
     /// 구성을 마친 TCB를 준비 큐에 넣어 실행 대상으로 만듦
     ///
@@ -53,18 +63,19 @@ pub mod syscall {
     pub const TCB_RESUME: u64 = 6;
     /// 엔드포인트로 메시지 전송(동기 랑데부, 커널 버퍼 없음)
     ///
-    /// x0 = 엔드포인트 슬롯, x1 = 플래그([super::ipc]), x2-x5 = MR0-MR3.
-    /// 대기 중인 수신자가 없으면 블록됩니다. 성공 시 x0 = 0
+    /// x0 = 엔드포인트 슬롯(송신 권한 W 필요), x1 = 플래그([super::ipc]),
+    /// x2-x5 = MR0-MR3. 대기 중인 수신자가 없으면 블록됩니다. 성공 시 x0 = 0
     pub const SEND: u64 = 7;
     /// 엔드포인트에서 메시지 수신
     ///
-    /// x0 = 엔드포인트 슬롯, x1 = 플래그. 대기 중인 송신자가 없으면
-    /// 블록됩니다. 성공 시 x0 = 0, x1 = 배지(예약, 현재 0), x2-x5 = MR0-MR3
+    /// x0 = 엔드포인트 슬롯(수신 권한 R 필요), x1 = 플래그. 대기 중인
+    /// 송신자가 없으면 블록됩니다. 성공 시 x0 = 0, x1 = 송신자가 쓴
+    /// 케이퍼빌리티의 배지, x2-x5 = MR0-MR3
     pub const RECV: u64 = 8;
     /// 전송과 응답 대기를 한 번의 트랩으로 묶은 원자적 호출
     ///
-    /// 인자는 SEND와 같고, 성공 시 응답이 x2-x5로 돌아옵니다. 수신자가
-    /// 응답 없이 종료하거나 응답 자격을 잃으면 x0 = NO_REPLY
+    /// 인자는 SEND와 같고, 성공 시 x1 = 0이고 응답이 x2-x5로 돌아옵니다.
+    /// 수신자가 응답 없이 종료하거나 응답 자격을 잃으면 x0 = NO_REPLY
     pub const CALL: u64 = 9;
     /// 보류된 CALL 호출자에게 응답한 뒤 이어서 다음 메시지 수신(서버 루프)
     ///
@@ -72,6 +83,36 @@ pub mod syscall {
     /// 자격은 1회성이라 전달 즉시 소멸하고, 보류된 응답이 없으면 응답
     /// 단계는 건너뜁니다
     pub const REPLY_RECV: u64 = 10;
+    /// Frame 매핑을 해제하거나 PageTable을 주소 공간에서 떼어 냄
+    ///
+    /// x0 = 슬롯. 떼어 낸 PageTable은 소거되므로 그 아래에 걸려 있던 매핑은
+    /// 함께 사라집니다. 매핑돼 있지 않으면 BAD_STATE. 성공 시 x0 = 0
+    pub const UNMAP: u64 = 11;
+    /// 케이퍼빌리티를 다른 슬롯으로 복사(파생)
+    ///
+    /// x0 = 원본 슬롯, x1 = 목적지 CNode를 가리키는 CNode 슬롯, x2 = 그
+    /// CNode 안의 빈 목적지 슬롯, x3 = 남길 권한 비트([super::rights]),
+    /// x4 = 배지(0 = 붙이지 않음). 권한은 줄일 수만 있고 Frame / Endpoint에만
+    /// 적용됩니다. 배지는 배지가 없는 Endpoint에만 붙일 수 있습니다. 복사본은
+    /// 원본의 자식이라 원본을 회수하거나 삭제하면 함께 사라집니다. Untyped와
+    /// PageTable은 복사할 수 없습니다. 성공 시 x0 = 0
+    pub const CAP_COPY: u64 = 12;
+    /// 케이퍼빌리티를 다른 슬롯으로 이동
+    ///
+    /// x0 = 원본 슬롯, x1 = 목적지 CNode를 가리키는 CNode 슬롯, x2 = 그
+    /// CNode 안의 빈 목적지 슬롯. 파생 관계와 매핑 상태가 그대로
+    /// 따라갑니다. 성공 시 x0 = 0
+    pub const CAP_MOVE: u64 = 13;
+    /// 케이퍼빌리티를 그 자손과 함께 삭제
+    ///
+    /// x0 = 슬롯. 오브젝트의 원본 케이퍼빌리티(재분류가 만든 것)를 삭제하면
+    /// 그 오브젝트가 종료됩니다. 성공 시 x0 = 0
+    pub const CAP_DELETE: u64 = 14;
+    /// 케이퍼빌리티에서 파생된 것을 전부 회수(자신은 남김)
+    ///
+    /// x0 = 슬롯. untyped를 회수하면 거기서 잘라낸 오브젝트가 전부 종료되고
+    /// 메모리를 다시 재분류할 수 있습니다. 성공 시 x0 = 0
+    pub const CAP_REVOKE: u64 = 15;
 }
 
 /// IPC 플래그(x1) 모듈입니다.
@@ -92,26 +133,45 @@ pub mod obj {
     pub const TCB: u64 = 3;
     /// 동기 랑데부 IPC의 엔드포인트
     pub const ENDPOINT: u64 = 4;
+    /// 케이퍼빌리티 슬롯 배열(슬롯 수 = frame_size / 64, 0번은 null)
+    pub const CNODE: u64 = 5;
+    /// 비어 있는 사용자 주소 공간
+    pub const ADDR_SPACE: u64 = 6;
 }
 
-/// Frame 매핑 권한 모듈입니다. 실행 가능한 조합은 제공하지 않습니다(W^X).
+/// Frame 매핑 권한 모듈입니다. 쓰기와 실행을 함께 주는 조합은 없습니다(W^X).
 pub mod perm {
     /// EL0 읽기 전용
     pub const RO: u64 = 0;
     /// EL0 읽기/쓰기
     pub const RW: u64 = 1;
+    /// EL0 읽기/실행. 실행 권한(X)이 있는 Frame 케이퍼빌리티로만 가능하고,
+    /// 그런 케이퍼빌리티는 부트 시점의 텍스트 프레임에만 존재합니다
+    pub const RX: u64 = 2;
+}
+
+/// 케이퍼빌리티 권한 비트 모듈입니다. (CAP_COPY의 x3)
+pub mod rights {
+    /// Frame: 읽기 매핑, Endpoint: 수신
+    pub const R: u64 = 1;
+    /// Frame: 쓰기 매핑, Endpoint: 송신
+    pub const W: u64 = 2;
+    /// Frame: 실행 매핑
+    pub const X: u64 = 4;
+    /// 원본의 권한을 그대로 유지
+    pub const ALL: u64 = R | W | X;
 }
 
 /// 시스템 콜 에러 코드(음수 i64) 모듈입니다.
 pub mod err {
-    /// 슬롯 번호가 범위 밖이거나 비어 있음
+    /// 슬롯 번호가 0이거나 범위 밖이거나 비어 있음
     pub const BAD_SLOT: i64 = -1;
     /// 해당 슬롯이 untyped가 아님
     pub const NOT_UNTYPED: i64 = -2;
     /// untyped의 남은 공간이 부족함
     pub const EXHAUSTED: i64 = -3;
-    /// CNode 슬롯이 가득 참
-    pub const OUT_OF_SLOTS: i64 = -4;
+    /// 목적지 슬롯이 비어 있지 않음
+    pub const OCCUPIED: i64 = -4;
     /// 알 수 없는 오브젝트 타입
     pub const BAD_TYPE: i64 = -5;
     /// VA가 정렬/범위/null 가드 규칙을 위반함
@@ -124,9 +184,9 @@ pub mod err {
     pub const MISSING_TABLE: i64 = -9;
     /// 대상 위치에 이미 매핑이 있음
     pub const OVERLAP: i64 = -10;
-    /// 커널 내부 자원(테이블 풀 등) 고갈
+    /// 커널 내부 자원(테이블 풀, 주소 공간 등록부 등) 고갈
     pub const KERNEL_RESOURCE: i64 = -11;
-    /// 해당 슬롯의 케이퍼빌리티는 매핑 대상이 아님
+    /// 해당 슬롯의 케이퍼빌리티는 이 연산의 대상이 아님
     pub const BAD_CAP: i64 = -12;
     /// 대상 오브젝트가 이 연산을 허용하지 않는 상태임
     pub const BAD_STATE: i64 = -13;
@@ -134,18 +194,39 @@ pub mod err {
     pub const WOULD_BLOCK: i64 = -14;
     /// CALL의 수신자가 응답 없이 종료했거나 응답 자격을 잃음
     pub const NO_REPLY: i64 = -15;
+    /// 케이퍼빌리티에 이 연산에 필요한 권한 비트가 없음
+    pub const NO_RIGHTS: i64 = -16;
+    /// 대기하던 엔드포인트가 종료됨
+    pub const REVOKED: i64 = -17;
+    /// 배지를 붙일 수 없는 케이퍼빌리티이거나 이미 다른 배지가 있음
+    pub const BAD_BADGE: i64 = -18;
+    /// 파생 깊이 상한 초과
+    pub const TOO_DEEP: i64 = -19;
 }
 
 /// 커널이 루트 태스크에 RO로 매핑해 주는 bootinfo 페이지 모듈입니다.
 ///
 /// 페이지 선두에 [Header], 바로 뒤에 `cap_count`개의 [CapDesc] 배열이
-/// 이어집니다. 내용은 이양 직전의 스냅샷이라 이후 재분류로 생긴
-/// 케이퍼빌리티는 반영되지 않습니다(RETYPE 반환값으로 추적).
+/// 이어집니다. 배열 인덱스가 곧 루트 CNode의 슬롯 번호이고, `cap_count`
+/// 이상의 슬롯은 전부 비어 있습니다. 내용은 이양 직전의 스냅샷이라 이후의
+/// 변화는 반영되지 않습니다.
 pub mod bootinfo {
     /// bootinfo 페이지의 사용자 VA(양 플랫폼 그래뉼 정렬)
     pub const VA: u64 = 0x0F00_0000;
     /// 레이아웃 버전(불일치 시 루트 태스크는 진행하면 안 됨)
-    pub const VERSION: u64 = 1;
+    pub const VERSION: u64 = 2;
+
+    /// 루트 CNode에서 위치가 고정된 케이퍼빌리티의 슬롯 번호 모듈입니다.
+    pub mod slot {
+        /// 루트 태스크 자신의 TCB
+        pub const TCB: u64 = 1;
+        /// 루트 태스크의 주소 공간
+        pub const ADDR_SPACE: u64 = 2;
+        /// 디버그 콘솔
+        pub const CONSOLE: u64 = 3;
+        /// 루트 CNode 자신(복사와 이동의 목적지로 쓰임)
+        pub const CNODE: u64 = 4;
+    }
 
     /// bootinfo 페이지 선두의 헤더 구조체입니다.
     ///
@@ -154,18 +235,24 @@ pub mod bootinfo {
     pub struct Header {
         pub version: u64,
         pub frame_size: u64,
+        /// 디스크립터 수이자 첫 빈 슬롯 번호
         pub cap_count: u64,
+        /// 루트 CNode의 전체 슬롯 수
+        pub cnode_slots: u64,
     }
 
     /// 케이퍼빌리티 슬롯 하나를 서술하는 구조체입니다.
     ///
-    /// 배열 인덱스가 곧 CNode 슬롯 번호입니다. base와 size는 untyped에만
-    /// 채워지고 나머지 종류는 0입니다(커널 내부 주소 노출 최소화).
+    /// untyped는 `base` / `size`가 물리 구간입니다. 루트 태스크 이미지의
+    /// Frame은 `base`가 그 프레임이 루트 주소 공간에 매핑된 VA, `size`가
+    /// 프레임 크기, `rights`가 권한 비트([super::rights])입니다. 나머지
+    /// 종류는 전부 0입니다(커널 내부 주소 노출 최소화).
     #[repr(C)]
     pub struct CapDesc {
         pub kind: u64,
         pub base: u64,
         pub size: u64,
+        pub rights: u64,
     }
 
     /// [CapDesc]의 kind 값 모듈입니다.
@@ -178,6 +265,7 @@ pub mod bootinfo {
         pub const PAGE_TABLE: u64 = 5;
         pub const ENDPOINT: u64 = 6;
         pub const CONSOLE: u64 = 7;
+        pub const CNODE: u64 = 8;
     }
 }
 

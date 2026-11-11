@@ -1,8 +1,9 @@
 //! K0 커널 바이너리 크레이트입니다.
 //!
 //! 이 크레이트는 의도적으로 얇게 설계되었습니다. 이 크레이트는 진입 페이즈 0 어셈블리 포함,
-//! 초기화 시퀀스의 순서 강제, fail-secure panic 핸들러만 담습니다. 모든 실제 로직은
-//! `crates/` 아래의 라이브러리 크레이트(k0-*)에 위치해 있습니다.
+//! 초기화 시퀀스의 순서 강제, 시스템 콜 정책(`syscall`), 오브젝트 종료 처리(`object`),
+//! fail-secure panic 핸들러만 담습니다. 그 밖의 로직은 `crates/` 아래의 라이브러리
+//! 크레이트(k0-*)에 위치해 있습니다.
 //!
 //! 초기화는 higher-half 점프를 경계로 두 단으로 나뉩니다. 커널은 higher-half VA에
 //! 링크되지만 물리 주소로 적재되기 때문에, 점프 전 구간(`kernel_init`)에는 제약이
@@ -22,7 +23,9 @@ use core::ops::Range;
 use k0_arch::earlycon::EarlyCon;
 
 mod boot; // arch/aarch64/boot.S를 global_asm! 으로 포함
+mod object; // 케이퍼빌리티 제거에 따른 오브젝트 종료 처리
 mod panic; // fail-secure panic 핸들러와 파킹 루프
+mod syscall; // 시스템 콜과 EL0 폴트의 커널 정책
 
 use panic::park;
 
@@ -220,15 +223,19 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         }
     };
 
-    // bootinfo 페이지 프레임: 매핑은 스폰이, 내용 기록은 케이퍼빌리티
-    // 부트스트랩 이후가 담당
-    let bi_frame = match frames.alloc() {
-        Ok(f) => f,
-        Err(e) => {
-            let _ = writeln!(con, "k0: bootinfo frame alloc failed: {e:?}");
-            park()
-        }
-    };
+    // bootinfo 페이지, 루트 TCB, 루트 CNode의 프레임. 전부 부트 윈도우에서
+    // 나오므로 소거돼 있고(소거 상태가 곧 유효한 초기 오브젝트) untyped에
+    // 속하지 않음
+    let g = k0_mm::GRANULE as u64;
+    let cnode_frames = (k0_cap::ROOT_CNODE_SLOTS * k0_cap::SLOT_SIZE).div_ceil(k0_mm::GRANULE) as u64;
+    let (bi_frame, tcb_frame, cnode_frame) =
+        match (frames.alloc(), frames.alloc(), frames.alloc_contig(cnode_frames)) {
+            (Ok(b), Ok(t), Ok(c)) => (b, t, c),
+            _ => {
+                let _ = writeln!(con, "k0: boot object frame alloc failed");
+                park()
+            }
+        };
 
     // 세그먼트 메타데이터 변환(W^X는 빌드 시점에 검사 완료)
     let mut seg_buf = [k0_task::LoadSeg {
@@ -251,12 +258,13 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     }
     let segs = &seg_buf[..root_task.segments.len()];
 
-    let (tcb, user_root) = match k0_task::spawn_root(
+    let root = match k0_task::spawn_root(
         root_task.image,
         root_task.base,
         root_task.entry,
         segs,
         bi_frame,
+        tcb_frame,
         &mut frames,
     ) {
         Ok(v) => v,
@@ -265,7 +273,16 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
             park()
         }
     };
+    let user_root = root.root_pa;
     let _ = writeln!(con, "k0: root task loaded (entry {:#x})", root_task.entry);
+
+    // 루트 주소 공간을 등록부에 올림. 이후 매핑 기록은 (asid, 세대)로 이
+    // 주소 공간을 가리킴
+    // SAFETY: 단일 부트 코어의 초기화 시퀀스라 등록부 접근이 배타적임
+    let Some(root_asid) = (unsafe { k0_mm::addr_spaces() }).register(user_root) else {
+        let _ = writeln!(con, "k0: address space registry failed");
+        park()
+    };
 
     // 케이퍼빌리티 부트스트랩: 커널/DTB/윈도우를 뺀 물리 메모리 전부가 untyped
     let mut mem_buf = [k0_cap::PhysRegion { base: 0, size: 0 }; k0_boot::MAX_MEM_REGIONS];
@@ -295,27 +312,110 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         dst.size = r.size;
     }
     let reserved = &rsv_buf[..FIXED_RSV + bootinfo.reserved().len()];
-    let cnode = match k0_cap::bootstrap(memory, reserved, user_root) {
-        Ok(c) => c,
+
+    // SAFETY: cnode_frame은 방금 부트 윈도우에서 할당한 소거된 연속 프레임으로
+    //         ROOT_CNODE_SLOTS개의 슬롯을 담고, 단일 부트 코어라 접근이 배타적임
+    let cnode = unsafe {
+        k0_cap::CNodeRef::new(
+            (cnode_frame + k0_mm::KERNEL_VA_OFFSET) as *mut k0_cap::Slot,
+            k0_cap::ROOT_CNODE_SLOTS,
+        )
+    };
+    let objs = k0_cap::BootObjects {
+        tcb: tcb_frame,
+        addr_space_root: user_root,
+        addr_space_asid: root_asid,
+        cnode: cnode_frame,
+    };
+    // SAFETY: cnode의 슬롯은 전부 비어 있고 접근이 배타적임
+    let mut next = match unsafe { k0_cap::bootstrap(&cnode, &objs, memory, reserved) } {
+        Ok(n) => n,
         Err(e) => {
             let _ = writeln!(con, "k0: cap bootstrap failed: {e:?}");
             park()
         }
     };
-    let mut untyped_count = 0u32;
-    for cap in cnode.slots() {
-        if let k0_cap::Cap::Untyped { base, size, .. } = cap {
-            untyped_count += 1;
+    let untyped_count = next - k0_cap::boot_slot::FIRST_DYNAMIC;
+    for i in k0_cap::boot_slot::FIRST_DYNAMIC..next {
+        // SAFETY: 방금 부트스트랩이 채운 범위 안의 슬롯임
+        if let Some(Ok(Some(k0_cap::Entry {
+            cap: k0_cap::Cap::Untyped { base, size, .. },
+            ..
+        }))) = cnode.slot(i).map(|s| unsafe { k0_cap::read(s) })
+        {
             let _ = writeln!(con, "k0: untyped {base:#x} + {size:#x}");
         }
     }
+
+    // 루트 태스크 이미지의 프레임을 Frame 케이퍼빌리티로 넘김. 권한은 세그먼트
+    // 종류로 고정됨: 텍스트는 R|X(쓰기 불가), 읽기 전용 데이터는 R, 데이터는
+    // R|W(실행 불가). 다른 주소 공간에 실행 가능하게 매핑할 수 있는 프레임은
+    // 이 텍스트 프레임뿐이고 그 내용은 부팅 시 해시 검증을 통과한 이미지임.
+    // 루트 자신의 부트 매핑은 케이퍼빌리티로 표현되지 않고 영구적임
+    let image_first = next;
+    for s in segs {
+        let rights = match s.kind {
+            k0_task::SegKind::Text => k0_cap::rights::R | k0_cap::rights::X,
+            k0_task::SegKind::Ro => k0_cap::rights::R,
+            k0_task::SegKind::Rw => k0_cap::rights::R | k0_cap::rights::W,
+        };
+        let mut off = 0;
+        while off < s.memsz {
+            let cap = k0_cap::Cap::Frame {
+                base: root.image_pa + (s.va - root_task.base) + off,
+                rights,
+                map: None,
+            };
+            // SAFETY: cnode의 남은 슬롯은 비어 있고 접근이 배타적임
+            if let Err(e) = unsafe { k0_cap::push_root(&cnode, &mut next, cap) } {
+                let _ = writeln!(con, "k0: image cap bootstrap failed: {e:?}");
+                park()
+            }
+            off += g;
+        }
+    }
+
+    // 루트 태스크를 자기 CNode와 주소 공간에 묶음. 다른 태스크와 똑같이 TCB의
+    // 내장 슬롯에 두 케이퍼빌리티의 복사본을 넣음
+    let tcb = root.tcb;
+    let tcb_ptr = core::ptr::from_mut(tcb);
+    let bound = match (
+        cnode.slot(k0_cap::boot_slot::CNODE),
+        cnode.slot(k0_cap::boot_slot::ADDR_SPACE),
+    ) {
+        // SAFETY: 네 슬롯 모두 유효하고(루트 CNode와 루트 TCB 프레임) 단일 부트
+        //         코어라 접근이 배타적임
+        (Some(c), Some(a)) => unsafe {
+            k0_cap::copy_pair_bound(
+                c,
+                k0_task::Tcb::slot(tcb_ptr, k0_task::TCB_SLOT_CSPACE),
+                a,
+                k0_task::Tcb::slot(tcb_ptr, k0_task::TCB_SLOT_VSPACE),
+            )
+        },
+        _ => Err(k0_cap::CapError::OutOfSlots),
+    };
+    if let Err(e) = bound {
+        let _ = writeln!(con, "k0: root task bind failed: {e:?}");
+        park()
+    }
     let _ = writeln!(
         con,
-        "k0: root cnode ready ({} caps, {untyped_count} untyped)",
-        cnode.slots().len()
+        "k0: root cnode ready ({} caps, {untyped_count} untyped, {} image frames, {} slots)",
+        next - 1,
+        next - image_first,
+        cnode.len()
     );
 
-    write_bootinfo(bi_frame, cnode);
+    let image = ImageMap {
+        pa: root.image_pa,
+        va: root_task.base,
+        len: root_task.image.len() as u64,
+    };
+    if !write_bootinfo(bi_frame, &cnode, next, &image) {
+        let _ = writeln!(con, "k0: bootinfo page overflow");
+        park()
+    }
     let _ = writeln!(con, "k0: bootinfo page ready");
 
     // TTBR0 교체: 이 순간부터 identity 매핑은 없음
@@ -326,418 +426,99 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     check_user_wx(&mut con, segs, &hard);
 
     let _ = writeln!(con, "k0: entering root task (el0)");
-    // SAFETY: 주소 공간 설치와 컨텍스트 준비가 끝난 발산 지점에서의 이양
-    unsafe { k0_sched::handoff(tcb) }
+    // SAFETY: 주소 공간 설치와 컨텍스트 준비가 끝난 발산 지점에서의 이양이고,
+    //         tcb_ptr은 부트 윈도우의 루트 TCB 프레임으로 이후 해제되지 않음
+    unsafe { k0_sched::handoff(&mut *tcb_ptr) }
 }
 
-/// EL0 svc 트랩의 시스템 콜 정책 함수입니다. (k0-arch가 링크 계약으로 호출)
-///
-/// 미지의 번호는 제로 트러스트 원칙대로 호출한 태스크를 종료시키고, 그게
-/// 마지막 태스크였다면 fail-secure 파킹합니다.
-///
-/// # Arguments
-/// `ctx` - 사용자 컨텍스트, x8 = 번호, x0-x5 = 인자, x0(수신 계열은 x1-x5도) = 반환값
-#[unsafe(no_mangle)]
-extern "C" fn k0_syscall(ctx: &mut k0_arch::usermode::Context) {
-    let mut con = EarlyCon;
-    match ctx.x[8] {
-        k0_abi::syscall::DEBUG_PUTC => ctx.x[0] = sys_putc(ctx.x[0], ctx.x[1]) as u64,
-        k0_abi::syscall::YIELD => {
-            ctx.x[0] = 0;
-            // SAFETY: 벡터가 컨텍스트 저장을 마친 시스템 콜 컨텍스트임
-            unsafe { k0_sched::rotate() };
-        }
-        k0_abi::syscall::EXIT => {
-            let _ = writeln!(con, "k0: task exited (code {})", ctx.x[0]);
-            kill_current(&mut con)
-        }
-        k0_abi::syscall::RETYPE => ctx.x[0] = sys_retype(ctx.x[0], ctx.x[1]) as u64,
-        k0_abi::syscall::MAP => {
-            ctx.x[0] = sys_map(ctx.x[0], ctx.x[1], ctx.x[2], ctx.x[3]) as u64
-        }
-        k0_abi::syscall::TCB_CONFIGURE => {
-            ctx.x[0] = sys_tcb_configure(ctx.x[0], ctx.x[1], ctx.x[2], ctx.x[3]) as u64
-        }
-        k0_abi::syscall::TCB_RESUME => ctx.x[0] = sys_tcb_resume(ctx.x[0]) as u64,
-        // IPC는 블록 경로에서 반환 레지스터를 미래의 상대가 기록하므로
-        // 핸들러가 ctx 기록까지 직접 책임지고, false(교착)만 커널이 파킹
-        k0_abi::syscall::SEND => ipc_or_park(&mut con, k0_ipc::sys_send(ctx)),
-        k0_abi::syscall::RECV => ipc_or_park(&mut con, k0_ipc::sys_recv(ctx)),
-        k0_abi::syscall::CALL => ipc_or_park(&mut con, k0_ipc::sys_call(ctx)),
-        k0_abi::syscall::REPLY_RECV => ipc_or_park(&mut con, k0_ipc::sys_reply_recv(ctx)),
-        other => {
-            let _ = writeln!(con, "k0: unknown syscall {other}, killing task");
-            kill_current(&mut con)
-        }
-    }
+/// 루트 태스크 이미지가 놓인 물리 구간과 그 사용자 VA를 담는 구조체입니다.
+struct ImageMap {
+    pa: u64,
+    va: u64,
+    len: u64,
 }
 
-/// EL0 동기 폴트의 격리 정책 함수입니다. (k0-arch가 링크 계약으로 호출)
+/// 루트 CNode의 내용을 bootinfo 페이지에 기록하는 함수입니다.
 ///
-/// 폴트는 그 태스크의 결함이므로 시스템을 세우지 않고 해당 태스크만
-/// 종료합니다(격리). 보류한 응답 자격 정리와 마지막 태스크의 fail-secure
-/// 파킹은 kill_current가 담당합니다. 폴트를 핸들러 태스크에 IPC로 전달하는
-/// 구조는 설계된 확장 지점입니다.
-///
-/// # Arguments
-/// `ctx` - 폴트 시점의 사용자 컨텍스트(ELR = 폴트 명령)
-/// `esr` - ESR_EL1 신드롬
-/// `far` - FAR_EL1(어보트 계열에서만 의미 있음)
-#[unsafe(no_mangle)]
-extern "C" fn k0_fault(ctx: &mut k0_arch::usermode::Context, esr: u64, far: u64) {
-    let mut con = EarlyCon;
-    let ec = k0_arch::vectors::ec_name((esr >> 26) & 0x3F);
-    let _ = writeln!(
-        con,
-        "k0: task fault {ec} (esr {esr:#x} elr {:#x} far {far:#x}), killing task",
-        ctx.elr
-    );
-    kill_current(&mut con)
-}
-
-/// 현재 태스크를 종료시키는 함수입니다. 마지막 태스크면 파킹합니다.
-///
-/// 죽는 태스크가 보류한 응답 자격은 먼저 정리해 호출자가 NO_REPLY로
-/// 깨어나게 합니다(영구 블록 방지).
-fn kill_current(con: &mut EarlyCon) {
-    // SAFETY: 벡터가 컨텍스트 저장을 마친 시스템 콜 컨텍스트임
-    unsafe {
-        k0_ipc::abort_reply(k0_sched::current());
-        if !k0_sched::exit_current() {
-            let _ = writeln!(con, "k0: all tasks exited");
-            park()
-        }
-    }
-}
-
-/// DEBUG_PUTC 시스템 콜 처리 함수입니다.
-///
-/// Console 케이퍼빌리티 제시가 필요합니다(암묵 권한 없음). 출력 가능한
-/// ASCII와 개행만 그대로 내보내고 나머지 바이트는 `?`로 바꿔 터미널 제어
-/// 문자 주입을 막습니다.
-///
-/// # Arguments
-/// `slot` - Console 슬롯(x0)
-/// `byte` - 출력할 바이트(x1, 하위 8비트)
-fn sys_putc(slot: u64, byte: u64) -> i64 {
-    let Ok(slot) = usize::try_from(slot) else {
-        return k0_abi::err::BAD_SLOT;
-    };
-    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
-    let cnode = unsafe { k0_cap::root_mut() };
-    match cnode.cap(slot) {
-        Some(k0_cap::Cap::Console) => {}
-        Some(_) => return k0_abi::err::BAD_CAP,
-        None => return k0_abi::err::BAD_SLOT,
-    }
-    let b = byte as u8;
-    let safe = if b == b'\n' || (0x20..=0x7E).contains(&b) { b } else { b'?' };
-    EarlyCon.put_byte(safe);
-    0
-}
-
-/// IPC가 교착(전 태스크 블록)을 보고하면 fail-secure 파킹하는 함수입니다.
-///
-/// 알림 오브젝트가 생기기 전까지는 블록된 태스크를 깨울 외부 주체가
-/// 없으므로 전 태스크 블록은 회복 불가능한 교착입니다.
-fn ipc_or_park(con: &mut EarlyCon, ok: bool) {
-    if !ok {
-        let _ = writeln!(con, "k0: all tasks blocked");
-        park()
-    }
-}
-
-/// 타이머 틱의 선점 정책 함수입니다. (k0-arch가 EL0 IRQ 경로에서 링크
-/// 계약으로 호출)
-#[unsafe(no_mangle)]
-extern "C" fn k0_preempt() {
-    // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ/FIQ 컨텍스트임
-    unsafe { k0_sched::rotate() };
-}
-
-/// TCB_CONFIGURE 시스템 콜 처리 함수입니다.
-///
-/// 진입 컨텍스트는 커널이 강제합니다. SPSR은 항상 EL0t + DAIF 언마스크로
-/// 기록되어 사용자에게서 PSTATE를 절대 받지 않습니다(권한 상승 차단). 주소
-/// 공간은 AddrSpace 케이퍼빌리티 제시로만 지정할 수 있고, 구성은 Inactive
-/// 상태에서 한 번만 허용됩니다(실행 중 재구성 금지).
-///
-/// # Arguments
-/// `slot` - 재분류된 TCB의 슬롯(x0)
-/// `entry` - 진입점 VA(x1, 4바이트 정렬)
-/// `stack` - 스택 최상단 VA(x2, 16바이트 정렬)
-/// `aspace` - AddrSpace 슬롯(x3)
-fn sys_tcb_configure(slot: u64, entry: u64, stack: u64, aspace: u64) -> i64 {
-    let g = k0_mm::GRANULE as u64;
-    // 비정렬 진입점은 첫 명령에서 PC 정렬 폴트가 되므로 구성 시점에 거부
-    if entry % 4 != 0 || entry < g || entry >= 1u64 << 48 {
-        return k0_abi::err::BAD_VA;
-    }
-    if stack % 16 != 0 || stack < g || stack > 1u64 << 48 {
-        return k0_abi::err::BAD_VA;
-    }
-    let (Ok(slot), Ok(aspace)) = (usize::try_from(slot), usize::try_from(aspace)) else {
-        return k0_abi::err::BAD_SLOT;
-    };
-    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
-    let cnode = unsafe { k0_cap::root_mut() };
-    let root_pa = match cnode.cap(aspace) {
-        Some(k0_cap::Cap::AddrSpace { root_pa }) => root_pa,
-        Some(_) => return k0_abi::err::BAD_CAP,
-        None => return k0_abi::err::BAD_SLOT,
-    };
-    let base = match cnode.cap(slot) {
-        Some(k0_cap::Cap::Tcb { base }) => base,
-        // RootTcb 포함: 실행 중인 자신의 재구성은 불가
-        Some(_) => return k0_abi::err::BAD_CAP,
-        None => return k0_abi::err::BAD_SLOT,
-    };
-    // SAFETY: base는 retype가 소거·별칭 매핑한 전용 프레임이고, 소거 상태가
-    //         곧 유효한 Inactive TCB임
-    let t = unsafe { &mut *((base + k0_mm::KERNEL_VA_OFFSET) as *mut k0_task::Tcb) };
-    if t.state != k0_task::TaskState::Inactive {
-        return k0_abi::err::BAD_STATE;
-    }
-    t.ctx = k0_arch::usermode::Context::zeroed();
-    t.ctx.elr = entry;
-    t.ctx.sp = stack;
-    t.ctx.spsr = 0; // EL0t, DAIF 언마스크, 커널이 강제
-    t.ttbr0_pa = root_pa;
-    t.state = k0_task::TaskState::Stopped;
-    0
-}
-
-/// TCB_RESUME 시스템 콜 처리 함수입니다.
-///
-/// 구성(Stopped)을 마친 TCB만 준비 큐에 넣습니다. 이미 큐에 있거나 실행
-/// 중이거나 종료된 TCB는 거부되므로 같은 TCB가 큐에 두 번 들어갈 수
-/// 없습니다.
-///
-/// # Arguments
-/// `slot` - 재분류된 TCB의 슬롯(x0)
-fn sys_tcb_resume(slot: u64) -> i64 {
-    let Ok(slot) = usize::try_from(slot) else {
-        return k0_abi::err::BAD_SLOT;
-    };
-    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
-    let cnode = unsafe { k0_cap::root_mut() };
-    let base = match cnode.cap(slot) {
-        Some(k0_cap::Cap::Tcb { base }) => base,
-        Some(_) => return k0_abi::err::BAD_CAP,
-        None => return k0_abi::err::BAD_SLOT,
-    };
-    let t = (base + k0_mm::KERNEL_VA_OFFSET) as *mut k0_task::Tcb;
-    // SAFETY: t는 retype가 만든 전용 TCB 프레임의 별칭이고, Stopped 검사로
-    //         큐 중복 진입이 차단됨
-    unsafe {
-        if (*t).state != k0_task::TaskState::Stopped {
-            return k0_abi::err::BAD_STATE;
-        }
-        k0_sched::enqueue(t);
-    }
-    0
-}
-
-/// RETYPE 시스템 콜 처리 함수입니다.
-///
-/// untyped에서 오브젝트를 잘라내기 전에 해당 프레임을 TTBR1 별칭으로
-/// 매핑하고 소거합니다(이전 내용 누설 차단). 준비가 실패하면 케이퍼빌리티
-/// 상태는 변하지 않습니다.
-///
-/// # Arguments
-/// `slot` - untyped 슬롯(x0)
-/// `kind` - 오브젝트 타입(x1)
-fn sys_retype(slot: u64, kind: u64) -> i64 {
-    let kind = match kind {
-        k0_abi::obj::FRAME => k0_cap::ObjKind::Frame,
-        k0_abi::obj::PAGE_TABLE => k0_cap::ObjKind::PageTable,
-        k0_abi::obj::TCB => k0_cap::ObjKind::Tcb,
-        k0_abi::obj::ENDPOINT => k0_cap::ObjKind::Endpoint,
-        _ => return k0_abi::err::BAD_TYPE,
-    };
-    let Ok(slot) = usize::try_from(slot) else {
-        return k0_abi::err::BAD_SLOT;
-    };
-    let g = k0_mm::GRANULE as u64;
-    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
-    let cnode = unsafe { k0_cap::root_mut() };
-    let r = cnode.retype(slot, kind, g, |pa| {
-        if k0_mm::map_kernel_window(pa..pa + g).is_err() {
-            return false;
-        }
-        // SAFETY: 방금 별칭 매핑을 마친 커널 전용 구간이며, 소거는 이전
-        //         내용의 누설을 차단함
-        unsafe {
-            core::ptr::write_bytes(
-                (pa + k0_mm::KERNEL_VA_OFFSET) as *mut u8,
-                0,
-                k0_mm::GRANULE,
-            );
-        }
-        true
-    });
-    match r {
-        Ok(new_slot) => new_slot as i64,
-        Err(k0_cap::RetypeError::BadSlot) => k0_abi::err::BAD_SLOT,
-        Err(k0_cap::RetypeError::NotUntyped) => k0_abi::err::NOT_UNTYPED,
-        Err(k0_cap::RetypeError::Exhausted) => k0_abi::err::EXHAUSTED,
-        Err(k0_cap::RetypeError::OutOfSlots) => k0_abi::err::OUT_OF_SLOTS,
-        Err(k0_cap::RetypeError::PrepFailed) => k0_abi::err::KERNEL_RESOURCE,
-    }
-}
-
-/// MAP 시스템 콜 처리 함수입니다.
-///
-/// 케이퍼빌리티 종류가 동작을 결정합니다. Frame은 리프 매핑(RO/RW만, 실행
-/// 매핑은 만들 수 없음), PageTable은 경로의 첫 빈 레벨에 설치입니다. 대상
-/// 주소 공간은 제시한 AddrSpace 케이퍼빌리티로만 정해지며 현재 설치된
-/// TTBR0는 참조하지 않습니다(암묵 권한 배제). 현재 공간이 아닌 테이블에
-/// 새 항목을 추가하는 것도 무효 항목의 유효화라 TLB 무효화가 필요 없습니다.
-///
-/// # Arguments
-/// `slot` - 케이퍼빌리티 슬롯(x0)
-/// `va` - 사용자 VA(x1)
-/// `perm` - Frame 권한(x2, PageTable은 무시)
-/// `aspace` - 대상 AddrSpace 슬롯(x3)
-fn sys_map(slot: u64, va: u64, perm: u64, aspace: u64) -> i64 {
-    let (Ok(slot), Ok(aspace)) = (usize::try_from(slot), usize::try_from(aspace)) else {
-        return k0_abi::err::BAD_SLOT;
-    };
-    // SAFETY: 단일 코어의 시스템 콜 컨텍스트(DAIF 마스크)라 접근이 배타적임
-    let cnode = unsafe { k0_cap::root_mut() };
-    let root = match cnode.cap(aspace) {
-        Some(k0_cap::Cap::AddrSpace { root_pa }) => root_pa,
-        Some(_) => return k0_abi::err::BAD_CAP,
-        None => return k0_abi::err::BAD_SLOT,
-    };
-    match cnode.cap_mut(slot) {
-        Some(k0_cap::Cap::Frame { base, mapped }) => {
-            if *mapped {
-                return k0_abi::err::ALREADY_MAPPED;
-            }
-            let perm = match perm {
-                k0_abi::perm::RO => k0_mm::UserPerm::RoUser,
-                k0_abi::perm::RW => k0_mm::UserPerm::RwUser,
-                _ => return k0_abi::err::BAD_PERM,
-            };
-            // SAFETY: root는 커널이 설치한 사용자 루트고, 걷게 되는 테이블은
-            //         전부 부트 윈도우 또는 재분류된(별칭 매핑된) 프레임임
-            match unsafe { k0_mm::user_map_frame(root, va, *base, perm) } {
-                Ok(()) => {
-                    *mapped = true;
-                    0
-                }
-                Err(e) => mmu_err(e),
-            }
-        }
-        Some(k0_cap::Cap::PageTable { base, installed }) => {
-            if *installed {
-                return k0_abi::err::ALREADY_MAPPED;
-            }
-            // SAFETY: 위와 동일하고 base는 retype이 소거한 전용 프레임임
-            match unsafe { k0_mm::user_install_table(root, va, *base) } {
-                Ok(_) => {
-                    *installed = true;
-                    0
-                }
-                Err(e) => mmu_err(e),
-            }
-        }
-        Some(_) => k0_abi::err::BAD_CAP,
-        None => k0_abi::err::BAD_SLOT,
-    }
-}
-
-/// 런타임 매핑 경로의 MmuError를 ABI 에러 코드로 바꾸는 함수입니다.
-///
-/// # Errors
-/// `BadTable`은 페이지 테이블 손상을 의미하므로 fail-secure 파킹합니다
-fn mmu_err(e: k0_mm::MmuError) -> i64 {
-    match e {
-        k0_mm::MmuError::Misaligned | k0_mm::MmuError::NullPage => k0_abi::err::BAD_VA,
-        k0_mm::MmuError::Overlap => k0_abi::err::OVERLAP,
-        k0_mm::MmuError::MissingTable => k0_abi::err::MISSING_TABLE,
-        k0_mm::MmuError::BadTable => {
-            let mut con = EarlyCon;
-            let _ = writeln!(con, "k0: user page table corrupt");
-            park()
-        }
-        _ => k0_abi::err::KERNEL_RESOURCE,
-    }
-}
-
-/// 케이퍼빌리티 목록을 bootinfo 페이지에 기록하는 함수입니다.
-///
-/// 페이지는 EL0에 RO로 매핑돼 있고 커널은 TTBR1 별칭으로 씁니다. untyped만
-/// base/size를 노출하고 나머지 종류는 커널 내부 주소를 숨깁니다(0).
+/// 페이지는 EL0에 RO로 매핑돼 있고 커널은 TTBR1 별칭으로 씁니다. 0번부터
+/// `count - 1`번 슬롯까지 하나씩 서술합니다. untyped는 물리 구간을, 이미지
+/// Frame은 루트 주소 공간에서의 VA와 권한을 알려 주고, 나머지 종류는 커널
+/// 내부 주소를 숨깁니다(0).
 ///
 /// # Arguments
 /// `frame_pa` - bootinfo 페이지 프레임의 PA(부트 윈도우에서 할당)
 /// `cnode` - 부트스트랩을 마친 루트 CNode
-fn write_bootinfo(frame_pa: u64, cnode: &k0_cap::CNode) {
+/// `count` - 서술할 슬롯 수(첫 빈 슬롯 번호)
+/// `image` - 이미지 프레임의 PA를 VA로 바꾸기 위한 배치
+///
+/// # Errors
+/// 디스크립터가 페이지 하나에 들어가지 않으면 false를 반환하며, 호출자는
+/// 부팅을 중단해야 합니다
+fn write_bootinfo(frame_pa: u64, cnode: &k0_cap::CNodeRef, count: u64, image: &ImageMap) -> bool {
     use k0_abi::bootinfo::{cap_kind, CapDesc, Header, VERSION};
+    use k0_cap::Cap;
 
-    // 슬롯 전수가 페이지 하나에 들어가는지 컴파일 시점에 강제
-    const _: () = assert!(
-        size_of::<Header>() + k0_cap::CNODE_SLOTS * size_of::<CapDesc>() <= k0_mm::GRANULE
-    );
+    let capacity = ((k0_mm::GRANULE - size_of::<Header>()) / size_of::<CapDesc>()) as u64;
+    if count > capacity {
+        return false;
+    }
+    let plain = |kind| CapDesc {
+        kind,
+        base: 0,
+        size: 0,
+        rights: 0,
+    };
 
     let hdr = (frame_pa + k0_mm::KERNEL_VA_OFFSET) as *mut Header;
     // SAFETY: 프레임은 부트 윈도우에서 할당돼 별칭 매핑이 있고, EL0에는 RO라
-    //         이 기록 경로가 유일한 쓰기임
+    //         이 기록 경로가 유일한 쓰기임. count가 페이지 용량 안임을 위에서
+    //         확인함
     unsafe {
         hdr.write(Header {
             version: VERSION,
             frame_size: k0_mm::GRANULE as u64,
-            cap_count: cnode.slots().len() as u64,
+            cap_count: count,
+            cnode_slots: cnode.len() as u64,
         });
         let descs = hdr.add(1) as *mut CapDesc;
-        for (i, cap) in cnode.slots().iter().enumerate() {
-            let d = match cap {
-                k0_cap::Cap::Empty => CapDesc {
-                    kind: cap_kind::EMPTY,
-                    base: 0,
-                    size: 0,
-                },
-                k0_cap::Cap::RootTcb | k0_cap::Cap::Tcb { .. } => CapDesc {
-                    kind: cap_kind::TCB,
-                    base: 0,
-                    size: 0,
-                },
-                k0_cap::Cap::AddrSpace { .. } => CapDesc {
-                    kind: cap_kind::ADDR_SPACE,
-                    base: 0,
-                    size: 0,
-                },
-                k0_cap::Cap::Console => CapDesc {
-                    kind: cap_kind::CONSOLE,
-                    base: 0,
-                    size: 0,
-                },
-                k0_cap::Cap::Untyped { base, size, .. } => CapDesc {
-                    kind: cap_kind::UNTYPED,
-                    base: *base,
-                    size: *size,
-                },
-                k0_cap::Cap::Frame { .. } => CapDesc {
-                    kind: cap_kind::FRAME,
-                    base: 0,
-                    size: 0,
-                },
-                k0_cap::Cap::PageTable { .. } => CapDesc {
-                    kind: cap_kind::PAGE_TABLE,
-                    base: 0,
-                    size: 0,
-                },
-                k0_cap::Cap::Endpoint { .. } => CapDesc {
-                    kind: cap_kind::ENDPOINT,
-                    base: 0,
-                    size: 0,
-                },
+        for i in 0..count {
+            let entry = match cnode.slot(i).map(|s| k0_cap::read(s)) {
+                Some(Ok(e)) => e,
+                Some(Err(_)) => return false,
+                None => None, // 0번 슬롯
             };
-            descs.add(i).write(d);
+            let d = match entry.map(|e| e.cap) {
+                None => plain(cap_kind::EMPTY),
+                Some(Cap::Tcb { .. }) => plain(cap_kind::TCB),
+                Some(Cap::AddrSpace { .. }) => plain(cap_kind::ADDR_SPACE),
+                Some(Cap::Console) => plain(cap_kind::CONSOLE),
+                Some(Cap::CNode { .. }) => plain(cap_kind::CNODE),
+                Some(Cap::PageTable { .. }) => plain(cap_kind::PAGE_TABLE),
+                Some(Cap::Endpoint { .. }) => plain(cap_kind::ENDPOINT),
+                Some(Cap::Untyped { base, size, .. }) => CapDesc {
+                    kind: cap_kind::UNTYPED,
+                    base,
+                    size,
+                    rights: 0,
+                },
+                Some(Cap::Frame { base, rights, .. }) => {
+                    // 이미지 프레임만 부트 시점에 존재함. PA 대신 루트 주소
+                    // 공간에서의 VA를 알려 줌
+                    if base < image.pa || base - image.pa >= image.len {
+                        return false;
+                    }
+                    CapDesc {
+                        kind: cap_kind::FRAME,
+                        base: image.va + (base - image.pa),
+                        size: k0_mm::GRANULE as u64,
+                        rights: u64::from(rights),
+                    }
+                }
+            };
+            descs.add(i as usize).write(d);
         }
     }
+    true
 }
 
 /// 링커 심볼의 주소를 물리 주소로 환산하는 함수입니다.
@@ -810,7 +591,8 @@ fn device_windows() -> [Range<u64>; 3] {
     [uart..uart + granule, 0..0, 0..0] // AIC는 필요해질 때 추가 ㄱㄱ
 }
 
-/// DTB 메모리 맵이 커널의 MMIO 창과 겹치지 않는지 검증하는 함수입니다.
+/// DTB 메모리 맵이 커널의 MMIO 창과 겹치지 않고 이 코어의 물리 주소 폭
+/// 안에 있는지 검증하는 함수입니다.
 ///
 /// 메모리 노드는 그대로 untyped가 되어 EL0에 매핑될 수 있으므로, MMIO를
 /// 메모리라고 주장하는 DTB는 사용자 공간에 디바이스 접근을 열어 주는

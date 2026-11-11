@@ -24,6 +24,11 @@ fn syscall_numbers_are_unique_and_dense() {
         syscall::RECV,
         syscall::CALL,
         syscall::REPLY_RECV,
+        syscall::UNMAP,
+        syscall::CAP_COPY,
+        syscall::CAP_MOVE,
+        syscall::CAP_DELETE,
+        syscall::CAP_REVOKE,
     ];
     assert_unique(&nrs.map(i128::from));
     for (i, nr) in nrs.iter().enumerate() {
@@ -37,7 +42,7 @@ fn error_codes_are_unique_and_negative() {
         err::BAD_SLOT,
         err::NOT_UNTYPED,
         err::EXHAUSTED,
-        err::OUT_OF_SLOTS,
+        err::OCCUPIED,
         err::BAD_TYPE,
         err::BAD_VA,
         err::BAD_PERM,
@@ -49,6 +54,10 @@ fn error_codes_are_unique_and_negative() {
         err::BAD_STATE,
         err::WOULD_BLOCK,
         err::NO_REPLY,
+        err::NO_RIGHTS,
+        err::REVOKED,
+        err::BAD_BADGE,
+        err::TOO_DEEP,
     ];
     assert_unique(&errs.map(i128::from));
     for e in errs {
@@ -59,15 +68,44 @@ fn error_codes_are_unique_and_negative() {
 
 #[test]
 fn object_types_exclude_zero() {
-    let kinds = [obj::FRAME, obj::PAGE_TABLE, obj::TCB, obj::ENDPOINT];
+    let kinds = [
+        obj::FRAME,
+        obj::PAGE_TABLE,
+        obj::TCB,
+        obj::ENDPOINT,
+        obj::CNODE,
+        obj::ADDR_SPACE,
+    ];
     assert_unique(&kinds.map(i128::from));
     assert!(kinds.iter().all(|&k| k != 0));
 }
 
 #[test]
-fn frame_permissions_are_read_only_or_read_write() {
+fn frame_permission_values_are_stable_and_distinct() {
     assert_eq!(perm::RO, 0);
     assert_eq!(perm::RW, 1);
+    assert_eq!(perm::RX, 2);
+    assert_unique(&[perm::RO, perm::RW, perm::RX].map(i128::from));
+}
+
+#[test]
+fn rights_are_distinct_bits() {
+    let bits = [rights::R, rights::W, rights::X];
+    for b in bits {
+        assert_eq!(b.count_ones(), 1);
+    }
+    assert_eq!(rights::ALL, rights::R | rights::W | rights::X);
+    assert_eq!(rights::ALL, 7);
+}
+
+#[test]
+fn fixed_boot_slots_skip_the_null_slot() {
+    use bootinfo::slot::*;
+    let slots = [TCB, ADDR_SPACE, CONSOLE, CNODE];
+    assert_unique(&slots.map(i128::from));
+    for (i, s) in slots.iter().enumerate() {
+        assert_eq!(*s, i as u64 + 1);
+    }
 }
 
 #[test]
@@ -77,14 +115,17 @@ fn nonblock_is_a_single_flag_bit() {
 
 #[test]
 fn bootinfo_layout_is_stable() {
-    assert_eq!(size_of::<bootinfo::Header>(), 24);
+    assert_eq!(bootinfo::VERSION, 2);
+    assert_eq!(size_of::<bootinfo::Header>(), 32);
     assert_eq!(offset_of!(bootinfo::Header, version), 0);
     assert_eq!(offset_of!(bootinfo::Header, frame_size), 8);
     assert_eq!(offset_of!(bootinfo::Header, cap_count), 16);
-    assert_eq!(size_of::<bootinfo::CapDesc>(), 24);
+    assert_eq!(offset_of!(bootinfo::Header, cnode_slots), 24);
+    assert_eq!(size_of::<bootinfo::CapDesc>(), 32);
     assert_eq!(offset_of!(bootinfo::CapDesc, kind), 0);
     assert_eq!(offset_of!(bootinfo::CapDesc, base), 8);
     assert_eq!(offset_of!(bootinfo::CapDesc, size), 16);
+    assert_eq!(offset_of!(bootinfo::CapDesc, rights), 24);
 }
 
 #[test]
@@ -97,7 +138,9 @@ fn bootinfo_page_is_aligned_for_both_granules() {
 #[test]
 fn cap_kinds_are_unique() {
     use bootinfo::cap_kind::*;
-    let kinds = [EMPTY, TCB, ADDR_SPACE, UNTYPED, FRAME, PAGE_TABLE, ENDPOINT, CONSOLE];
+    let kinds = [
+        EMPTY, TCB, ADDR_SPACE, UNTYPED, FRAME, PAGE_TABLE, ENDPOINT, CONSOLE, CNODE,
+    ];
     assert_unique(&kinds.map(i128::from));
     assert_eq!(EMPTY, 0);
 }

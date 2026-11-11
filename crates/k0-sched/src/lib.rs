@@ -12,21 +12,21 @@
 //! 대기 큐나 reply 링크)에서 재우고, 깨우기는 [enqueue]입니다.
 //!
 //! # Errors
-//! 전환 대상이 없으면 현재 태스크가 그대로 계속됩니다(에러 아님). 마지막
-//! 태스크의 종료는 [exit_current]가 false를 반환해 호출자(커널 정책)가
-//! fail-secure 파킹하게 합니다.
+//! 전환 대상이 없으면 현재 태스크가 그대로 계속됩니다(에러 아님). 현재
+//! 태스크가 종료됐거나 블록됐는데 준비된 태스크가 없으면
+//! [block_and_switch]가 false를 반환해 호출자(커널 정책)가 fail-secure
+//! 파킹하게 합니다.
 
 #![no_std]
 
 use core::cell::UnsafeCell;
 
-use k0_task::{TaskState, Tcb};
+use k0_task::{TaskState, Tcb, TcbQueue};
 
-/// 스케줄러 상태 구조체입니다. 값은 전부 TCB의 커널 VA(0 = 없음)입니다.
+/// 스케줄러 상태 구조체입니다. `current`는 TCB의 커널 VA(0 = 없음)입니다.
 struct Sched {
     current: u64,
-    head: u64,
-    tail: u64,
+    ready: TcbQueue,
 }
 
 struct SyncCell(UnsafeCell<Sched>);
@@ -38,8 +38,7 @@ unsafe impl Sync for SyncCell {}
 
 static SCHED: SyncCell = SyncCell(UnsafeCell::new(Sched {
     current: 0,
-    head: 0,
-    tail: 0,
+    ready: TcbQueue::new(),
 }));
 
 /// 준비 큐 꼬리에 TCB를 붙이는 함수입니다.
@@ -50,14 +49,8 @@ unsafe fn push(s: &mut Sched, tcb: *mut Tcb) {
     // SAFETY: 함수 계약대로 tcb는 유효하고 큐 밖에 있음
     unsafe {
         (*tcb).state = TaskState::Ready;
-        (*tcb).next = 0;
-        if s.tail == 0 {
-            s.head = tcb as u64;
-        } else {
-            (*(s.tail as *mut Tcb)).next = tcb as u64;
-        }
+        s.ready.push(tcb);
     }
-    s.tail = tcb as u64;
 }
 
 /// 준비 큐 머리를 꺼내는 함수입니다. 비어 있으면 0
@@ -65,19 +58,8 @@ unsafe fn push(s: &mut Sched, tcb: *mut Tcb) {
 /// # Safety
 /// 큐의 링크들이 유효한 TCB를 가리켜야 합니다.
 unsafe fn pop(s: &mut Sched) -> u64 {
-    let head = s.head;
-    if head == 0 {
-        return 0;
-    }
-    // SAFETY: 함수 계약대로 head는 유효한 TCB임
-    unsafe {
-        s.head = (*(head as *mut Tcb)).next;
-        (*(head as *mut Tcb)).next = 0;
-    }
-    if s.head == 0 {
-        s.tail = 0;
-    }
-    head
+    // SAFETY: 함수 계약을 큐로 중계함
+    unsafe { s.ready.pop() as u64 }
 }
 
 /// 다음 태스크로 실행 문맥을 전환하는 함수입니다.
@@ -202,25 +184,33 @@ pub unsafe fn block_and_switch() -> bool {
     true
 }
 
-/// 현재 태스크를 종료하고 다음 태스크로 넘어가는 함수입니다.
+/// 준비 큐에 있는 TCB를 큐에서 빼내는 함수입니다.
+///
+/// 준비 상태의 태스크가 종료 처리될 때 씁니다. 상태는 호출자가 바꿉니다.
 ///
 /// # Errors
-/// 마지막 태스크였다면 false를 반환하며, 호출자는 fail-secure 파킹해야
-/// 합니다
+/// 큐 링크가 어긋나 있으면 false를 반환합니다. 큐 손상이므로 호출자는
+/// fail-secure 정지해야 합니다
 ///
 /// # Safety
-/// [rotate]와 동일합니다.
-pub unsafe fn exit_current() -> bool {
+/// 시스템 콜 컨텍스트여야 하고 `tcb`는 준비 큐에 든 유효한 TCB여야 합니다.
+#[must_use]
+pub unsafe fn remove_ready(tcb: *mut Tcb) -> bool {
     // SAFETY: 함수 계약대로 접근이 배타적임
     let s = unsafe { &mut *SCHED.0.get() };
-    // SAFETY: current는 유효한 TCB임
-    unsafe { (*(s.current as *mut Tcb)).state = TaskState::Dead };
-    // SAFETY: 큐 링크는 유효함
-    let next = unsafe { pop(s) };
-    if next == 0 {
-        return false;
+    // SAFETY: 함수 계약을 큐로 중계함
+    unsafe { s.ready.remove(tcb) }
+}
+
+/// 현재 태스크가 이번 커널 진입 중에 종료됐는지 확인하는 함수입니다.
+///
+/// # Safety
+/// 이양 후의 시스템 콜/IRQ 컨텍스트에서만 호출해야 합니다.
+pub unsafe fn current_is_dead() -> bool {
+    // SAFETY: 함수 계약대로 접근이 배타적이고 current는 유효한 TCB임. 종료된
+    //         TCB의 메모리도 이번 커널 진입이 끝날 때까지는 재사용되지 않음
+    unsafe {
+        let s = &mut *SCHED.0.get();
+        (*(s.current as *mut Tcb)).state == TaskState::Dead
     }
-    // SAFETY: next는 방금 큐에서 나온 유효한 TCB임
-    unsafe { switch_to(s, next) };
-    true
 }
