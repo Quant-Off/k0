@@ -1,6 +1,10 @@
 # Kernel page tables and W^X
 
-[한국어](memory_KR.md)
+<div align="center">
+
+English | [한국어](../kr/memory_KR.md)
+
+</div>
 
 This note describes how the kernel maps itself: the translation setup, the static table pool, the permission scheme, and the checks that confirm the result at boot. The code is in `crates/k0-mm/src/paging.rs`. User address spaces are covered in [user-address-space.md](user-address-space.md).
 

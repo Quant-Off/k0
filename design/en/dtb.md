@@ -1,6 +1,10 @@
 # The device tree as untrusted input
 
-[한국어](dtb_KR.md)
+<div align="center">
+
+English | [한국어](../kr/dtb_KR.md)
+
+</div>
 
 The bootloader passes K0 a flattened device tree (DTB) that describes the machine: how much RAM exists and where, which ranges the firmware has reserved, and some boot entropy. K0 treats this blob as hostile input. This note explains why, what the parser reads, and how it is tested. The parser is `crates/k0-boot/src/fdt.rs`.
 
@@ -74,5 +78,5 @@ The default test run executes 20,000 cases. CI runs five million cases every wee
 
 ## Known gaps
 
-- The parser itself does not know the CPU's physical address width. The check against it is in `check_memory_map` in `kernel/src/main.rs`, after parsing. See advisory GHSA-hj3f-38h9-hrpj in [SECURITY.md](../SECURITY.md) for its status. A DTB controlled by an attacker can still stop the boot, which is the intended fail-secure result.
+- The parser itself does not know the CPU's physical address width. The check against it is in `check_memory_map` in `kernel/src/main.rs`, after parsing. See advisory GHSA-hj3f-38h9-hrpj in [SECURITY.md](../../SECURITY.md) for its status. A DTB controlled by an attacker can still stop the boot, which is the intended fail-secure result.
 - The MMIO overlap check knows only the windows the kernel maps for itself. A DTB that describes some other device range as RAM is not caught, because the kernel has no independent list of devices.

@@ -1,6 +1,10 @@
 # Synchronous IPC
 
-[한국어](ipc_KR.md)
+<div align="center">
+
+English | [한국어](../kr/ipc_KR.md)
+
+</div>
 
 This note describes K0's inter-process communication: endpoints, the four IPC system calls, and the badge that tells a server its clients apart, and the single-use reply right that makes `CALL` safe. The code is in `crates/k0-ipc/src/lib.rs`, with the endpoint queue in `crates/k0-task/src/lib.rs`.
 
@@ -66,7 +70,7 @@ When the original capability of an endpoint is deleted, every task still queued 
 
 A task that has to wait is marked with its blocked state, linked into the endpoint queue or held by a reply right, and then the scheduler switches to the next ready task (see [scheduling.md](scheduling.md)). Its return registers are written later, by the task that releases it.
 
-If no task is ready at that point, every task is blocked and nothing can ever wake one, because K0 does not yet have notification objects for interrupts. The kernel prints `k0: all tasks blocked` and parks the core. Stopping the whole system is the fail-secure choice here, but it is also advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../SECURITY.md): one task can halt the machine by blocking last. This is unchanged by task isolation. A confined task that holds a capability to an endpoint can still do it, and isolation does not cover availability.
+If no task is ready at that point, every task is blocked and nothing can ever wake one, because K0 does not yet have notification objects for interrupts. The kernel prints `k0: all tasks blocked` and parks the core. Stopping the whole system is the fail-secure choice here, but it is also advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md): one task can halt the machine by blocking last. This is unchanged by task isolation. A confined task that holds a capability to an endpoint can still do it, and isolation does not cover availability.
 
 ## Errors
 

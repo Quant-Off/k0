@@ -1,6 +1,10 @@
 # 커널 페이지 테이블과 W^X
 
-[English](memory.md)
+<div align="center">
+
+[English](../en/memory.md) | 한국어
+
+</div>
 
 이 노트는 커널이 자기 자신을 매핑하는 방법을 설명합니다. 변환 설정, 정적 테이블 풀, 권한 체계, 그리고 부팅 때 결과를 확인하는 검사를 다룹니다. 코드는 `crates/k0-mm/src/paging.rs`에 있습니다. 사용자 주소 공간은 [user-address-space_KR.md](user-address-space_KR.md)에서 다룹니다.
 

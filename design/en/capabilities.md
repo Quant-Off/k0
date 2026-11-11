@@ -1,6 +1,10 @@
 # Capabilities, untyped memory and retype
 
-[한국어](capabilities_KR.md)
+<div align="center">
+
+English | [한국어](../kr/capabilities_KR.md)
+
+</div>
 
 This note describes K0's capability model as it exists on the current `main` branch (unreleased): the slot format, per-task CNodes, how free memory becomes untyped capabilities at boot, how user space turns untyped memory into kernel objects with `RETYPE`, the derivation list, and what copying, moving, deleting and revoking do. The bookkeeping is in `crates/k0-cap/src/lib.rs`. The system call layer is in `kernel/src/syscall.rs`, object finalization is in `kernel/src/object.rs`, and the numbers and error codes are in `crates/k0-abi/src/lib.rs`, which is the source of truth for the ABI.
 
@@ -207,7 +211,7 @@ The 16 KiB build is compiled and host-tested only. It has not been booted.
 
 ## Known gaps
 
-- **Availability is not isolated.** If every task is blocked, the kernel still parks the core (see GHSA-q99x-2wrv-358p in [SECURITY.md](../SECURITY.md)), and a confined task can cause this by blocking last. A task that holds a lot of untyped memory can exhaust the static pool of 32 kernel page tables used for alias mappings (then `RETYPE` fails with `KERNEL_RESOURCE` for everyone), or the address space registry.
+- **Availability is not isolated.** If every task is blocked, the kernel still parks the core (see GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md)), and a confined task can cause this by blocking last. A task that holds a lot of untyped memory can exhaust the static pool of 32 kernel page tables used for alias mappings (then `RETYPE` fails with `KERNEL_RESOURCE` for everyone), or the address space registry.
 - **No transfer.** Capabilities cannot be sent over IPC. Tasks get capabilities only by `CAP_COPY` and `CAP_MOVE` into a CNode they already hold.
 - **A queued sender delivers once more.** A sender already queued on an endpoint still delivers its message once after its capability is revoked.
 - **Not in the model yet.** No notifications, no fault delivery to a handler task, no timeouts, one core.

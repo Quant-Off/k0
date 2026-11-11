@@ -1,6 +1,10 @@
 # User address spaces
 
-[한국어](user-address-space_KR.md)
+<div align="center">
+
+English | [한국어](../kr/user-address-space_KR.md)
+
+</div>
 
 This note describes how K0 builds the root task's address space at boot, how user space creates further address spaces with `RETYPE`, and how it fills them with `MAP` and `UNMAP`. The code is in `crates/k0-mm/src/user.rs`, `crates/k0-task/src/lib.rs` (`spawn_root`), `sys_retype`, `sys_map` and `sys_unmap` in `kernel/src/syscall.rs`, and the cleanup on capability removal in `kernel/src/object.rs`. This describes the current `main` branch (unreleased).
 
@@ -127,7 +131,7 @@ When the CPU has FEAT_PAN, the kernel runs with PAN set, so any EL1 access throu
 
 ## Known gaps
 
-- Isolation does not cover availability. If every task is blocked, the kernel parks the core (see [SECURITY.md](../SECURITY.md)), and a confined task can cause this by blocking last.
+- Isolation does not cover availability. If every task is blocked, the kernel parks the core (see [SECURITY.md](../../SECURITY.md)), and a confined task can cause this by blocking last.
 - The registry holds at most `MAX_ADDR_SPACES` address spaces. The kernel alias of every retyped object uses a static pool of kernel page tables. A task holding a lot of untyped memory can exhaust that pool, and then `RETYPE` fails with `KERNEL_RESOURCE` for everyone.
 - No new executable code can be loaded after boot, by design (per-frame W^X). A confined task can only run code from the root task image.
 - There are no hardware ASIDs, so every `TTBR0` switch and every unmap flushes the whole TLB. This costs performance, not safety.

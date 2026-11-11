@@ -1,6 +1,10 @@
 # 예외, 시스템 콜, 폴트 격리
 
-[English](exceptions.md)
+<div align="center">
+
+[English](../en/exceptions.md) | 한국어
+
+</div>
 
 이양 이후 커널 코드는 예외에 응답할 때만 실행됩니다. 이 문서는 벡터 테이블, 사용자 상태를 저장하고 복원하는 방법, 시스템 콜을 디스패치하는 방법, 폴트를 일으킨 태스크를 격리하는 방법을 설명합니다. 코드는 `crates/k0-arch/src/vectors.S`, `vectors.rs`, `usermode.rs`, `irq.rs`, 그리고 `kernel/src/syscall.rs`의 `k0_syscall`, `k0_fault`, `k0_preempt`, `finish`에 있습니다. 이 문서는 현재 `main` 브랜치(미배포)를 기준으로 합니다.
 

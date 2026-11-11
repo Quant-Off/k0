@@ -1,6 +1,10 @@
 # Exceptions, system calls and fault isolation
 
-[한국어](exceptions_KR.md)
+<div align="center">
+
+English | [한국어](../kr/exceptions_KR.md)
+
+</div>
 
 After the handoff, kernel code runs only in response to an exception. This note describes the vector table, how user state is saved and restored, how system calls are dispatched, and how a faulting task is contained. The code is in `crates/k0-arch/src/vectors.S`, `vectors.rs`, `usermode.rs` and `irq.rs`, and in `k0_syscall`, `k0_fault`, `k0_preempt` and `finish` in `kernel/src/syscall.rs`. The note describes the current `main` branch (unreleased).
 

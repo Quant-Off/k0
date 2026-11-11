@@ -1,6 +1,6 @@
 # 부팅과 higher-half로의 점프
 
-[English](boot.md)
+[English](../en/boot.md)
 
 이 노트는 첫 명령에서 루트 태스크가 EL0에서 실행되는 순간까지 K0를 따라갑니다. `kernel/src/arch/aarch64/boot.S`, `kernel/src/main.rs`의 `kernel_init`과 `kernel_main`, 링커 스크립트 `kernel/virt.ld`와 `kernel/apple.ld`를 다룹니다.
 

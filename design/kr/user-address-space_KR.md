@@ -1,6 +1,10 @@
 # 사용자 주소 공간
 
-[English](user-address-space.md)
+<div align="center">
+
+[English](../en/user-address-space.md) | 한국어
+
+</div>
 
 이 노트는 K0가 부팅할 때 루트 태스크의 주소 공간을 어떻게 만들고, 사용자 공간이 `RETYPE`으로 추가 주소 공간을 어떻게 만들며, `MAP`과 `UNMAP`으로 어떻게 채우는지 설명합니다. 코드는 `crates/k0-mm/src/user.rs`, `crates/k0-task/src/lib.rs`(`spawn_root`), `kernel/src/syscall.rs`의 `sys_retype`·`sys_map`·`sys_unmap`, 케이퍼빌리티 제거 시의 정리를 맡는 `kernel/src/object.rs`에 있습니다. 설명 대상은 현재 `main` 브랜치(미배포)입니다.
 
@@ -127,7 +131,7 @@ CPU에 FEAT_PAN이 있으면 커널은 PAN을 설정한 채 실행되므로, 사
 
 ## 알려진 공백
 
-- 격리는 가용성을 포함하지 않습니다. 모든 태스크가 막히면 커널은 코어를 파킹하며([SECURITY_KR.md](../SECURITY_KR.md) 참고), 격리된 태스크가 마지막으로 막힘으로써 이를 일으킬 수 있습니다.
+- 격리는 가용성을 포함하지 않습니다. 모든 태스크가 막히면 커널은 코어를 파킹하며([SECURITY_KR.md](../../SECURITY_KR.md) 참고), 격리된 태스크가 마지막으로 막힘으로써 이를 일으킬 수 있습니다.
 - 등록부는 최대 `MAX_ADDR_SPACES`개의 주소 공간을 담습니다. retype된 모든 오브젝트의 커널 별칭은 정적 커널 페이지 테이블 풀을 씁니다. untyped 메모리를 많이 가진 태스크가 이 풀을 고갈시키면 모두에게 `RETYPE`이 `KERNEL_RESOURCE`로 실패합니다.
 - 설계상(프레임 단위 W^X) 부팅 이후에는 새 실행 코드를 적재할 수 없습니다. 격리된 태스크는 루트 태스크 이미지의 코드만 실행할 수 있습니다.
 - 하드웨어 ASID가 없으므로 `TTBR0` 전환과 모든 매핑 해제마다 TLB 전체를 비웁니다. 안전이 아니라 성능의 비용입니다.

@@ -1,5 +1,11 @@
 # Security Policy
 
+<div align="center">
+
+English | [한국어](SECURITY_KR.md)
+
+</div>
+
 K0 is a pre-release research microkernel. The released version has no task isolation, the unreleased `main` branch has it but with the limits described below, and those gaps are security relevant. Read this document before running any code on K0 that you do not fully trust.
 
 ## Supported versions

@@ -1,6 +1,10 @@
 # Tasks and scheduling
 
-[한국어](scheduling_KR.md)
+<div align="center">
+
+English | [한국어](../kr/scheduling_KR.md)
+
+</div>
 
 This note describes how K0 represents a task, how user space creates, starts and tears down tasks, and how the round-robin scheduler switches between them. The code is in `crates/k0-task/src/lib.rs`, `crates/k0-sched/src/lib.rs`, `teardown` in `crates/k0-ipc/src/lib.rs`, and `sys_tcb_configure`, `sys_tcb_resume`, `kill_current` and `finish` in `kernel/src/syscall.rs`. The note describes the current `main` branch (unreleased).
 
@@ -110,7 +114,7 @@ A dead task's frame is not freed by teardown. It stays a `Dead` TCB, and `TCB_CO
 ## When there is nothing left to run
 
 - If the current task died during a kernel entry and no task is ready, `finish` prints `k0: all tasks exited` and parks the core.
-- If the current task blocks in IPC and no task is ready, `block_and_switch` reports it, and the kernel prints `k0: all tasks blocked` and parks. No other event can wake a task today, because notification objects do not exist yet. This is advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../SECURITY.md). Task isolation does not change this: a confined task that is the last one to block can still park the whole system. Isolation protects confidentiality and integrity between tasks, not availability.
+- If the current task blocks in IPC and no task is ready, `block_and_switch` reports it, and the kernel prints `k0: all tasks blocked` and parks. No other event can wake a task today, because notification objects do not exist yet. This is advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md). Task isolation does not change this: a confined task that is the last one to block can still park the whole system. Isolation protects confidentiality and integrity between tasks, not availability.
 
 Parking is a `wfe` loop inside the kernel, which runs with interrupts masked.
 

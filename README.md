@@ -68,7 +68,7 @@ CI runs the same tests on x86-64 and AArch64 inside containers with networking d
 
 ## Design notes
 
-The [design notes](design/README.md) explain each subsystem: how it works, why it is built that way, how it is tested, and what is still missing.
+The [design notes](design/en/README.md) explain each subsystem: how it works, why it is built that way, how it is tested, and what is still missing.
 
 ## Repository layout
 

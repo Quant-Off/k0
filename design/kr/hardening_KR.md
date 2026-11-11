@@ -1,6 +1,10 @@
 # 부트 하드닝: PAC, PAN, EL0 노출, 루트 태스크 무결성
 
-[English](hardening.md)
+<div align="center">
+
+[English](../en/hardening.md) | 한국어
+
+</div>
 
 이 문서는 K0가 부팅 시 켜는 CPU 보안 기능, 각 기능이 현재 무엇을 보호하고 무엇을 아직 보호하지 못하는지, 내장된 루트 태스크 이미지를 어떻게 검사하는지를 다룹니다. 코드는 `crates/k0-arch/src/hardening.rs`, `crates/k0-boot/src/entropy.rs`, `crates/k0-boot/src/roottask.rs`, `crates/k0-boot/build.rs`, 그리고 `kernel/src/main.rs`의 부팅 경로에 있습니다.
 

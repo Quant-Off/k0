@@ -1,6 +1,10 @@
 # 신뢰하지 않는 입력으로서의 디바이스 트리
 
-[English](dtb.md)
+<div align="center">
+
+[English](../en/dtb.md) | 한국어
+
+</div>
 
 부트로더는 K0에 머신을 설명하는 flattened 디바이스 트리(DTB)를 넘깁니다. RAM이 얼마나 어디에 있는지, 펌웨어가 어떤 구간을 예약했는지, 부팅 엔트로피 일부가 들어 있습니다. K0는 이 블롭을 적대적 입력으로 취급합니다. 이 문서는 그 이유, 파서가 읽는 내용, 테스트 방법을 설명합니다. 파서는 `crates/k0-boot/src/fdt.rs`에 있습니다.
 
@@ -74,5 +78,5 @@ MMU가 켜진 상태에서 커널이 블롭을 읽으려면 먼저 매핑해야 
 
 ## 알려진 공백
 
-- 파서 자체는 CPU의 물리 주소 폭을 모릅니다. 그에 대한 검사는 파싱 뒤 `kernel/src/main.rs`의 `check_memory_map`에 있습니다. 상태는 [SECURITY_KR.md](../SECURITY_KR.md)의 어드바이저리 GHSA-hj3f-38h9-hrpj를 참고하세요. 공격자가 제어하는 DTB는 여전히 부팅을 멈출 수 있으며, 이것이 의도한 fail-secure 결과입니다.
+- 파서 자체는 CPU의 물리 주소 폭을 모릅니다. 그에 대한 검사는 파싱 뒤 `kernel/src/main.rs`의 `check_memory_map`에 있습니다. 상태는 [SECURITY_KR.md](../../SECURITY_KR.md)의 어드바이저리 GHSA-hj3f-38h9-hrpj를 참고하세요. 공격자가 제어하는 DTB는 여전히 부팅을 멈출 수 있으며, 이것이 의도한 fail-secure 결과입니다.
 - MMIO 겹침 검사는 커널이 스스로 매핑하는 윈도우만 압니다. 다른 디바이스 구간을 RAM으로 기술하는 DTB는 잡아내지 못합니다. 커널에 독립적인 디바이스 목록이 없기 때문입니다.

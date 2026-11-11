@@ -1,6 +1,10 @@
 # Boot hardening: PAC, PAN, EL0 exposure and root task integrity
 
-[한국어](hardening_KR.md)
+<div align="center">
+
+English | [한국어](../kr/hardening_KR.md)
+
+</div>
 
 This note covers the CPU security features K0 turns on at boot, what each one protects today and what it does not yet protect, and how the embedded root task image is checked. The code is in `crates/k0-arch/src/hardening.rs`, `crates/k0-boot/src/entropy.rs`, `crates/k0-boot/src/roottask.rs`, `crates/k0-boot/build.rs` and the boot path in `kernel/src/main.rs`.
 

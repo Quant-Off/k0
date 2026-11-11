@@ -1,6 +1,10 @@
 # Boot and the jump to the higher half
 
-[한국어](boot_KR.md)
+<div align="center">
+
+English | [한국어](../kr/boot_KR.md)
+
+</div>
 
 This note follows K0 from the first instruction to the moment the root task runs at EL0. It covers `kernel/src/arch/aarch64/boot.S`, `kernel_init` and `kernel_main` in `kernel/src/main.rs`, and the linker scripts `kernel/virt.ld` and `kernel/apple.ld`.
 

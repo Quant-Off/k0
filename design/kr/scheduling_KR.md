@@ -1,6 +1,10 @@
 # 태스크와 스케줄링
 
-[English](scheduling.md)
+<div align="center">
+
+[English](../en/scheduling.md) | 한국어
+
+</div>
 
 이 문서는 K0가 태스크를 표현하는 방법, 사용자 공간이 태스크를 만들고 시작하고 정리하는 방법, 라운드 로빈 스케줄러가 태스크 사이를 전환하는 방법을 설명합니다. 코드는 `crates/k0-task/src/lib.rs`, `crates/k0-sched/src/lib.rs`, `crates/k0-ipc/src/lib.rs`의 `teardown`, 그리고 `kernel/src/syscall.rs`의 `sys_tcb_configure`, `sys_tcb_resume`, `kill_current`, `finish`에 있습니다. 이 문서는 현재 `main` 브랜치(미배포)를 기준으로 합니다.
 
@@ -110,7 +114,7 @@
 ## 실행할 태스크가 없을 때
 
 - 커널 진입 중에 현재 태스크가 죽었는데 준비된 태스크가 없으면 `finish`가 `k0: all tasks exited`를 출력하고 코어를 파킹합니다.
-- 현재 태스크가 IPC에서 블록됐는데 준비된 태스크가 없으면 `block_and_switch`가 이를 보고하고 커널은 `k0: all tasks blocked`를 출력한 뒤 파킹합니다. 알림 오브젝트가 아직 없으므로 지금은 다른 어떤 이벤트도 태스크를 깨울 수 없습니다. 이는 [SECURITY_KR.md](../SECURITY_KR.md)의 어드바이저리 GHSA-q99x-2wrv-358p입니다. 태스크 격리는 이를 바꾸지 않습니다. 마지막으로 블록하는 격리된 태스크가 시스템 전체를 파킹시킬 수 있습니다. 격리는 태스크 사이의 기밀성과 무결성을 지키는 것이지 가용성을 지키지 않습니다.
+- 현재 태스크가 IPC에서 블록됐는데 준비된 태스크가 없으면 `block_and_switch`가 이를 보고하고 커널은 `k0: all tasks blocked`를 출력한 뒤 파킹합니다. 알림 오브젝트가 아직 없으므로 지금은 다른 어떤 이벤트도 태스크를 깨울 수 없습니다. 이는 [SECURITY_KR.md](../../SECURITY_KR.md)의 어드바이저리 GHSA-q99x-2wrv-358p입니다. 태스크 격리는 이를 바꾸지 않습니다. 마지막으로 블록하는 격리된 태스크가 시스템 전체를 파킹시킬 수 있습니다. 격리는 태스크 사이의 기밀성과 무결성을 지키는 것이지 가용성을 지키지 않습니다.
 
 파킹은 커널 안의 `wfe` 루프이며, 커널은 인터럽트를 마스크한 채 실행됩니다.
 
