@@ -15,6 +15,14 @@ pub const OFF_LAST_COMP: usize = 24;
 pub const OFF_SIZE_STRINGS: usize = 32;
 pub const OFF_SIZE_STRUCT: usize = 36;
 
+/// 잡음을 끼워 넣는 자리의 종류입니다. 프로퍼티는 자식 노드보다 앞에 와야
+/// 하므로, 뒤에 프로퍼티가 더 올 수 있는 자리에는 노드를 넣지 않습니다.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Site {
+    Props,
+    Children,
+}
+
 pub struct Builder {
     rsvmap: Vec<(u64, u64)>,
     structure: Vec<u8>,
@@ -207,7 +215,7 @@ impl Board {
         self.cells.unwrap_or((2, 1))
     }
 
-    pub fn write(&self, b: &mut Builder, noise: &mut dyn FnMut(&mut Builder)) {
+    pub fn write(&self, b: &mut Builder, noise: &mut dyn FnMut(&mut Builder, Site)) {
         for &(base, size) in &self.memreserve {
             b.memreserve(base, size);
         }
@@ -217,10 +225,10 @@ impl Board {
             b.prop_u32("#address-cells", a).prop_u32("#size-cells", s);
         }
         b.prop("compatible", b"linux,dummy-virt\0");
-        noise(b);
+        noise(b, Site::Props);
         if self.rng_seed.is_some() || self.kaslr_seed.is_some() {
             b.begin("chosen");
-            noise(b);
+            noise(b, Site::Props);
             if let Some(seed) = &self.rng_seed {
                 b.prop("rng-seed", seed);
             }
@@ -228,7 +236,7 @@ impl Board {
             if let Some(seed) = &self.kaslr_seed {
                 b.prop("kaslr-seed", seed);
             }
-            noise(b);
+            noise(b, Site::Children);
             b.end();
         }
         for (i, entries) in self.memory.iter().enumerate() {
@@ -238,11 +246,11 @@ impl Board {
             };
             b.begin(&name);
             b.prop("device_type", b"memory\0");
-            noise(b);
+            noise(b, Site::Props);
             b.prop("reg", &reg(entries, ac, sc));
-            noise(b);
+            noise(b, Site::Props);
             b.end();
-            noise(b);
+            noise(b, Site::Children);
         }
         if !self.rsv_children.is_empty() || self.rsv_cells.is_some() {
             let (rac, rsc) = self.rsv_cells.unwrap_or((ac, sc));
@@ -251,7 +259,7 @@ impl Board {
                 b.prop_u32("#address-cells", a).prop_u32("#size-cells", s);
             }
             b.prop("ranges", b"");
-            noise(b);
+            noise(b, Site::Props);
             for (i, child) in self.rsv_children.iter().enumerate() {
                 b.begin(&format!("region@{i}"));
                 match child {
@@ -263,18 +271,18 @@ impl Board {
                     }
                 }
                 b.prop("no-map", b"");
-                noise(b);
+                noise(b, Site::Props);
                 b.end();
             }
             b.end();
         }
-        noise(b);
+        noise(b, Site::Children);
         b.end();
     }
 
     pub fn blob(&self) -> Vec<u8> {
         let mut b = Builder::new();
-        self.write(&mut b, &mut |_| {});
+        self.write(&mut b, &mut |_, _| {});
         b.build()
     }
 

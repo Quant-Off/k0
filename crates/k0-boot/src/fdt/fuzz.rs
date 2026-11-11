@@ -41,10 +41,10 @@ const NOISE_PROPS: [&str; 12] = [
     "model",
 ];
 
-struct Rng(u64);
+pub(crate) struct Rng(u64);
 
 impl Rng {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self(splitmix(seed) | 1)
     }
 
@@ -55,7 +55,7 @@ impl Rng {
         self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
-    fn below(&mut self, n: u64) -> u64 {
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
         if n == 0 { 0 } else { self.next() % n }
     }
 
@@ -68,14 +68,14 @@ impl Rng {
     }
 }
 
-fn splitmix(mut x: u64) -> u64 {
+pub(crate) fn splitmix(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     x ^ (x >> 31)
 }
 
-fn env_u64(name: &str) -> Option<u64> {
+pub(crate) fn env_u64(name: &str) -> Option<u64> {
     let v = std::env::var(name).ok()?;
     let v = v.trim().replace('_', "");
     match v.strip_prefix("0x") {
@@ -84,25 +84,58 @@ fn env_u64(name: &str) -> Option<u64> {
     }
 }
 
-fn noise(rng: &mut Rng, b: &mut Builder, depth: u32) {
+/// 파서가 뜻을 두는 노드(루트, chosen, memory, reserved-memory) 안에 끼워도
+/// 해석 결과가 달라지지 않는 프로퍼티 이름
+const PLAIN_PROPS: [&str; 6] = [
+    "model",
+    "dma-coherent",
+    "serial-number",
+    "label",
+    "linux,pci-probe-only",
+    "bootargs-extra",
+];
+
+/// 파서가 뜻을 두는 노드 안의 잡음입니다. 프로퍼티 자리에는 NOP과 무해한
+/// 프로퍼티만, 자식 자리에는 NOP과 잡음 노드만 넣습니다.
+fn noise(rng: &mut Rng, b: &mut Builder, depth: u32, site: Site) {
     for _ in 0..rng.below(3) {
-        match rng.below(4) {
-            0 => {
+        match (rng.below(4), site) {
+            (0, _) => {
                 b.nop();
             }
-            1 => {
-                let name = NOISE_PROPS[rng.index(NOISE_PROPS.len())];
+            (_, Site::Props) => {
+                let name = PLAIN_PROPS[rng.index(PLAIN_PROPS.len())];
                 let n = rng.index(24);
                 b.prop(name, &rng.bytes(n));
             }
-            _ if depth < 6 => {
-                b.begin(NOISE_NODES[rng.index(NOISE_NODES.len())]);
-                noise(rng, b, depth + 1);
-                b.end();
-            }
+            (_, Site::Children) if depth < 6 => noise_node(rng, b, depth),
             _ => {}
         }
     }
+}
+
+/// 파서가 뜻을 두지 않는 잡음 노드 하나입니다. 프로퍼티(이름마다 한 번)를
+/// 먼저 쓰고 자식을 뒤에 둡니다. 값은 무작위라 형식이 깨진 셀 수나 phandle도
+/// 섞이며, 메모리 맵 해석은 이런 가지에 영향받지 않아야 합니다.
+fn noise_node(rng: &mut Rng, b: &mut Builder, depth: u32) {
+    b.begin(NOISE_NODES[rng.index(NOISE_NODES.len())]);
+    let mut used = [false; NOISE_PROPS.len()];
+    for _ in 0..rng.below(4) {
+        let i = rng.index(NOISE_PROPS.len());
+        if rng.below(4) == 0 {
+            b.nop();
+        } else if !used[i] {
+            used[i] = true;
+            let n = rng.index(24);
+            b.prop(NOISE_PROPS[i], &rng.bytes(n));
+        }
+    }
+    for _ in 0..rng.below(3) {
+        if depth < 6 {
+            noise_node(rng, b, depth + 1);
+        }
+    }
+    b.end();
 }
 
 fn region(rng: &mut Rng, addr_cells: u32, size_cells: u32) -> (u64, u64) {
@@ -197,7 +230,7 @@ fn interesting(rng: &mut Rng, len: usize) -> u32 {
     if rng.below(4) == 0 { rng.next() as u32 } else { pool[rng.index(pool.len())] }
 }
 
-fn mutate(rng: &mut Rng, blob: &mut Vec<u8>) {
+pub(crate) fn mutate(rng: &mut Rng, blob: &mut Vec<u8>) {
     for _ in 0..1 + rng.below(4) {
         let len = blob.len();
         if len < 8 {
@@ -307,7 +340,7 @@ fn one_case(seed: u64, window: &mut Window, stats: &mut Stats, verbose: bool) {
     let board = random_board(&mut rng);
     let mut b = Builder::new();
     let mut nrng = Rng::new(seed ^ 0xA5A5);
-    board.write(&mut b, &mut |b| noise(&mut nrng, b, 2));
+    board.write(&mut b, &mut |b, site| noise(&mut nrng, b, 2, site));
     let clean = b.build();
     let dtb = 0x4800_0000..0x4800_0000 + clean.len();
 

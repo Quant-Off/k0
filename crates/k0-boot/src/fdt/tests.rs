@@ -107,11 +107,11 @@ fn zero_sized_entries_are_skipped() {
 #[test]
 fn malformed_reg_is_rejected() {
     let mut b = Builder::new();
-    b.begin("").begin("memory").prop("reg", &[0; 11]).end().end();
+    b.begin("").begin("memory").prop("device_type", b"memory\0").prop("reg", &[0; 11]).end().end();
     assert_eq!(err(&b.build()), BootError::BadReg);
 
     let mut b = Builder::new();
-    b.begin("").begin("memory").prop("reg", &[]).end().end();
+    b.begin("").begin("memory").prop("device_type", b"memory\0").prop("reg", &[]).end().end();
     assert_eq!(err(&b.build()), BootError::BadReg);
 
     assert_eq!(board_err(&with_memory(&[(u64::MAX - 0xFFF, 0x1000)])), BootError::BadReg);
@@ -139,11 +139,11 @@ fn only_top_level_memory_nodes_count() {
         .prop("reg", &reg(&[(0x1000, 0x1000)], 2, 1))
         .end()
         .begin("soc")
-        .begin("memory@2000")
+        .begin("memory@2000").prop("device_type", b"memory\0")
         .prop("reg", &reg(&[(0x2000, 0x1000)], 2, 1))
         .end()
         .end()
-        .begin("memory@4000")
+        .begin("memory@4000").prop("device_type", b"memory\0")
         .prop("reg", &reg(&[(0x4000, 0x1000)], 2, 1))
         .begin("bank")
         .prop("reg", &reg(&[(0x9000, 0x1000)], 2, 1))
@@ -201,7 +201,7 @@ fn reserved_memory_children_are_collected() {
 fn reserved_memory_grandchildren_are_ignored() {
     let mut b = Builder::new();
     b.begin("")
-        .begin("memory")
+        .begin("memory").prop("device_type", b"memory\0")
         .prop("reg", &reg(&[(0x4000_0000, 0x1000_0000)], 2, 1))
         .end()
         .begin("reserved-memory")
@@ -217,12 +217,14 @@ fn reserved_memory_grandchildren_are_ignored() {
 
 #[test]
 fn reserved_region_limit_spans_both_sources() {
-    let board = Board {
-        memreserve: (0..5).map(|i| (0x5000_0000 + i * 0x1000, 0x1000)).collect(),
-        rsv_children: (0..4).map(|i| Some(vec![(0x5100_0000 + i * 0x1000, 0x1000)])).collect(),
+    let split = |a: u64, b: u64| Board {
+        memreserve: (0..a).map(|i| (0x5000_0000 + i * 0x1000, 0x1000)).collect(),
+        rsv_children: (0..b).map(|i| Some(vec![(0x5100_0000 + i * 0x1000, 0x1000)])).collect(),
         ..Board::qemu_virt()
     };
-    assert_eq!(board_err(&board), BootError::TooManyRegions);
+    let limit = MAX_RSV_REGIONS as u64;
+    check(&split(limit - 4, 4));
+    assert_eq!(board_err(&split(limit - 3, 4)), BootError::TooManyRegions);
 }
 
 #[test]
@@ -252,7 +254,7 @@ fn entropy_is_concatenated_and_capped() {
 fn nested_chosen_is_ignored() {
     let mut b = Builder::new();
     b.begin("")
-        .begin("memory")
+        .begin("memory").prop("device_type", b"memory\0")
         .prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1))
         .end()
         .begin("soc")
@@ -268,7 +270,7 @@ fn nested_chosen_is_ignored() {
 fn nop_tokens_are_ignored() {
     let board = Board::qemu_virt();
     let mut b = Builder::new();
-    board.write(&mut b, &mut |b| {
+    board.write(&mut b, &mut |b, _| {
         b.nop();
     });
     let info = run(&b.build()).unwrap();
@@ -282,7 +284,7 @@ fn version_window_is_enforced() {
         let mut b = Builder::new();
         b.version = version;
         b.last_comp_version = last;
-        Board::qemu_virt().write(&mut b, &mut |_| {});
+        Board::qemu_virt().write(&mut b, &mut |_, _| {});
         let r = run(&b.build());
         if ok {
             assert!(r.is_ok(), "{version}/{last}");
@@ -350,7 +352,7 @@ fn structural_violations_are_rejected() {
     assert_eq!(err(&b.build()), BootError::BadStructure);
 
     let mut b = Builder::new();
-    b.begin("").begin("memory");
+    b.begin("").begin("memory").prop("device_type", b"memory\0");
     assert_eq!(err(&b.build()), BootError::BadStructure);
 
     let mut b = Builder::new();
@@ -359,7 +361,7 @@ fn structural_violations_are_rejected() {
 
     let mut b = Builder::new();
     b.terminate = false;
-    Board::qemu_virt().write(&mut b, &mut |_| {});
+    Board::qemu_virt().write(&mut b, &mut |_, _| {});
     assert_eq!(err(&b.build()), BootError::BadStructure);
 
     let mut b = Builder::new();
@@ -407,7 +409,7 @@ fn property_values_must_stay_in_the_structure_block() {
 fn nesting_depth_is_capped() {
     let build = |depth: usize| {
         let mut b = Builder::new();
-        b.begin("").begin("memory").prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1)).end();
+        b.begin("").begin("memory").prop("device_type", b"memory\0").prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1)).end();
         for i in 1..depth {
             b.begin(&format!("n{i}"));
         }
@@ -465,4 +467,237 @@ fn parse_reads_through_an_alias_but_reports_physical_ranges() {
     assert_eq!(info.memory(), Board::qemu_virt().expected_memory().as_slice());
     assert_eq!(parse(phys, phys..phys + 1, offset).err(), Some(BootError::OverlapsKernel));
     assert_eq!(parse(usize::MAX, 0..0, 2).err(), Some(BootError::BadHeader));
+}
+
+#[test]
+fn property_names_are_length_bounded() {
+    let with_name = |len: usize| {
+        let mut b = Builder::new();
+        b.begin("")
+            .prop(&"n".repeat(len), b"x")
+            .begin("memory")
+            .prop("device_type", b"memory\0")
+            .prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1))
+            .end()
+            .end();
+        b.build()
+    };
+    assert!(run(&with_name(64)).is_ok());
+    assert_eq!(err(&with_name(65)), BootError::BadString);
+}
+
+#[test]
+fn many_properties_sharing_a_long_name_stay_cheap() {
+    // 문자열 블록에 NUL 없는 긴 구간을 두고 수많은 프로퍼티가 그 시작을 가리키게
+    // 한 blob입니다. 이름의 끝을 블록 끝까지 찾던 구현은 (프로퍼티 수 x 구간
+    // 길이)만큼 걸렸습니다. 지금은 첫 프로퍼티에서 바로 거부해야 합니다.
+    let mut b = Builder::new();
+    b.begin("");
+    let long = b.string_offset(&"x".repeat(200_000));
+    for _ in 0..50_000 {
+        b.prop_at(long, b"");
+    }
+    b.end();
+    let blob = b.build();
+    let start = std::time::Instant::now();
+    assert_eq!(err(&blob), BootError::BadString);
+    assert!(start.elapsed() < std::time::Duration::from_secs(1));
+}
+
+#[test]
+fn memory_nodes_need_the_name_the_type_and_an_enabled_status() {
+    let node = |name: &str, device_type: Option<&[u8]>, status: Option<&[u8]>| {
+        let mut b = Builder::new();
+        b.begin("").begin(name);
+        if let Some(t) = device_type {
+            b.prop("device_type", t);
+        }
+        if let Some(s) = status {
+            b.prop("status", s);
+        }
+        b.prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1)).end().end();
+        b.build()
+    };
+    assert!(run(&node("memory@40000000", Some(b"memory\0"), None)).is_ok());
+    assert!(run(&node("memory", Some(b"memory\0"), Some(b"okay\0"))).is_ok());
+    assert_eq!(err(&node("memory", None, None)), BootError::NoMemory);
+    assert_eq!(err(&node("memory", Some(b"memory"), None)), BootError::NoMemory);
+    assert_eq!(err(&node("memory", Some(b"ram\0"), None)), BootError::NoMemory);
+    assert_eq!(err(&node("ram@40000000", Some(b"memory\0"), None)), BootError::NoMemory);
+    assert_eq!(err(&node("memory", Some(b"memory\0"), Some(b"disabled\0"))), BootError::NoMemory);
+    assert_eq!(err(&node("memory", Some(b"memory\0"), Some(b"okayish\0"))), BootError::NoMemory);
+}
+
+#[test]
+fn properties_must_precede_child_nodes() {
+    let mut b = Builder::new();
+    b.begin("")
+        .begin("memory")
+        .prop("device_type", b"memory\0")
+        .prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1))
+        .end()
+        .prop("#address-cells", &2u32.to_be_bytes())
+        .end();
+    assert_eq!(err(&b.build()), BootError::BadStructure);
+
+    // 프로퍼티 사이의 NOP은 허용
+    let mut b = Builder::new();
+    b.begin("")
+        .nop()
+        .prop("#address-cells", &2u32.to_be_bytes())
+        .nop()
+        .begin("memory")
+        .prop("device_type", b"memory\0")
+        .nop()
+        .prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1))
+        .end()
+        .nop()
+        .end();
+    assert!(run(&b.build()).is_ok());
+}
+
+#[test]
+fn a_second_root_and_duplicate_properties_are_rejected() {
+    let mut b = Builder::new();
+    b.begin("")
+        .begin("memory")
+        .prop("device_type", b"memory\0")
+        .prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1))
+        .end()
+        .end()
+        .begin("")
+        .end();
+    assert_eq!(err(&b.build()), BootError::BadStructure);
+
+    let mut b = Builder::new();
+    b.begin("")
+        .begin("memory")
+        .prop("device_type", b"memory\0")
+        .prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1))
+        .prop("reg", &reg(&[(0x8000_0000, 0x1000)], 2, 1))
+        .end()
+        .end();
+    assert_eq!(err(&b.build()), BootError::DuplicateProperty);
+
+    // 커널이 해석하지 않는 이름의 중복은 상관하지 않음
+    let mut b = Builder::new();
+    b.begin("")
+        .prop("model", b"a\0")
+        .prop("model", b"b\0")
+        .begin("memory")
+        .prop("device_type", b"memory\0")
+        .prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1))
+        .end()
+        .end();
+    assert!(run(&b.build()).is_ok());
+}
+
+#[test]
+fn memory_limiting_properties_refuse_the_boot() {
+    let chosen = |name: &str| {
+        let mut b = Builder::new();
+        b.begin("")
+            .begin("chosen")
+            .prop(name, &reg(&[(0x4000_0000, 0x100_0000)], 2, 2))
+            .end()
+            .begin("memory")
+            .prop("device_type", b"memory\0")
+            .prop("reg", &reg(&[(0x4000_0000, 0x1000_0000)], 2, 1))
+            .end()
+            .end();
+        b.build()
+    };
+    assert_eq!(err(&chosen("linux,usable-memory-range")), BootError::MemoryLimited);
+    assert!(run(&chosen("linux,elfcorehdr")).is_ok());
+
+    let mut b = Builder::new();
+    b.begin("")
+        .begin("memory")
+        .prop("device_type", b"memory\0")
+        .prop("reg", &reg(&[(0x4000_0000, 0x1000_0000)], 2, 1))
+        .prop("linux,usable-memory", &reg(&[(0x4000_0000, 0x100_0000)], 2, 1))
+        .end()
+        .end();
+    assert_eq!(err(&b.build()), BootError::MemoryLimited);
+}
+
+#[test]
+fn the_initrd_range_is_reserved_and_validated() {
+    let initrd = |start: Option<&[u8]>, end: Option<&[u8]>| {
+        let mut b = Builder::new();
+        b.begin("").begin("chosen");
+        if let Some(v) = start {
+            b.prop("linux,initrd-start", v);
+        }
+        if let Some(v) = end {
+            b.prop("linux,initrd-end", v);
+        }
+        b.end()
+            .begin("memory")
+            .prop("device_type", b"memory\0")
+            .prop("reg", &reg(&[(0x4000_0000, 0x1000_0000)], 2, 1))
+            .end()
+            .end();
+        b.build()
+    };
+    let s32 = 0x4400_0000u32.to_be_bytes();
+    let e32 = 0x4480_0000u32.to_be_bytes();
+    let s64 = 0x4400_0000u64.to_be_bytes();
+    let e64 = 0x4480_0000u64.to_be_bytes();
+    let want = [MemRegion { base: 0x4400_0000, size: 0x80_0000 }];
+    assert_eq!(run(&initrd(Some(&s32), Some(&e32))).unwrap().reserved(), &want);
+    assert_eq!(run(&initrd(Some(&s64), Some(&e64))).unwrap().reserved(), &want);
+    assert_eq!(run(&initrd(Some(&s32), Some(&e64))).unwrap().reserved(), &want);
+    assert!(run(&initrd(None, None)).unwrap().reserved().is_empty());
+    assert_eq!(err(&initrd(Some(&s32), None)), BootError::BadInitrd);
+    assert_eq!(err(&initrd(None, Some(&e32))), BootError::BadInitrd);
+    assert_eq!(err(&initrd(Some(&e32), Some(&s32))), BootError::BadInitrd);
+    assert_eq!(err(&initrd(Some(&s32), Some(&s32))), BootError::BadInitrd);
+    assert_eq!(err(&initrd(Some(&s32[..3]), Some(&e32))), BootError::BadInitrd);
+}
+
+#[test]
+fn reserved_memory_with_translating_ranges_is_refused() {
+    let rsv = |ranges: Option<&[u8]>| {
+        let mut b = Builder::new();
+        b.begin("")
+            .begin("memory")
+            .prop("device_type", b"memory\0")
+            .prop("reg", &reg(&[(0x4000_0000, 0x1000_0000)], 2, 1))
+            .end()
+            .begin("reserved-memory");
+        if let Some(r) = ranges {
+            b.prop("ranges", r);
+        }
+        b.begin("fw@41000000")
+            .prop("reg", &reg(&[(0x4100_0000, 0x1000)], 2, 1))
+            .end()
+            .end()
+            .end();
+        b.build()
+    };
+    let want = [MemRegion { base: 0x4100_0000, size: 0x1000 }];
+    assert_eq!(run(&rsv(Some(b""))).unwrap().reserved(), &want);
+    assert_eq!(run(&rsv(None)).unwrap().reserved(), &want);
+    assert_eq!(err(&rsv(Some(&[0u8; 20]))), BootError::UnsupportedRanges);
+}
+
+#[test]
+fn malformed_branches_the_kernel_does_not_read_are_tolerated() {
+    // 메모리 맵과 무관한 가지의 셀 수나 phandle이 깨져 있어도 메모리 맵은 읽힘
+    let mut b = Builder::new();
+    b.begin("")
+        .begin("soc")
+        .prop("#address-cells", &[1, 2, 3])
+        .prop("interrupt-parent", &[9])
+        .begin("dev")
+        .prop("phandle", &[1])
+        .end()
+        .end()
+        .begin("memory")
+        .prop("device_type", b"memory\0")
+        .prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1))
+        .end()
+        .end();
+    assert!(run(&b.build()).is_ok());
 }
