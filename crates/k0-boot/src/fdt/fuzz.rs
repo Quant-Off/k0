@@ -393,8 +393,10 @@ fn fuzz_parse_with_mutated_boards() {
     let mut window = Window::new();
     let mut stats = Stats::default();
 
+    // 기준 시드를 먼저 섞어 이웃한 기준 시드끼리 케이스 열이 겹치지 않게 함
+    let stream = splitmix(base);
     for i in 0..cases {
-        let seed = only.unwrap_or_else(|| splitmix(base.wrapping_add(i)));
+        let seed = only.unwrap_or_else(|| splitmix(stream.wrapping_add(i)));
         let r = catch_unwind(AssertUnwindSafe(|| one_case(seed, &mut window, &mut stats, only.is_some())));
         if r.is_err() {
             panic!("fuzz case failed, reproduce with K0_FUZZ_CASE={seed:#x} (case {i}, base seed {base:#x})");

@@ -938,8 +938,10 @@ fn fuzz_discover_with_mutated_trees() {
     let seeds = [virt3().blob(), virt2().blob(), rpi4().blob(), rk3399().blob()];
     let (mut accepted, mut rejected) = (0u64, 0u64);
 
+    // 기준 시드를 먼저 섞어 이웃한 기준 시드끼리 케이스 열이 겹치지 않게 함
+    let stream = splitmix(base);
     for i in 0..cases {
-        let seed = only.unwrap_or_else(|| splitmix(base.wrapping_add(i)));
+        let seed = only.unwrap_or_else(|| splitmix(stream.wrapping_add(i)));
         let r = catch_unwind(AssertUnwindSafe(|| {
             let mut rng = Rng::new(seed);
             let mut blob = seeds[rng.below(seeds.len() as u64) as usize].clone();

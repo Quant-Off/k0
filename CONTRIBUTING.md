@@ -95,7 +95,9 @@ host="$(rustc -vV | sed -n 's/^host: //p')"
 K0_FUZZ_ITERS=5000000 cargo test --release --offline --target "$host" -p k0-boot fuzz -- --nocapture
 ```
 
-`K0_FUZZ_SEED` changes the base seed. When a case fails, the test prints a `K0_FUZZ_CASE=0x...` value. Run the same command with that variable set to replay only that case and dump the input.
+The same command also runs the discovery fuzzer, which mutates four board-shaped trees and checks that `discover` never panics and that every accepted platform descriptor keeps its invariants.
+
+`K0_FUZZ_SEED` changes the base seed. Different base seeds give unrelated streams of cases. When a case fails, the test prints a `K0_FUZZ_CASE=0x...` value. Run the same command with that variable set to replay only that case and dump the input.
 
 ### Running exactly what CI runs
 
