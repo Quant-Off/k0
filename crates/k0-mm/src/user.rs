@@ -14,10 +14,12 @@
 //! 되게 합니다. [install_user_ttbr0]가 identity 매핑을 사용자 테이블로
 //! 교체하는 순간부터 커널은 TTBR1 별칭으로만 동작합니다.
 //!
-//! 주소 공간은 정적 등록부([AddrSpaces])에서 번호(asid)와 세대를 받습니다.
-//! Frame / PageTable 케이퍼빌리티는 매핑 위치를 포인터가 아닌 (asid, 세대)로
-//! 기억하므로, 주소 공간이 먼저 사라진 뒤의 해제 요청은 세대 불일치로
-//! 걸러져 사라진 테이블을 걷지 않습니다. 하드웨어 ASID는 쓰지 않습니다.
+//! 주소 공간은 등록부([AddrSpaces])에서 번호(asid)와 세대를 받습니다. 번호는
+//! 루트 테이블이 놓인 그래뉼의 번호이고, 등록부의 항목은 부팅 때 untyped로
+//! 넘기는 메모리의 그래뉼 수만큼 잡습니다. Frame / PageTable 케이퍼빌리티는
+//! 매핑 위치를 포인터가 아닌 (asid, 세대)로 기억하므로, 주소 공간이 먼저
+//! 사라진 뒤의 해제 요청은 세대 불일치로 걸러져 사라진 테이블을 걷지
+//! 않습니다. 이 번호는 하드웨어 ASID가 아니며 하드웨어 ASID는 쓰지 않습니다.
 //! TTBR0를 바꿀 때와 매핑을 제거할 때마다 TLB 전체를 무효화하므로 TLB에는
 //! 현재 주소 공간의 변환만 남습니다.
 //!
@@ -562,99 +564,196 @@ pub unsafe fn detach_user_root(root_pa: u64) {
     }
 }
 
-/// 동시에 살아 있을 수 있는 주소 공간 수의 상한(0번은 무효 값으로 비워 둠)
-pub const MAX_ADDR_SPACES: usize = 256;
+/// 주소 공간 등록부가 다루는 구간의 최대 수(테이블 예약 구간과 같은 수)
+pub const MAX_AS_RANGES: usize = crate::paging::MAX_TABLE_RESERVES;
+
+/// 항목의 최상위 비트. 서 있으면 그 그래뉼에 주소 공간의 루트가 살아 있음.
+/// 나머지 63비트가 세대
+const AS_LIVE: u64 = 1 << 63;
 
 #[derive(Clone, Copy)]
-struct AsEntry {
-    /// 등록된 루트 테이블의 PA, 0이면 비어 있음
-    root: u64,
-    /// 이 항목이 재사용될 때마다 증가하는 세대
-    generation: u64,
-    /// 빈 항목 목록의 다음 번호(0 = 끝)
-    next_free: u16,
+struct AsRange {
+    /// 구간 첫 그래뉼의 번호
+    first: u64,
+    /// 구간의 그래뉼 수
+    pages: u64,
+    /// 항목 배열(그래뉼마다 8바이트)의 PA
+    storage: u64,
+}
+
+/// 항목 하나가 놓인 자리를 나타내는 열거형입니다.
+enum AsLoc {
+    /// 루트 태스크 주소 공간의 전용 항목
+    Boot,
+    /// 구간의 항목 배열 안
+    Stored(*mut u64),
 }
 
 /// 살아 있는 주소 공간의 등록부 구조체입니다.
 ///
-/// 항목 번호가 asid입니다. 빈 항목은 배열 안의 단일 연결 목록으로 엮여
-/// 있어 등록과 해제가 탐색 없이 끝납니다. 해제할 때 세대를 올리므로 옛
-/// (asid, 세대) 쌍은 다시는 살아 있는 주소 공간과 일치하지 않습니다.
+/// 주소 공간의 번호(asid)는 그 루트 테이블이 놓인 그래뉼의 번호(PA를 그래뉼
+/// 크기로 나눈 값)입니다. 루트가 놓일 수 있는 그래뉼마다 항목이 하나씩 있고,
+/// 항목은 세대와 "살아 있음" 비트입니다. 해제할 때 세대를 올리므로 옛
+/// (asid, 세대) 쌍은 같은 그래뉼에 새 주소 공간이 생겨도 다시는 일치하지
+/// 않습니다.
+///
+/// 항목은 부팅 때 untyped로 넘기는 구간마다 그 그래뉼 수만큼 잡습니다
+/// ([AddrSpaces::add_range]). 주소 공간 하나는 그래뉼 하나를 루트로 쓰므로,
+/// 메모리가 허락하는 수의 주소 공간에는 언제나 항목이 있고 빈 항목이 모자라
+/// 주소 공간을 만들지 못하는 일은 없습니다. 루트 태스크의 주소 공간은 untyped
+/// 밖(부트 윈도우)에 있어서 전용 항목 하나를 따로 둡니다.
 pub struct AddrSpaces {
-    entries: [AsEntry; MAX_ADDR_SPACES],
-    free_head: u16,
+    /// 루트 태스크 주소 공간의 그래뉼 번호(0 = 아직 없음)와 그 항목
+    boot_pfn: u64,
+    boot_entry: u64,
+    ranges: [AsRange; MAX_AS_RANGES],
+    count: usize,
 }
 
 impl AddrSpaces {
-    /// 전부 비어 있는 등록부를 만드는 함수입니다.
+    /// 구간이 하나도 없는 등록부를 만드는 함수입니다.
     pub const fn new() -> Self {
-        let mut entries = [AsEntry {
-            root: 0,
-            generation: 1,
-            next_free: 0,
-        }; MAX_ADDR_SPACES];
-        let mut i = 1;
-        while i < MAX_ADDR_SPACES - 1 {
-            entries[i].next_free = (i + 1) as u16;
-            i += 1;
-        }
         Self {
-            entries,
-            free_head: 1,
+            boot_pfn: 0,
+            boot_entry: 0,
+            ranges: [AsRange {
+                first: 0,
+                pages: 0,
+                storage: 0,
+            }; MAX_AS_RANGES],
+            count: 0,
         }
     }
 
-    /// 루트 테이블을 등록하고 asid를 주는 함수입니다. 빈 항목이 없으면 `None`
+    /// 주소 공간의 루트가 놓일 수 있는 구간을 등록부에 더하는 함수입니다.
+    /// 구간을 더 받을 자리가 없거나 인자가 맞지 않으면 false
     ///
     /// # Arguments
-    /// `root_pa` - 등록할 L0 테이블의 PA(0이 아니어야 함)
-    pub fn register(&mut self, root_pa: u64) -> Option<u16> {
-        let asid = self.free_head;
-        if asid == 0 || root_pa == 0 {
+    /// `first_pa` - 구간의 시작 PA(그래뉼 정렬)
+    /// `pages` - 구간의 그래뉼 수
+    /// `storage_pa` - 항목 배열을 둘 메모리의 PA
+    ///
+    /// # Safety
+    /// `storage_pa`부터 `pages * 8`바이트는 커널 별칭으로 매핑된 커널 전용
+    /// 메모리이고 전부 0이어야 합니다. 이 구간은 이미 더한 구간이나 루트
+    /// 태스크의 루트 테이블과 겹치지 않아야 합니다.
+    pub unsafe fn add_range(&mut self, first_pa: u64, pages: u64, storage_pa: u64) -> bool {
+        let g = GRANULE as u64;
+        if self.count == MAX_AS_RANGES || pages == 0 || first_pa % g != 0 || storage_pa % 8 != 0 {
+            return false;
+        }
+        self.ranges[self.count] = AsRange {
+            first: first_pa / g,
+            pages,
+            storage: storage_pa,
+        };
+        self.count += 1;
+        true
+    }
+
+    /// 루트 태스크의 주소 공간을 등록하고 asid를 주는 함수입니다. 한 번만
+    /// 부를 수 있습니다.
+    ///
+    /// # Arguments
+    /// `root_pa` - 부트 윈도우에 있는 L0 테이블의 PA(0이 아니고 그래뉼 정렬)
+    pub fn register_boot(&mut self, root_pa: u64) -> Option<u64> {
+        let g = GRANULE as u64;
+        if self.boot_pfn != 0 || root_pa == 0 || root_pa % g != 0 {
             return None;
         }
-        let e = self.entries.get_mut(usize::from(asid))?;
-        self.free_head = e.next_free;
-        e.next_free = 0;
-        e.root = root_pa;
-        Some(asid)
+        self.boot_pfn = root_pa / g;
+        self.boot_entry = AS_LIVE;
+        Some(self.boot_pfn)
+    }
+
+    /// 그래뉼 번호에 해당하는 항목의 자리를 찾는 함수입니다. 등록부가 다루지
+    /// 않는 그래뉼이면 `None`
+    fn locate(&self, pfn: u64) -> Option<AsLoc> {
+        if pfn == 0 {
+            return None;
+        }
+        if pfn == self.boot_pfn {
+            return Some(AsLoc::Boot);
+        }
+        let r = self.ranges[..self.count]
+            .iter()
+            .find(|r| pfn >= r.first && pfn - r.first < r.pages)?;
+        Some(AsLoc::Stored(
+            (r.storage + TABLE_OFFSET + (pfn - r.first) * 8) as *mut u64,
+        ))
+    }
+
+    fn read(&self, pfn: u64) -> Option<u64> {
+        Some(match self.locate(pfn)? {
+            AsLoc::Boot => self.boot_entry,
+            // SAFETY: add_range의 계약대로 항목 배열은 매핑된 커널 전용
+            //         메모리이고 자리는 그 범위 안임
+            AsLoc::Stored(p) => unsafe { p.read() },
+        })
+    }
+
+    fn write(&mut self, pfn: u64, v: u64) -> bool {
+        match self.locate(pfn) {
+            Some(AsLoc::Boot) => self.boot_entry = v,
+            // SAFETY: read와 같고, 등록부에 대한 가변 참조가 유일함
+            Some(AsLoc::Stored(p)) => unsafe { p.write(v) },
+            None => return false,
+        }
+        true
+    }
+
+    /// 루트 테이블을 등록하고 asid를 주는 함수입니다.
+    ///
+    /// 그 그래뉼을 등록부가 다루지 않거나, 이미 살아 있는 주소 공간이 있거나,
+    /// 세대를 더 올릴 수 없게 된 그래뉼이면 `None`입니다.
+    ///
+    /// # Arguments
+    /// `root_pa` - 등록할 L0 테이블의 PA(그래뉼 정렬)
+    pub fn register(&mut self, root_pa: u64) -> Option<u64> {
+        let g = GRANULE as u64;
+        if root_pa % g != 0 {
+            return None;
+        }
+        let pfn = root_pa / g;
+        let v = self.read(pfn)?;
+        if v & AS_LIVE != 0 || v == AS_LIVE - 1 {
+            return None;
+        }
+        self.write(pfn, v | AS_LIVE).then_some(pfn)
     }
 
     /// 등록을 해제하는 함수입니다. 항목이 그 루트의 것이 아니면 아무것도
     /// 바꾸지 않고 false
     ///
-    /// 세대가 더 올라갈 수 없게 된 항목은 다시 쓰지 않고 영구히 비워 둡니다.
+    /// 세대가 더 올라갈 수 없게 된 그래뉼은 그 값에 머물고, 그 뒤로는 주소
+    /// 공간의 루트로 등록되지 않습니다.
     ///
     /// # Arguments
     /// `asid` - 해제할 번호
     /// `root_pa` - 그 번호에 등록돼 있어야 하는 루트 테이블의 PA
-    pub fn release(&mut self, asid: u16, root_pa: u64) -> bool {
-        let free_head = self.free_head;
-        let Some(e) = self.entries.get_mut(usize::from(asid)) else {
+    pub fn release(&mut self, asid: u64, root_pa: u64) -> bool {
+        if asid.checked_mul(GRANULE as u64) != Some(root_pa) {
+            return false;
+        }
+        let Some(v) = self.read(asid) else {
             return false;
         };
-        if asid == 0 || root_pa == 0 || e.root != root_pa {
+        if v & AS_LIVE == 0 {
             return false;
         }
-        e.root = 0;
-        match e.generation.checked_add(1) {
-            Some(g) => {
-                e.generation = g;
-                e.next_free = free_head;
-                self.free_head = asid;
-            }
-            None => e.next_free = 0,
-        }
-        true
+        let generation = v & !AS_LIVE;
+        let next = if generation == AS_LIVE - 1 { generation } else { generation + 1 };
+        self.write(asid, next)
     }
 
     /// 살아 있는 항목의 (루트 PA, 세대)를 주는 함수입니다.
     ///
     /// # Arguments
     /// `asid` - 조회할 번호
-    pub fn get(&self, asid: u16) -> Option<(u64, u64)> {
-        let e = self.entries.get(usize::from(asid))?;
-        (asid != 0 && e.root != 0).then_some((e.root, e.generation))
+    pub fn get(&self, asid: u64) -> Option<(u64, u64)> {
+        let v = self.read(asid)?;
+        let root = asid.checked_mul(GRANULE as u64)?;
+        (v & AS_LIVE != 0).then_some((root, v & !AS_LIVE))
     }
 
     /// (asid, 세대)가 지금도 살아 있는 주소 공간이면 그 루트 PA를 주는
@@ -663,7 +762,7 @@ impl AddrSpaces {
     /// # Arguments
     /// `asid` - 매핑 기록의 번호
     /// `generation` - 매핑 기록의 세대
-    pub fn resolve(&self, asid: u16, generation: u64) -> Option<u64> {
+    pub fn resolve(&self, asid: u64, generation: u64) -> Option<u64> {
         match self.get(asid) {
             Some((root, g)) if g == generation => Some(root),
             _ => None,

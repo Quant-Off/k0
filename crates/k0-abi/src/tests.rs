@@ -58,6 +58,9 @@ fn error_codes_are_unique_and_negative() {
         err::REVOKED,
         err::BAD_BADGE,
         err::TOO_DEEP,
+        err::TIMEOUT,
+        err::REPLY_TIMEOUT,
+        err::BAD_FLAGS,
     ];
     assert_unique(&errs.map(i128::from));
     for e in errs {
@@ -111,6 +114,22 @@ fn fixed_boot_slots_skip_the_null_slot() {
 #[test]
 fn nonblock_is_a_single_flag_bit() {
     assert_eq!(ipc::NONBLOCK.count_ones(), 1);
+}
+
+#[test]
+fn timeout_occupies_only_the_upper_half_of_the_flags() {
+    assert_eq!(ipc::timeout(0), 0);
+    assert_eq!(ipc::timeout(1), 1 << 32);
+    assert_eq!(ipc::timeout(u32::MAX) >> ipc::TIMEOUT_SHIFT, u64::from(u32::MAX));
+    assert_eq!(ipc::timeout(u32::MAX) & 0xFFFF_FFFF, 0);
+    assert_eq!(ipc::timeout(u32::MAX) & ipc::NONBLOCK, 0);
+    assert_eq!(ipc::timeout(u32::MAX) & ipc::RESERVED, 0);
+}
+
+#[test]
+fn flag_register_bits_are_all_accounted_for() {
+    assert_eq!(ipc::NONBLOCK & ipc::RESERVED, 0);
+    assert_eq!(ipc::NONBLOCK | ipc::RESERVED | ipc::timeout(u32::MAX), u64::MAX);
 }
 
 #[test]

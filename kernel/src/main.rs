@@ -290,14 +290,16 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     let _ = writeln!(con, "k0: root task loaded (entry {:#x})", root_task.entry);
 
     // 루트 주소 공간을 등록부에 올림. 이후 매핑 기록은 (asid, 세대)로 이
-    // 주소 공간을 가리킴
+    // 주소 공간을 가리킴. 루트 테이블이 untyped 밖(부트 윈도우)에 있어서
+    // 등록부의 전용 항목을 씀
     // SAFETY: 단일 부트 코어의 초기화 시퀀스라 등록부 접근이 배타적임
-    let Some(root_asid) = (unsafe { k0_mm::addr_spaces() }).register(user_root) else {
+    let Some(root_asid) = (unsafe { k0_mm::addr_spaces() }).register_boot(user_root) else {
         let _ = writeln!(con, "k0: address space registry failed");
         park()
     };
 
-    // 케이퍼빌리티 부트스트랩: 커널/DTB/윈도우를 뺀 물리 메모리 전부가 untyped
+    // 케이퍼빌리티 부트스트랩: 커널/DTB/윈도우를 뺀 물리 메모리가 untyped가 됨.
+    // 다만 구간마다 꼬리에서 커널 몫을 먼저 떼어 둠(reserve_kernel_share)
     let mut mem_buf = [k0_cap::PhysRegion { base: 0, size: 0 }; k0_boot::MAX_MEM_REGIONS];
     for (dst, r) in mem_buf.iter_mut().zip(bootinfo.memory()) {
         dst.base = r.base;
@@ -331,6 +333,14 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         dst.size = r.size;
     }
     let reserved = &rsv_buf[..FIXED_RSV + bootinfo.reserved().len()];
+    let mut ut_buf = [k0_cap::PhysRegion { base: 0, size: 0 }; k0_mm::MAX_TABLE_RESERVES];
+    let untyped = match reserve_kernel_share(&mut con, memory, reserved, &mut ut_buf) {
+        Ok(n) => &ut_buf[..n],
+        Err(e) => {
+            let _ = writeln!(con, "k0: cap bootstrap failed: {e:?}");
+            park()
+        }
+    };
 
     // SAFETY: cnode_frame은 방금 부트 윈도우에서 할당한 소거된 연속 프레임으로
     //         ROOT_CNODE_SLOTS개의 슬롯을 담고, 단일 부트 코어라 접근이 배타적임
@@ -346,8 +356,9 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         addr_space_asid: root_asid,
         cnode: cnode_frame,
     };
+    // 예약 구간은 위에서 이미 뺐으므로 남은 구간이 그대로 untyped가 됨
     // SAFETY: cnode의 슬롯은 전부 비어 있고 접근이 배타적임
-    let mut next = match unsafe { k0_cap::bootstrap(&cnode, &objs, memory, reserved) } {
+    let mut next = match unsafe { k0_cap::bootstrap(&cnode, &objs, untyped, &[]) } {
         Ok(n) => n,
         Err(e) => {
             let _ = writeln!(con, "k0: cap bootstrap failed: {e:?}");
@@ -456,6 +467,141 @@ struct ImageMap {
     pa: u64,
     va: u64,
     len: u64,
+}
+
+/// untyped로 넘길 구간을 구하고, 구간마다 꼬리에서 커널 몫을 떼어 두는
+/// 함수입니다.
+///
+/// 커널 몫은 두 가지입니다. 하나는 그 구간의 모든 그래뉼을 커널 별칭으로
+/// 매핑하는 데 들 수 있는 페이지 테이블 전부이고, 다른 하나는 그 구간의
+/// 그래뉼마다 하나씩인 주소 공간 등록부 항목입니다. 둘을 부팅 때 구간 크기에
+/// 맞춰 잡아 두므로, 부팅 뒤에는 어떤 태스크도 untyped 메모리를 쥐는 것만으로
+/// 별칭 테이블이나 등록부를 바닥낼 수 없습니다.
+///
+/// 구간은 큰 것부터 처리합니다. 꼬리를 매핑하는 데 드는 테이블은 첫 구간만
+/// 정적 풀에서 치르고 그 뒤로는 앞서 등록한 예약에서 나옵니다. 자기 몫을 댈
+/// 수 없는 구간(너무 작거나 매핑에 실패한 구간)은 untyped로 넘기지 않고 한
+/// 줄을 남깁니다. 부팅을 거부하지는 않습니다(UEFI 로더의 사전 검사가 이
+/// 단계를 알지 못하므로 로더가 예측할 수 없는 거부를 만들지 않음). 온전한
+/// 그래뉼이 하나도 없는 틈은 오브젝트를 만들 수 없어 커널 몫도 필요 없으므로
+/// 그대로 넘깁니다.
+///
+/// # Arguments
+/// `memory` - DTB가 보고한 물리 메모리 구간들
+/// `reserved` - untyped에서 제외할 구간들
+/// `out` - untyped로 넘길 구간을 받을 버퍼
+///
+/// # Errors
+/// 구간 산술 위반과 메모리 구간 간 겹침은 `BadRegion`. 성공하면 `out`에 채운
+/// 구간 수를 반환합니다
+fn reserve_kernel_share(
+    con: &mut EarlyCon,
+    memory: &[k0_cap::PhysRegion],
+    reserved: &[k0_cap::PhysRegion],
+    out: &mut [k0_cap::PhysRegion],
+) -> Result<usize, k0_cap::CapError> {
+    let g = k0_mm::GRANULE as u64;
+    k0_cap::check_regions(memory, reserved)?;
+
+    // 버퍼에 다 담지 못한 틈은 넘기지 않음. 커널 몫을 잡지 못한 메모리를
+    // untyped로 내주는 것보다 쓰지 않는 쪽이 안전함
+    let mut count = 0;
+    for m in memory {
+        let _ = k0_cap::for_each_gap(*m, reserved, |gap| -> Result<(), ()> {
+            if count < out.len() {
+                out[count] = gap;
+                count += 1;
+            } else {
+                let _ = writeln!(
+                    con,
+                    "k0: memory {:#x} + {:#x} not handed out (too many ranges)",
+                    gap.base, gap.size
+                );
+            }
+            Ok(())
+        });
+    }
+
+    let (mut tables, mut entries, mut bytes, mut ranges) = (0u64, 0u64, 0u64, 0u64);
+    let mut done = [false; k0_mm::MAX_TABLE_RESERVES];
+    loop {
+        // 아직 처리하지 않은 것 중 가장 큰 구간
+        let mut pick: Option<usize> = None;
+        for i in 0..count {
+            if !done[i] && pick.is_none_or(|p| out[i].size > out[p].size) {
+                pick = Some(i);
+            }
+        }
+        let Some(i) = pick else { break };
+        done[i] = true;
+
+        let (base, size) = (out[i].base, out[i].size);
+        // 주소 범위의 맨 끝에 걸친 틈은 올림이 넘치므로 온전한 그래뉼이 없는
+        // 틈과 같이 다룸(끝 주소는 check_regions가 넘치지 않음을 확인함)
+        let Some(lo) = base.checked_next_multiple_of(g) else {
+            continue;
+        };
+        let hi = (base + size) / g * g;
+        if hi <= lo {
+            continue;
+        }
+        let pages = (hi - lo) / g;
+        let table_count = k0_mm::alias_tables_for(&(lo..hi));
+        let entry_pages = (pages * 8).div_ceil(g);
+        let share = table_count + entry_pages;
+        let reason = if pages <= share {
+            Some("too small for its kernel tables")
+        } else {
+            let tail = hi - share * g;
+            let entry_pa = tail + table_count * g;
+            if k0_mm::reserve_tables(tail..entry_pa).is_err() {
+                Some("no kernel tables to map its reserve")
+            } else if k0_mm::map_kernel_window(entry_pa..hi).is_err() {
+                Some("its address space entries cannot be mapped")
+            } else {
+                // SAFETY: 방금 별칭으로 매핑한 구간이고 untyped에서 빠져 커널만
+                //         쓰므로 소거가 다른 것을 덮지 않음. 등록부 접근은 단일
+                //         부트 코어의 초기화 시퀀스라 배타적이고, 구간들은 서로
+                //         겹치지 않는 틈이며 루트 테이블은 부트 윈도우에 있음
+                let added = unsafe {
+                    core::ptr::write_bytes(
+                        (entry_pa + k0_mm::KERNEL_VA_OFFSET) as *mut u8,
+                        0,
+                        (hi - entry_pa) as usize,
+                    );
+                    k0_mm::addr_spaces().add_range(lo, pages, entry_pa)
+                };
+                if added {
+                    out[i].size = tail - base;
+                    tables += table_count;
+                    entries += pages;
+                    bytes += share * g;
+                    ranges += 1;
+                    None
+                } else {
+                    Some("address space registry is full")
+                }
+            }
+        };
+        if let Some(why) = reason {
+            let _ = writeln!(con, "k0: memory {base:#x} + {size:#x} not handed out ({why})");
+            out[i].size = 0;
+        }
+    }
+    let _ = writeln!(
+        con,
+        "k0: kernel reserve {tables} tables + {entries} address space entries = {bytes:#x} bytes in {ranges} ranges"
+    );
+
+    // 넘기지 않기로 한 구간을 빼고 순서를 유지한 채 앞으로 모음
+    let mut kept = 0;
+    for i in 0..count {
+        if out[i].size != 0 {
+            out[kept] = out[i];
+            kept += 1;
+        }
+    }
+    Ok(kept)
 }
 
 /// 루트 CNode의 내용을 bootinfo 페이지에 기록하는 함수입니다.

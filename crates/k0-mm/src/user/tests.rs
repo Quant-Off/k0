@@ -86,64 +86,84 @@ fn runtime_walkers_validate_before_dereferencing() {
     }
 }
 
-#[test]
-fn registry_hands_out_distinct_ids_and_never_zero() {
+/// 그래뉼 `pages`개를 다루는 등록부를 만드는 함수입니다. 구간은 가짜 물리
+/// 주소 `first_pa`에서 시작하고, 항목 배열은 호스트 메모리에 둡니다(테스트
+/// 빌드에서는 테이블 오프셋이 0이라 그 주소가 곧 PA 구실을 함).
+fn registry(first_pa: u64, pages: u64) -> AddrSpaces {
     let mut r = AddrSpaces::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for i in 0..MAX_ADDR_SPACES as u64 - 1 {
-        let asid = r.register(0x1000 * (i + 1)).expect("room left");
-        assert_ne!(asid, 0);
-        assert!(usize::from(asid) < MAX_ADDR_SPACES);
-        assert!(seen.insert(asid), "asid {asid} handed out twice");
-        assert_eq!(r.get(asid).map(|e| e.0), Some(0x1000 * (i + 1)));
+    let storage = Box::leak(vec![0u64; pages as usize].into_boxed_slice()).as_mut_ptr() as u64;
+    // SAFETY: 방금 할당한 소거된 메모리이고 테스트가 끝날 때까지 살아 있음
+    assert!(unsafe { r.add_range(first_pa, pages, storage) });
+    r
+}
+
+const BASE: u64 = 0x4000_0000;
+
+#[test]
+fn every_granule_of_a_range_can_hold_an_address_space_at_once() {
+    // 예전의 고정 표(256칸)보다 많은 주소 공간이 한꺼번에 살아 있을 수 있음.
+    // 번호는 루트 테이블이 놓인 그래뉼의 번호
+    let pages = 1000;
+    let mut r = registry(BASE, pages);
+    for i in 0..pages {
+        let root = BASE + i * G;
+        let asid = r.register(root).expect("every granule has an entry");
+        assert_eq!(asid, root / G);
+        assert_eq!(r.get(asid), Some((root, 0)));
     }
-    // 가득 차면 거부하고 상태는 그대로
-    assert_eq!(r.register(0xdead_0000), None);
-    assert_eq!(r.register(0xdead_0000), None);
-    assert_eq!(seen.len(), MAX_ADDR_SPACES - 1);
+    // 이미 살아 있는 그래뉼은 다시 등록되지 않고 상태도 그대로
+    assert_eq!(r.register(BASE), None);
+    assert_eq!(r.get(BASE / G), Some((BASE, 0)));
 }
 
 #[test]
-fn registry_rejects_null_roots_and_bad_ids() {
-    let mut r = AddrSpaces::new();
+fn registry_rejects_what_it_does_not_cover() {
+    let mut r = registry(BASE, 4);
     assert_eq!(r.register(0), None);
-    let a = r.register(0x4000).unwrap();
+    assert_eq!(r.register(BASE - G), None, "below the range");
+    assert_eq!(r.register(BASE + 4 * G), None, "past the range");
+    assert_eq!(r.register(BASE + 8), None, "not a granule boundary");
     assert_eq!(r.get(0), None);
-    assert_eq!(r.get(u16::MAX), None);
-    assert_eq!(r.get(MAX_ADDR_SPACES as u16), None);
-    assert!(!r.release(0, 0x4000));
-    assert!(!r.release(u16::MAX, 0x4000));
-    assert!(!r.release(a, 0x5000), "release must name the registered root");
+    assert_eq!(r.get(u64::MAX), None);
+    assert_eq!(r.get(BASE / G + 4), None);
+    assert_eq!(r.resolve(u64::MAX, 0), None);
+
+    let a = r.register(BASE + G).unwrap();
+    assert!(!r.release(0, BASE + G));
+    assert!(!r.release(u64::MAX, BASE + G));
+    assert!(!r.release(a, BASE), "release must name the registered root");
     assert!(!r.release(a, 0));
-    assert_eq!(r.get(a).map(|e| e.0), Some(0x4000));
-    assert!(r.release(a, 0x4000));
-    assert!(!r.release(a, 0x4000), "double release is refused");
+    assert!(!r.release(a + 1, BASE + 2 * G), "that granule holds nothing");
+    assert_eq!(r.get(a), Some((BASE + G, 0)));
+    assert!(r.release(a, BASE + G));
+    assert!(!r.release(a, BASE + G), "double release is refused");
     assert_eq!(r.get(a), None);
 }
 
 #[test]
 fn a_stale_generation_never_resolves_again() {
-    let mut r = AddrSpaces::new();
-    let a = r.register(0x4000).unwrap();
+    let mut r = registry(BASE, 4);
+    let a = r.register(BASE).unwrap();
     let (_, g) = r.get(a).unwrap();
-    assert_eq!(r.resolve(a, g), Some(0x4000));
+    assert_eq!(r.resolve(a, g), Some(BASE));
     assert_eq!(r.resolve(a, g + 1), None);
-    assert!(r.release(a, 0x4000));
+    assert!(r.release(a, BASE));
     assert_eq!(r.resolve(a, g), None);
-    // 같은 번호가 같은 루트 PA로 재사용돼도 옛 기록은 일치하지 않음
-    let b = r.register(0x4000).unwrap();
-    assert_eq!(b, a, "the freed id is reused first");
+    // 같은 그래뉼에 새 주소 공간이 생기면 번호는 같지만 옛 기록은 일치하지 않음
+    let b = r.register(BASE).unwrap();
+    assert_eq!(b, a, "the number is the granule, so it comes back");
     let (_, g2) = r.get(b).unwrap();
     assert_ne!(g2, g);
     assert_eq!(r.resolve(a, g), None);
-    assert_eq!(r.resolve(b, g2), Some(0x4000));
+    assert_eq!(r.resolve(b, g2), Some(BASE));
 }
 
 #[test]
 fn registry_survives_random_register_release_sequences() {
-    let mut r = AddrSpaces::new();
-    let mut live: std::collections::BTreeMap<u16, (u64, u64)> = Default::default();
-    let mut stale: Vec<(u16, u64)> = Vec::new();
+    let pages = 64u64;
+    let mut r = registry(BASE, pages);
+    let mut live: std::collections::BTreeMap<u64, (u64, u64)> = Default::default();
+    let mut stale: Vec<(u64, u64)> = Vec::new();
     let mut x = 0x2545_F491_4F6C_DD1Du64;
     let mut next = || {
         x ^= x << 13;
@@ -153,15 +173,15 @@ fn registry_survives_random_register_release_sequences() {
     };
     for step in 0..20_000u64 {
         if next() % 3 != 0 {
-            let root = 0x1000 * (step + 1);
+            let root = BASE + (next() % pages) * G;
             match r.register(root) {
                 Some(a) => {
-                    assert!(!live.contains_key(&a), "live asid handed out again");
+                    assert!(!live.contains_key(&a), "live number handed out again");
                     let (got, g) = r.get(a).unwrap();
                     assert_eq!(got, root);
                     live.insert(a, (root, g));
                 }
-                None => assert_eq!(live.len(), MAX_ADDR_SPACES - 1),
+                None => assert!(live.contains_key(&(root / G)), "a free granule was refused"),
             }
         } else if let Some((&a, &(root, g))) = live.iter().nth((next() % 7) as usize) {
             assert!(r.release(a, root));
@@ -180,18 +200,61 @@ fn registry_survives_random_register_release_sequences() {
 }
 
 #[test]
-fn an_entry_whose_generation_is_exhausted_is_retired() {
+fn a_granule_whose_generation_is_exhausted_is_retired() {
+    let mut r = registry(BASE, 2);
+    let a = r.register(BASE).unwrap();
+    // 세대를 끝까지 올린 항목을 직접 만듦
+    assert!(r.write(a, AS_LIVE | (AS_LIVE - 2)));
+    assert!(r.release(a, BASE));
+    assert_eq!(r.read(a), Some(AS_LIVE - 1));
+    // 더 올릴 수 없는 그래뉼은 다시 주소 공간의 루트가 되지 못함. 그러지
+    // 않으면 세대가 되감겨 아주 오래된 기록이 다시 일치하게 됨
+    assert_eq!(r.register(BASE), None);
+    assert_eq!(r.resolve(a, AS_LIVE - 2), None);
+    assert_eq!(r.resolve(a, AS_LIVE - 1), None);
+    // 다른 그래뉼은 영향이 없음
+    assert!(r.register(BASE + G).is_some());
+}
+
+#[test]
+fn the_root_task_address_space_has_its_own_entry() {
+    let mut r = registry(BASE, 4);
+    let boot_root = 0x7000_0000;
+    assert_eq!(r.register_boot(0), None);
+    assert_eq!(r.register_boot(boot_root + 8), None);
+    let a = r.register_boot(boot_root).unwrap();
+    assert_eq!(a, boot_root / G);
+    assert_eq!(r.register_boot(boot_root + G), None, "only one boot root");
+    let (root, g) = r.get(a).unwrap();
+    assert_eq!(root, boot_root);
+    assert_eq!(r.resolve(a, g), Some(boot_root));
+    // 구간의 항목과 섞이지 않음
+    let b = r.register(BASE).unwrap();
+    assert_ne!(a, b);
+    assert!(r.release(a, boot_root));
+    assert_eq!(r.resolve(a, g), None);
+    assert_eq!(r.get(b), Some((BASE, 0)));
+}
+
+#[test]
+fn ranges_are_independent_and_the_table_of_ranges_is_bounded() {
     let mut r = AddrSpaces::new();
-    let a = r.register(0x4000).unwrap();
-    r.entries[usize::from(a)].generation = u64::MAX;
-    assert!(r.release(a, 0x4000));
-    // 세대를 더 올릴 수 없는 항목은 다시 나오지 않음
-    for i in 0..MAX_ADDR_SPACES as u64 {
-        if let Some(b) = r.register(0x8000 + 0x1000 * i) {
-            assert_ne!(b, a);
+    let store = |n: u64| Box::leak(vec![0u64; n as usize].into_boxed_slice()).as_mut_ptr() as u64;
+    // SAFETY: 각 항목 배열은 방금 할당한 소거된 메모리임
+    unsafe {
+        assert!(!r.add_range(BASE, 0, store(1)), "empty range");
+        assert!(!r.add_range(BASE + 1, 1, store(1)), "unaligned range");
+        for i in 0..MAX_AS_RANGES as u64 {
+            assert!(r.add_range(BASE + i * 16 * G, 8, store(8)));
         }
+        assert!(!r.add_range(BASE + 0x1000_0000, 8, store(8)), "no room for more ranges");
     }
-    assert_eq!(r.resolve(a, u64::MAX), None);
+    // 구간 사이의 빈 곳은 다루지 않음
+    assert!(r.register(BASE + 7 * G).is_some());
+    assert_eq!(r.register(BASE + 8 * G), None);
+    let last = BASE + (MAX_AS_RANGES as u64 - 1) * 16 * G;
+    let a = r.register(last).unwrap();
+    assert_eq!(r.get(a), Some((last, 0)));
 }
 
 #[test]

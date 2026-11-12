@@ -100,6 +100,12 @@ pub const TCB_SLOTS: usize = 3;
 /// 저장소이고, `reply_from`은 그 역방향(이 태스크의 응답을 쥔 태스크)이라
 /// 어느 쪽이 먼저 사라져도 남은 쪽의 링크를 지울 수 있습니다.
 ///
+/// `deadline`은 IPC 대기의 기한(틱 수, 0 = 기한 없음)이고 `tnext` /
+/// `tprev`는 기한이 있는 대기자들을 잇는 목록의 링크(커널 VA, 0 = 없음)
+/// 입니다. 이 목록은 준비 큐나 엔드포인트 대기 큐와 별개라서 태스크는 대기
+/// 큐에 선 채로 이 목록에도 들어 있습니다. 태스크가 깨어나거나 종료되면
+/// 스케줄러가 목록에서 빼고 `deadline`을 0으로 되돌립니다.
+///
 /// `slots`는 이 태스크에 묶인 케이퍼빌리티입니다. [TCB_SLOT_CSPACE]의
 /// CNode가 이 태스크의 시스템 콜이 슬롯 번호를 해석하는 유일한 장소이고,
 /// [TCB_SLOT_VSPACE]의 AddrSpace가 이 태스크가 실행되는 주소 공간입니다.
@@ -121,6 +127,9 @@ pub struct Tcb {
     pub reply_from: u64,
     pub blocked_on: u64,
     pub ipc_badge: u64,
+    pub deadline: u64,
+    pub tnext: u64,
+    pub tprev: u64,
     pub slots: [Slot; TCB_SLOTS],
 }
 

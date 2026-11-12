@@ -17,14 +17,14 @@ pub mod paging;
 pub mod user;
 
 pub use paging::{
-    alias_object, can_read, can_write, device_pages, enable_paging, image_pa, image_range,
-    map_device, map_dtb, map_kernel_window, null_user_root, pa_bits, probe_clear, probe_map,
-    table_pool_usage, KernelLayout, Mmu, MmuError, GRANULE, KERNEL_IMAGE_VA, KERNEL_VA_OFFSET,
-    PA_CEILING,
+    alias_object, alias_tables_for, can_read, can_write, device_pages, enable_paging, image_pa,
+    image_range, map_device, map_dtb, map_kernel_window, null_user_root, pa_bits, probe_clear,
+    probe_map, reserve_tables, table_pool_usage, table_reserve_usage, KernelLayout, Mmu,
+    MmuError, GRANULE, KERNEL_IMAGE_VA, KERNEL_VA_OFFSET, MAX_TABLE_RESERVES, PA_CEILING,
 };
 pub use user::{
     addr_spaces, can_read_pan_checked, can_user_read, can_user_write, current_user_root,
     detach_user_root, flush_user_tlb, install_user_ttbr0, user_install_table, user_map_frame,
     user_uninstall_table, user_unmap_frame, zero_table, AddrSpaces, FrameAlloc, UserPerm,
-    UserSpace, MAX_ADDR_SPACES,
+    UserSpace, MAX_AS_RANGES,
 };

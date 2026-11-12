@@ -68,6 +68,11 @@ const PULSE_REPORTER: u64 = 0x4E90;
 const PULSE_HOLDER: u64 = 0x401D_0000;
 const PULSE_VIOLATOR: u64 = 0x0710_0000;
 const PULSE_SURVIVED: u64 = 0x0BAD_0BAD;
+/// 타임아웃 검증의 보고 메시지 꼬리표와 pulse 값, 느린 서버의 응답 변환 값
+const TIMED_TAG: u64 = 0x71ED;
+const PULSE_TIMED: u64 = 0x0071_0000;
+const PULSE_SLOW: u64 = 0x0510_0000;
+const SLOW_XOR: u64 = 0x5107;
 /// EL0가 읽으려 시도할 커널 절반의 주소(커널 이미지가 놓이는 별칭 근처)
 const KERNEL_PROBE: u64 = k0_abi::KERNEL_IMAGE_VA;
 
@@ -546,6 +551,41 @@ extern "C" fn reporter_entry(mode: u64) -> ! {
     }
 }
 
+/// 1번 엔드포인트에서 기한을 건 연산 하나를 하고 그 반환 코드를 2번
+/// 엔드포인트로 보고하는 격리 태스크의 진입점입니다.
+///
+/// # Arguments
+/// `arg` - 하위 8비트는 연산(0 = RECV, 1 = SEND, 2 = CALL), 그 위는 타임아웃
+/// 틱 수
+extern "C" fn timed_entry(arg: u64) -> ! {
+    let (mode, ticks) = (arg & 0xFF, (arg >> 8) as u32);
+    pulse(PULSE_TIMED + mode);
+    let flags = ipc::timeout(ticks);
+    let status = match mode {
+        0 => recv(1, flags).status,
+        1 => send(1, flags, [0x71, 0, 0, 0]).status,
+        _ => call(1, flags, [0x7C, 0, 0, 0]).status,
+    };
+    send(2, 0, [status as u64, TIMED_TAG, mode, 0]);
+    loop {
+        yield_now();
+    }
+}
+
+/// 첫 CALL을 받은 뒤 2번 엔드포인트의 신호를 기다렸다가 응답하는 격리 서버의
+/// 진입점입니다.
+///
+/// 신호가 오기 전에 호출자의 기한이 지나게 해서, 뒤늦은 응답이 버려지고
+/// 서버는 그 뒤의 호출에 정상으로 응답하는지 검증합니다.
+extern "C" fn slow_server_entry(_arg: u64) -> ! {
+    let mut r = recv(1, 0);
+    pulse(PULSE_SLOW + r.mr[0]);
+    recv(2, 0);
+    loop {
+        r = reply_recv(1, 0, [r.mr[0] ^ SLOW_XOR, 0, 0, 0]);
+    }
+}
+
 /// CALL 하나를 받고 응답하지 않은 채 머무는 격리 서버의 진입점입니다. 응답
 /// 자격을 쥔 태스크가 삭제되는 경로를 검증합니다.
 extern "C" fn holder_entry(_arg: u64) -> ! {
@@ -742,6 +782,7 @@ extern "C" fn _start() -> ! {
     test_reuse(&b);
     test_sched_ipc_fault(&b);
     test_isolation(&b);
+    test_reserve(&b);
 
     put_str("root: sched tests pass\n");
     loop {
@@ -1598,6 +1639,16 @@ fn test_isolation(b: &Boot) {
     put_str("root: violation tests pass\n");
 
     test_teardown(&iso, q);
+    // 타임아웃 검증의 오브젝트는 가장 큰 untyped에서 잘라, 이 작은 untyped가
+    // 대야 하는 프레임 수를 늘리지 않음. 태스크는 같은 주소 공간에서 실행되므로
+    // 아래의 회수가 그 주소 공간을 없앨 때 함께 종료됨
+    let timed_iso = Iso {
+        ut: b.ut_main,
+        fs,
+        aspace,
+        pulse_view,
+    };
+    test_timeouts(&timed_iso, q);
 
     // CNode 회수: 태스크에 묶인 케이퍼빌리티 공간이 사라지면 그 태스크는
     // 종료됨. 송신이 거부될 뿐 계속 실행된다면 pulse가 계속 바뀜
@@ -1858,6 +1909,155 @@ fn test_teardown(iso: &Iso, q: i64) {
     check("delete second caller", cap_delete(c.tcb) == 0);
     check("teardown leaves q quiet", stays_silent(q));
     put_str("root: teardown tests pass\n");
+}
+
+/// 커널의 별칭 테이블과 주소 공간 등록부가 untyped를 쥔 태스크에게 바닥나지
+/// 않는 것을 검증하는 함수입니다.
+///
+/// 예전 커널은 별칭 테이블을 정적 풀 40장에서, 주소 공간 번호를 256칸짜리
+/// 표에서 내주었습니다. 그래서 untyped를 넉넉히 쥔 태스크 하나가 둘 다 바닥내
+/// 다른 모든 태스크의 재분류를 실패시킬 수 있었습니다. 지금은 둘 다 부팅 때
+/// 메모리 크기에 맞춰 잡습니다. 다른 검증이 끝난 뒤에 가장 큰 untyped를 써서
+/// 예전 한계를 넘겨 봅니다.
+fn test_reserve(b: &Boot) {
+    let (ut, fs) = (b.ut_main, b.frame_size);
+    let tmp = alloc_slot();
+
+    // 주소 공간 300개가 동시에 살아 있음. 루트 CNode에는 그만한 빈 슬롯이
+    // 없으므로 만든 것을 새 CNode들로 옮겨 둠
+    const NODES: usize = 5;
+    const PER_NODE: u64 = 60;
+    let mut nodes = [0i64; NODES];
+    for n in nodes.iter_mut() {
+        *n = retype(ut, obj::CNODE);
+        check("reserve cnode", *n > 0);
+    }
+    for &cn in &nodes {
+        for i in 1..=PER_NODE {
+            check("address space beyond 256", retype_at(ut, obj::ADDR_SPACE, tmp) == 0);
+            check("park address space", cap_move(tmp as i64, cn, i) == 0);
+        }
+    }
+    // CNode를 지우면 그 안의 주소 공간이 함께 종료되고 등록부 항목이 풀림
+    for &cn in &nodes {
+        check("drop address spaces", cap_delete(cn) == 0);
+    }
+    check(
+        "address space after the burst",
+        retype_at(ut, obj::ADDR_SPACE, tmp) == 0 && cap_delete(tmp as i64) == 0,
+    );
+
+    // 프레임을 하나씩 재분류하며 untyped를 따라 올라감. 재분류마다 커널이 그
+    // 그래뉼의 별칭을 만들고, 최하위 테이블 하나가 덮는 구획(4K 그래뉼에서
+    // 2MiB)을 넘을 때마다 테이블이 한 장 더 듦. 예전 풀의 여유는 24장
+    // 남짓이었으므로 40구획을 넘기면 반드시 바닥났음. untyped가 그보다 작은
+    // 배치에서는 끝까지 감
+    let per_table = fs / 8;
+    let mut walked = 0u64;
+    while walked < 40 * per_table {
+        let r = retype_at(ut, obj::FRAME, tmp);
+        if r == err::EXHAUSTED {
+            break;
+        }
+        check("alias tables never run out", r == 0);
+        check("drop walked frame", cap_delete(tmp as i64) == 0);
+        walked += 1;
+    }
+    // untyped가 테이블 한 장 분량보다 작은 배치에서는 끝까지 간 것으로 충분함
+    check("walked some frames", walked > 0);
+    put_str("root: kernel reserve tests pass\n");
+}
+
+/// IPC 타임아웃과, 모든 태스크가 블록돼도 커널이 멈추지 않는 것을 검증하는
+/// 함수입니다.
+///
+/// 틱 주기가 1초라서 기한을 기다리는 단계마다 1초에서 2초가 걸립니다. 그래서
+/// 여러 대기자를 같은 틱에 겹쳐 놓습니다.
+///
+/// # Arguments
+/// `q` - 격리 태스크들이 보고에 쓰는 엔드포인트
+fn test_timeouts(iso: &Iso, q: i64) {
+    let (ut, nb) = (iso.ut, ipc::NONBLOCK);
+    let timed = timed_entry as usize as u64;
+    let lone = retype(ut, obj::ENDPOINT);
+    check("timeout lone ep", lone > 0);
+
+    // 뜻이 정해지지 않은 플래그 비트는 거부되고, 비대기 플래그는 타임아웃보다
+    // 우선함
+    check("flag bit 1 refused", recv(lone, 2).status == err::BAD_FLAGS);
+    check("flag bit 31 refused", send(lone, 1 << 31, [0; 4]).status == err::BAD_FLAGS);
+    check("flag bits refused on call", call(lone, nb | 4, [0; 4]).status == err::BAD_FLAGS);
+    check(
+        "flag bits refused on reply_recv",
+        reply_recv(lone, 0x100, [0; 4]).status == err::BAD_FLAGS,
+    );
+    check(
+        "nonblock beats timeout",
+        recv(lone, nb | ipc::timeout(9)).status == err::WOULD_BLOCK,
+    );
+
+    // 느린 서버와, 상대가 없는 엔드포인트에서 기한을 걸고 기다리는 세 태스크
+    // (수신, 송신, 수신자를 기다리는 CALL)
+    let (srv_ep, go) = (retype(ut, obj::ENDPOINT), retype(ut, obj::ENDPOINT));
+    check("slow server eps", srv_ep > 0 && go > 0);
+    iso.spawn(
+        slow_server_entry as usize as u64,
+        0,
+        &[(srv_ep, rights::R, 0), (go, rights::R, 0)],
+    );
+    for mode in 0..3u64 {
+        let ep = retype(ut, obj::ENDPOINT);
+        check("timed ep", ep > 0);
+        let need = if mode == 0 { rights::R } else { rights::W };
+        iso.spawn(timed, mode | (1 << 8), &[(ep, need, 0), (q, rights::W, 0)]);
+    }
+
+    // 루트는 서버에 기한을 걸고 CALL함. 서버는 메시지를 받고 신호를 기다리며
+    // 블록되고 세 태스크도 각자 블록되므로 실행할 태스크가 하나도 남지 않음.
+    // 예전 커널은 여기서 코어를 세웠음. 이제는 틱을 기다렸다가 기한이 지난
+    // 대기자를 깨우고, 루트는 메시지가 전달된 뒤였으므로 REPLY_TIMEOUT을 받음
+    let r = call(srv_ep, ipc::timeout(1), [1, 0, 0, 0]);
+    check("call reply timeout", r.status == err::REPLY_TIMEOUT);
+
+    // 세 태스크는 전부 TIMEOUT으로 깨어나 보고함. 아직 기한 전이면 루트는
+    // 기한 없이 기다리고, 그동안에도 틱이 그들을 깨움
+    let mut seen = 0u64;
+    for _ in 0..3 {
+        let r = recv(q, 0);
+        check(
+            "timed report",
+            r.status == 0 && r.mr[1] == TIMED_TAG && r.mr[0] == err::TIMEOUT as u64 && r.mr[2] < 3,
+        );
+        seen |= 1 << r.mr[2];
+    }
+    check("all three timed out", seen == 0b111);
+
+    // 서버의 뒤늦은 응답은 받을 상대가 없어 버려지고, 서버는 다음 호출에
+    // 그 호출의 응답을 돌려줌(첫 호출의 응답이 섞여 오지 않음)
+    check("release slow server", send(go, 0, [0; 4]).status == 0);
+    let r = call(srv_ep, 0, [2, 0, 0, 0]);
+    check("late reply dropped", r.status == 0 && r.mr[0] == 2 ^ SLOW_XOR);
+
+    // 기한을 건 채 블록된 태스크의 삭제: 기한 목록에서 빠지므로, 그 기한이
+    // 지나는 뒤의 틱에서 커널이 사라진 TCB를 따라가지 않음
+    let gone_ep = retype(ut, obj::ENDPOINT);
+    check("gone ep", gone_ep > 0);
+    let g = iso.spawn(timed, 1 << 8, &[(gone_ep, rights::R, 0), (q, rights::W, 0)]);
+    check("timed waiter arrived", iso.wait_pulse(PULSE_TIMED));
+    yield_now();
+    check("delete timed waiter", cap_delete(g.tcb) == 0);
+
+    // 기한 전에 메시지로 깨어난 대기자의 기한은 취소됨. 남아 있었다면 바로
+    // 다음의 기한 있는 대기에서 커널이 이중 등록을 발견하고 정지함. 이
+    // 시점에는 앞의 세 태스크가 양보 루프를 돌고 있으므로 기한 처리는 대기
+    // 루프가 아니라 선점 경로에서 일어남
+    let b = iso.spawn(blocker_entry as usize as u64, 77, &[(q, rights::W, 0)]);
+    let r = recv(q, ipc::timeout(1));
+    check("woken before deadline", r.status == 0 && r.mr == [0xB10C, 77, 0, 0]);
+    check("own recv times out", recv(lone, ipc::timeout(1)).status == err::TIMEOUT);
+    check("deleted waiter stayed gone", recv(q, nb).status == err::WOULD_BLOCK);
+    check("delete blocker", cap_delete(b.tcb) == 0);
+    put_str("root: timeout tests pass\n");
 }
 
 #[panic_handler]

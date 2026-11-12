@@ -3,6 +3,11 @@
 //! # Features
 //! 커널 이미지(W^X 분리)만 담는 최소 테이블을 .bss의 정적 풀에서 구성합니다.
 //! 블록 매핑 없이 최하위 레벨 페이지로만 매핑해 코드 경로를 하나로 유지합니다.
+//! 재분류된 오브젝트의 별칭에 드는 테이블은 정적 풀이 아니라 부팅 때 RAM에서
+//! 떼어 둔 예약 구간에서 나옵니다([reserve_tables]). 예약은 untyped로 넘기는
+//! 구간마다 그 구간의 모든 그래뉼을 매핑하는 데 들 수 있는 최대 수만큼 잡으므로
+//! ([alias_tables_for]), 부팅 뒤에는 어떤 태스크도 untyped 메모리를 쥐는
+//! 것만으로 별칭 테이블을 바닥낼 수 없습니다.
 //! 이미지는 적재된 물리 주소와 무관하게 TTBR1의 고정 주소 `KERNEL_IMAGE_VA`에
 //! 매핑되고, TTBR0에는 전환 순간에만 쓰는 identity 매핑이 놓입니다(진입 페이즈
 //! 3에서 사용자 공간용으로 교체). TTBR1의 나머지는 세 구역으로 나뉩니다.
@@ -43,6 +48,28 @@ const DEVICE_VA: u64 = KERNEL_IMAGE_VA + (1 << 30);
 /// 디바이스 창의 칸 수(프로브 칸 포함). 커널이 매핑하는 디바이스 페이지는
 /// 콘솔 1, GIC 최대 4라서 여유를 둔 값입니다.
 const DEVICE_SLOTS: usize = 16;
+
+/// 테이블 예약 구간의 최대 수. untyped로 넘기는 구간마다 하나씩 쓰므로 메모리
+/// 구간과 예약 구간이 만들 수 있는 틈의 수(8 + 36)보다 크게 잡음
+pub const MAX_TABLE_RESERVES: usize = 64;
+
+/// 물리 주소를 커널이 그 메모리에 닿는 주소로 바꾸는 오프셋을 주는 함수입니다.
+///
+/// 커널에서는 TTBR1 별칭입니다. 호스트 단위 테스트에서는 테스트가 스레드마다
+/// 정하는 값이라, 직접 할당한 메모리를 낮은 가짜 물리 주소에 놓인 예약
+/// 구간처럼 다루며 워커를 그대로 돌릴 수 있습니다.
+#[cfg(not(test))]
+fn alias_offset() -> u64 {
+    KERNEL_VA_OFFSET
+}
+#[cfg(test)]
+fn alias_offset() -> u64 {
+    TEST_ALIAS_OFFSET.with(core::cell::Cell::get)
+}
+#[cfg(test)]
+std::thread_local! {
+    static TEST_ALIAS_OFFSET: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
 
 const PAGE_SHIFT: u32 = GRANULE.trailing_zeros();
 const BITS_PER_LEVEL: u32 = PAGE_SHIFT - 3;
@@ -158,6 +185,13 @@ struct Pool {
     /// 프로브 칸의 리프 위치(테이블 번호, 엔트리 번호)와 사용 여부
     probe_leaf: (usize, usize),
     probe_live: bool,
+    /// 부팅 때 RAM에서 떼어 둔 테이블 예약 구간들(시작 PA, 테이블 수). 정적
+    /// 배열 뒤의 테이블 번호가 이 구간들을 순서대로 가리킴
+    ext: [(u64, usize); MAX_TABLE_RESERVES],
+    ext_regions: usize,
+    /// 예약 구간 전체의 테이블 수와 그중 내준 수
+    ext_total: usize,
+    ext_used: usize,
 }
 
 struct SyncCell(UnsafeCell<Pool>);
@@ -180,6 +214,10 @@ static POOL: SyncCell = SyncCell(UnsafeCell::new(Pool {
     dev_pages: [0; DEVICE_SLOTS],
     probe_leaf: (0, 0),
     probe_live: false,
+    ext: [(0, 0); MAX_TABLE_RESERVES],
+    ext_regions: 0,
+    ext_total: 0,
+    ext_used: 0,
 }));
 
 pub(crate) fn index(va: u64, level: u32) -> usize {
@@ -189,7 +227,23 @@ pub(crate) fn index(va: u64, level: u32) -> usize {
 }
 
 impl Pool {
+    /// 테이블 하나를 내주는 함수입니다. 번호가 `POOL_LEN` 미만이면 정적
+    /// 배열의 테이블이고, 그 이상이면 예약 구간의 테이블입니다.
+    ///
+    /// 예약 구간이 등록된 뒤에는 거기서 먼저 내주므로 부팅 뒤의 별칭 매핑은
+    /// 정적 배열을 쓰지 않습니다. 예약 구간의 테이블은 부팅 때 통째로 지우지
+    /// 않고 내줄 때 지웁니다.
     fn alloc(&mut self) -> Result<usize, MmuError> {
+        if self.ext_used < self.ext_total {
+            let i = POOL_LEN + self.ext_used;
+            self.ext_used += 1;
+            // SAFETY: 예약 구간은 등록할 때 별칭으로 매핑했고 커널만 쓰며,
+            //         아직 어느 테이블에서도 가리키지 않는 테이블임
+            unsafe {
+                core::ptr::write_bytes(self.pa(i).wrapping_add(alias_offset()) as *mut u8, 0, GRANULE);
+            }
+            return Ok(i);
+        }
         if self.used == POOL_LEN {
             return Err(MmuError::OutOfTables);
         }
@@ -198,8 +252,40 @@ impl Pool {
         Ok(i)
     }
 
+    /// 테이블 번호를 물리 주소로 바꾸는 함수입니다.
+    ///
+    /// 내준 적 없는 번호를 넘기는 것은 이 모듈의 버그이므로 정지합니다.
     fn pa(&self, i: usize) -> u64 {
-        self.base_pa + (i * GRANULE) as u64
+        if i < POOL_LEN {
+            return self.base_pa + (i * GRANULE) as u64;
+        }
+        let mut ord = i - POOL_LEN;
+        for &(base, count) in &self.ext[..self.ext_regions] {
+            if ord < count {
+                return base + (ord * GRANULE) as u64;
+            }
+            ord -= count;
+        }
+        panic!("kernel table index out of range");
+    }
+
+    /// 테이블의 엔트리 배열을 주는 함수입니다.
+    fn tbl(&self, i: usize) -> &[u64; ENTRIES] {
+        if i < POOL_LEN {
+            return &self.tables[i].0;
+        }
+        // SAFETY: pa()는 등록된 예약 구간 안의 주소만 주고, 그 구간은 별칭으로
+        //         매핑돼 있으며 커널만 접근함
+        unsafe { &*(self.pa(i).wrapping_add(alias_offset()) as *const [u64; ENTRIES]) }
+    }
+
+    /// 테이블의 엔트리 배열을 고칠 수 있게 주는 함수입니다.
+    fn tbl_mut(&mut self, i: usize) -> &mut [u64; ENTRIES] {
+        if i < POOL_LEN {
+            return &mut self.tables[i].0;
+        }
+        // SAFETY: tbl()과 같고, 풀에 대한 가변 참조가 유일하므로 이 참조도 유일함
+        unsafe { &mut *(self.pa(i).wrapping_add(alias_offset()) as *mut [u64; ENTRIES]) }
     }
 
     /// `va`를 변환하는 리프 엔트리의 위치(테이블 번호, 엔트리 번호)를 찾는
@@ -207,7 +293,7 @@ impl Pool {
     fn leaf_of(&self, root: usize, va: u64) -> Result<(usize, usize), MmuError> {
         let mut t = root;
         for level in 0..3 {
-            let entry = self.tables[t].0[index(va, level)];
+            let entry = self.tbl(t)[index(va, level)];
             if entry & 0b11 != DESC_TABLE {
                 return Err(MmuError::MissingTable);
             }
@@ -220,24 +306,36 @@ impl Pool {
         start < self.image.1 && self.image.0 < end
     }
 
+    /// 테이블 디스크립터가 가리키는 물리 주소를 테이블 번호로 바꾸는 함수입니다.
+    ///
+    /// 정적 배열이나 예약 구간 안에 있고, 그래뉼에 정렬돼 있고, 이미 내준
+    /// 테이블일 때만 받아들입니다. 그 밖의 주소는 풀이 만든 링크가 아닙니다.
     fn index_of(&self, pa: u64) -> Result<usize, MmuError> {
-        let base = self.pa(0);
-        if pa < base {
+        let g = GRANULE as u64;
+        if pa % g != 0 {
             return Err(MmuError::BadTable);
         }
-        let off = pa - base;
-        let i = (off / GRANULE as u64) as usize;
-        if off % GRANULE as u64 != 0 || i >= self.used {
-            return Err(MmuError::BadTable);
+        let base = self.base_pa;
+        if pa >= base && pa - base < (POOL_LEN as u64) * g {
+            let i = ((pa - base) / g) as usize;
+            return if i < self.used { Ok(i) } else { Err(MmuError::BadTable) };
         }
-        Ok(i)
+        let mut ord = 0usize;
+        for &(start, count) in &self.ext[..self.ext_regions] {
+            if pa >= start && pa - start < (count as u64) * g {
+                let o = ord + ((pa - start) / g) as usize;
+                return if o < self.ext_used { Ok(POOL_LEN + o) } else { Err(MmuError::BadTable) };
+            }
+            ord += count;
+        }
+        Err(MmuError::BadTable)
     }
 
     /// 페이지 하나를 매핑하는 함수입니다. 실패하면 이 호출이 만든 중간
     /// 테이블과 링크를 전부 되돌려 풀 상태를 호출 전과 같게 유지합니다.
     ///
-    /// 되돌리기가 없으면 실패한 매핑(재분류 경로의 별칭 매핑 등)이 풀을
-    /// 조금씩 갉아먹어 사용자가 커널 정적 자원을 소모시키는 경로가 됩니다.
+    /// 되돌리기가 없으면 실패한 매핑(재분류 경로의 별칭 매핑 등)이 테이블을
+    /// 조금씩 갉아먹어, 부팅 때 구간 크기에 맞춰 잡은 예약이 모자라게 됩니다.
     ///
     /// `same_ok`이면 리프에 이미 완전히 같은 매핑(같은 PA, 같은 속성)이 있는
     /// 경우를 성공으로 칩니다. 회수된 untyped 메모리를 다시 재분류할 때 같은
@@ -251,7 +349,7 @@ impl Pool {
         attrs: u64,
         same_ok: bool,
     ) -> Result<(), MmuError> {
-        let used_before = self.used;
+        let (used_before, ext_before) = (self.used, self.ext_used);
         // 이번 호출이 새로 쓴 링크(부모 테이블, 인덱스), 레벨당 최대 하나
         let mut links: [(usize, usize); 3] = [(0, 0); 3];
         let mut link_count = 0;
@@ -260,10 +358,10 @@ impl Pool {
             let mut t = root;
             for level in 0..3 {
                 let idx = index(va, level);
-                let entry = self.tables[t].0[idx];
+                let entry = self.tbl(t)[idx];
                 t = if entry == 0 {
                     let child = self.alloc()?;
-                    self.tables[t].0[idx] = self.pa(child) | DESC_TABLE;
+                    self.tbl_mut(t)[idx] = self.pa(child) | DESC_TABLE;
                     links[link_count] = (t, idx);
                     link_count += 1;
                     child
@@ -274,24 +372,27 @@ impl Pool {
                 };
             }
             let idx = index(va, 3);
-            let old = self.tables[t].0[idx];
+            let old = self.tbl(t)[idx];
             if old == pa | attrs && same_ok {
                 return Ok(());
             }
             if old != 0 {
                 return Err(MmuError::Overlap);
             }
-            self.tables[t].0[idx] = pa | attrs;
+            self.tbl_mut(t)[idx] = pa | attrs;
             Ok(())
         })();
 
         if r.is_err() {
             // 새 테이블은 링크 외에 기록된 것이 없으므로 링크만 지우면 다시
-            // 소거 상태의 풀 항목이 됨
+            // 소거 상태의 풀 항목이 됨(예약 구간의 테이블은 다음에 내줄 때
+            // 다시 소거함). 이번 호출이 받은 테이블은 가장 나중에 내준
+            // 것들이라 두 계수를 되돌리는 것으로 충분함
             for &(parent, idx) in &links[..link_count] {
-                self.tables[parent].0[idx] = 0;
+                self.tbl_mut(parent)[idx] = 0;
             }
             self.used = used_before;
+            self.ext_used = ext_before;
         }
         r
     }
@@ -506,6 +607,9 @@ pub fn map_kernel_window(window: Range<u64>) -> Result<(), MmuError> {
 /// 같은 물리 프레임이 회수 뒤에 다시 재분류되면 별칭이 이미 있으므로 완전히
 /// 같은 매핑은 성공으로 칩니다. 별칭은 한 번 생기면 제거하지 않습니다.
 ///
+/// 필요한 테이블은 부팅 때 등록한 예약 구간에서 나옵니다([reserve_tables]).
+/// 커널이 untyped로 넘긴 메모리 안의 주소라면 그 예약이 모자랄 수 없습니다.
+///
 /// # Arguments
 /// `pa` - 그래뉼 정렬된 오브젝트의 PA
 ///
@@ -535,6 +639,14 @@ pub fn map_dtb(range: Range<u64>) -> Result<(), MmuError> {
 }
 
 fn map_alias(window: Range<u64>, perm: Perm, same_ok: bool) -> Result<(), MmuError> {
+    // SAFETY: 부트 코어의 초기화 시퀀스 또는 이양 후 시스템 콜 컨텍스트에서만
+    //         호출됨. 초기화 순서는 kernel_main이 강제하고, 시스템 콜은 단일
+    //         코어에서 DAIF 마스크 상태로 실행되므로 이 가변 참조는 유일함
+    let pool = unsafe { &mut *POOL.0.get() };
+    map_alias_in(pool, window, perm, same_ok)
+}
+
+fn map_alias_in(pool: &mut Pool, window: Range<u64>, perm: Perm, same_ok: bool) -> Result<(), MmuError> {
     let g = GRANULE as u64;
     if window.end <= window.start || window.start % g != 0 || window.end % g != 0 {
         return Err(MmuError::Misaligned);
@@ -543,11 +655,6 @@ fn map_alias(window: Range<u64>, perm: Perm, same_ok: bool) -> Result<(), MmuErr
     if window.end > PA_CEILING {
         return Err(MmuError::AboveCeiling);
     }
-
-    // SAFETY: 부트 코어의 초기화 시퀀스 또는 이양 후 시스템 콜 컨텍스트에서만
-    //         호출됨. 초기화 순서는 kernel_main이 강제하고, 시스템 콜은 단일
-    //         코어에서 DAIF 마스크 상태로 실행되므로 이 가변 참조는 유일함
-    let pool = unsafe { &mut *POOL.0.get() };
     if !pool.enabled {
         return Err(MmuError::NotEnabled);
     }
@@ -564,6 +671,88 @@ fn map_alias(window: Range<u64>, perm: Perm, same_ok: bool) -> Result<(), MmuErr
     // SAFETY: 새로 유효해진 테이블 엔트리를 워커가 보기 전에 쓰기를 완료시킴
     unsafe { asm!("dsb ishst", "isb", options(nostack)) };
     Ok(())
+}
+
+/// 구간의 모든 그래뉼을 페이지로 매핑할 때 들 수 있는 테이블 수의 상한을 주는
+/// 함수입니다.
+///
+/// 루트 아래 세 레벨마다, 그 레벨의 테이블 하나가 덮는 구획 가운데 이 구간이
+/// 걸치는 구획의 수를 셉니다. 다른 매핑과 위쪽 테이블을 나눠 쓰면 실제로는
+/// 덜 들지만 더 드는 일은 없습니다.
+///
+/// # Arguments
+/// `range` - 비어 있지 않은 물리 구간
+pub fn alias_tables_for(range: &Range<u64>) -> u64 {
+    let mut n = 0;
+    for level in 1..=3u32 {
+        // 이 레벨의 테이블 하나가 덮는 바이트 수
+        let span = (GRANULE as u64) << (BITS_PER_LEVEL * (4 - level));
+        n += range.end.div_ceil(span) - range.start / span;
+    }
+    n
+}
+
+/// RAM의 한 구간을 커널 페이지 테이블의 예약 구간으로 등록하는 함수입니다.
+///
+/// 구간을 별칭으로 매핑하고 그 그래뉼들을 테이블로 내줄 수 있게 합니다. 구간을
+/// 매핑하는 데에도 테이블이 들므로, 최하위 테이블 하나가 덮는 크기씩 나눠
+/// 매핑하면서 매핑이 끝난 부분부터 바로 등록합니다. 그래서 첫 조각만 그
+/// 시점의 여유(정적 풀이나 앞서 등록한 구간)에서 치르고 나머지는 이 구간이
+/// 스스로 댑니다.
+///
+/// 실패하면 그때까지 등록된 부분은 그대로 테이블로 쓰입니다. 호출자는 이
+/// 구간이 속한 메모리를 untyped로 넘기면 안 됩니다.
+///
+/// # Arguments
+/// `range` - 그래뉼 정렬된 물리 구간. 커널만 쓰고 untyped에서 빠져 있어야 함
+///
+/// # Errors
+/// 정렬 위반, 상한 초과, 이미지나 기존 매핑과의 겹침, 등록 칸 소진, 첫 조각을
+/// 매핑할 테이블 부족 시 `MmuError`
+pub fn reserve_tables(range: Range<u64>) -> Result<(), MmuError> {
+    // SAFETY: 부트 코어의 초기화 시퀀스에서만 호출되어 이 가변 참조는 유일함
+    let pool = unsafe { &mut *POOL.0.get() };
+    pool.reserve(range)
+}
+
+/// 테이블 예약 구간의 (내준 수, 전체) 쌍을 주는 함수입니다.
+pub fn table_reserve_usage() -> (usize, usize) {
+    // SAFETY: 읽기만 하고, 호출 지점(부트 시퀀스 또는 시스템 콜 컨텍스트)은
+    //         단일 코어라 동시 변이가 없음
+    let pool = unsafe { &*POOL.0.get() };
+    (pool.ext_used, pool.ext_total)
+}
+
+impl Pool {
+    fn reserve(&mut self, range: Range<u64>) -> Result<(), MmuError> {
+        let g = GRANULE as u64;
+        if range.end <= range.start || range.start % g != 0 || range.end % g != 0 {
+            return Err(MmuError::Misaligned);
+        }
+        if self.ext_regions == MAX_TABLE_RESERVES {
+            return Err(MmuError::OutOfTables);
+        }
+        let slot = self.ext_regions;
+        self.ext[slot] = (range.start, 0);
+        self.ext_regions += 1;
+
+        let span = g * ENTRIES as u64;
+        let mut at = range.start;
+        while at < range.end {
+            let end = range.end.min((at / span + 1) * span);
+            if let Err(e) = map_alias_in(self, at..end, Perm::Rw, false) {
+                if self.ext[slot].1 == 0 {
+                    self.ext_regions -= 1;
+                }
+                return Err(e);
+            }
+            let n = ((end - at) / g) as usize;
+            self.ext[slot].1 += n;
+            self.ext_total += n;
+            at = end;
+        }
+        Ok(())
+    }
 }
 
 /// 디바이스 레지스터가 있는 물리 페이지를 디바이스 창에 매핑하는 함수입니다.
@@ -642,7 +831,7 @@ pub fn probe_map(pa: u64) -> Result<u64, MmuError> {
     } else {
         pool.retire_probe();
         let (t, i) = pool.probe_leaf;
-        pool.tables[t].0[i] = page | attrs;
+        pool.tbl_mut(t)[i] = page | attrs;
     }
     pool.probe_live = true;
     // SAFETY: 새 엔트리를 워커가 보기 전에 쓰기를 완료시킴
@@ -679,7 +868,7 @@ impl Pool {
             return;
         }
         let (t, i) = self.probe_leaf;
-        self.tables[t].0[i] = 0;
+        self.tbl_mut(t)[i] = 0;
         self.probe_live = false;
         // SAFETY: 무효 엔트리 쓰기를 완료시킨 뒤 해당 VA의 마지막 레벨 변환만
         //         지우고, 그 완료를 기다림 (TLBI의 피연산자는 VA를 12비트 내린 값)

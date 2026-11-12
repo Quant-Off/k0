@@ -89,10 +89,12 @@ impl PhysRegion {
 ///
 /// 주소 공간은 포인터가 아니라 (asid, generation) 쌍으로 가리킵니다. 주소
 /// 공간이 먼저 사라지면 세대가 달라져 이 기록은 낡은 것으로 판정되고, 해제
-/// 경로는 사라진 테이블을 절대 걷지 않습니다.
+/// 경로는 사라진 테이블을 절대 걷지 않습니다. asid는 커널의 등록부가 정하는
+/// 번호(루트 테이블이 놓인 그래뉼의 번호)이고 이 크레이트는 그 값을 해석하지
+/// 않습니다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mapping {
-    pub asid: u16,
+    pub asid: u64,
     pub generation: u64,
     pub va: u64,
     pub level: u8,
@@ -120,7 +122,7 @@ pub enum Cap {
     /// 케이퍼빌리티 슬롯 배열
     CNode { base: u64, slots: u64 },
     /// 사용자 주소 공간(TTBR0 루트 테이블)
-    AddrSpace { root_pa: u64, asid: u16 },
+    AddrSpace { root_pa: u64, asid: u64 },
     /// 커널 디버그 콘솔 출력 권한(오브젝트 없음)
     Console,
 }
@@ -236,7 +238,7 @@ pub trait Env {
 
 fn encode(cap: &Cap) -> [u64; 4] {
     let map_words = |m: &Option<Mapping>| match m {
-        Some(m) => (FLAG_MAPPED, m.va | u64::from(m.level), u64::from(m.asid), m.generation),
+        Some(m) => (FLAG_MAPPED, m.va | u64::from(m.level), m.asid, m.generation),
         None => (0, 0, 0, 0),
     };
     match cap {
@@ -267,9 +269,24 @@ fn encode(cap: &Cap) -> [u64; 4] {
             0,
         ],
         Cap::CNode { base, slots } => [base | KIND_CNODE, *slots, 0, 0],
-        Cap::AddrSpace { root_pa, asid } => [root_pa | KIND_ADDR_SPACE, u64::from(*asid), 0, 0],
+        Cap::AddrSpace { root_pa, asid } => [root_pa | KIND_ADDR_SPACE, *asid, 0, 0],
         Cap::Console => [KIND_CONSOLE, 0, 0, 0],
     }
+}
+
+/// 슬롯 워드의 주소 공간 번호를 확인하는 함수입니다.
+///
+/// 번호는 루트 테이블이 놓인 그래뉼의 번호입니다. 0번 그래뉼은 오브젝트가 될
+/// 수 없고, 슬롯이 담을 수 있는 가장 큰 PA의 그래뉼 번호를 넘는 값도 나올 수
+/// 없으므로 둘 다 손상으로 봅니다.
+///
+/// # Errors
+/// 범위 밖이면 `Corrupt`
+fn asid_of(word: u64) -> Result<u64, CapError> {
+    if word == 0 || word > BASE_MASK >> 12 {
+        return Err(CapError::Corrupt);
+    }
+    Ok(word)
 }
 
 fn decode(w: &[u64; 4]) -> Result<Option<Entry>, CapError> {
@@ -297,7 +314,7 @@ fn decode(w: &[u64; 4]) -> Result<Option<Entry>, CapError> {
                 Err(CapError::Corrupt)
             };
         }
-        let asid = u16::try_from(w[2]).map_err(|_| CapError::Corrupt)?;
+        let asid = asid_of(w[2])?;
         if w[1] & !(BASE_MASK | LEVEL_MASK) != 0 {
             return Err(CapError::Corrupt);
         }
@@ -363,7 +380,7 @@ fn decode(w: &[u64; 4]) -> Result<Option<Entry>, CapError> {
         }
         KIND_ADDR_SPACE => {
             plain(w[2] == 0 && w[3] == 0)?;
-            let asid = u16::try_from(w[1]).map_err(|_| CapError::Corrupt)?;
+            let asid = asid_of(w[1])?;
             Cap::AddrSpace {
                 root_pa: base,
                 asid,
@@ -572,7 +589,7 @@ pub unsafe fn retype(
     dest: *mut Slot,
     kind: ObjKind,
     granule: u64,
-    prep: impl FnOnce(u64) -> Option<u16>,
+    prep: impl FnOnce(u64) -> Option<u64>,
 ) -> Result<(), CapError> {
     // SAFETY: 함수 계약을 중계함
     let src = unsafe { read(ut) }?.ok_or(CapError::NotUntyped)?;
@@ -1073,7 +1090,7 @@ pub struct BootObjects {
     /// 루트 태스크 TTBR0 루트 테이블의 PA
     pub addr_space_root: u64,
     /// 루트 주소 공간에 등록된 asid
-    pub addr_space_asid: u16,
+    pub addr_space_asid: u64,
     /// 루트 CNode 자신의 PA
     pub cnode: u64,
 }
@@ -1107,22 +1124,7 @@ pub unsafe fn bootstrap(
     memory: &[PhysRegion],
     reserved: &[PhysRegion],
 ) -> Result<u64, CapError> {
-    for (i, m) in memory.iter().enumerate() {
-        if m.size == 0 || m.base.checked_add(m.size).is_none() {
-            return Err(CapError::BadRegion);
-        }
-        if memory[..i]
-            .iter()
-            .any(|o| o.base < m.end() && m.base < o.end())
-        {
-            return Err(CapError::BadRegion);
-        }
-    }
-    for r in reserved {
-        if r.size == 0 || r.base.checked_add(r.size).is_none() {
-            return Err(CapError::BadRegion);
-        }
-    }
+    check_regions(memory, reserved)?;
 
     let fixed = [
         (boot_slot::TCB, Cap::Tcb { base: objs.tcb }),
@@ -1156,6 +1158,83 @@ pub unsafe fn bootstrap(
     Ok(next)
 }
 
+/// 부트스트랩에 넘길 메모리 구간과 예약 구간의 산술을 확인하는 함수입니다.
+///
+/// 메모리 구간끼리 겹치면 같은 물리 프레임이 두 untyped에 들어가 두 번
+/// 재분류될 수 있으므로 거부합니다. 예약 구간은 서로 겹쳐도 됩니다.
+///
+/// # Errors
+/// 크기가 0이거나 끝이 주소 범위를 넘는 구간, 서로 겹치는 메모리 구간은
+/// `BadRegion`
+pub fn check_regions(memory: &[PhysRegion], reserved: &[PhysRegion]) -> Result<(), CapError> {
+    for (i, m) in memory.iter().enumerate() {
+        if m.size == 0 || m.base.checked_add(m.size).is_none() {
+            return Err(CapError::BadRegion);
+        }
+        if memory[..i]
+            .iter()
+            .any(|o| o.base < m.end() && m.base < o.end())
+        {
+            return Err(CapError::BadRegion);
+        }
+    }
+    for r in reserved {
+        if r.size == 0 || r.base.checked_add(r.size).is_none() {
+            return Err(CapError::BadRegion);
+        }
+    }
+    Ok(())
+}
+
+/// 메모리 구간 하나에서 예약 구간들을 뺀 나머지 틈을 낮은 주소부터 하나씩
+/// 넘겨 주는 함수입니다.
+///
+/// [bootstrap]이 untyped를 만들 때 쓰는 계산 그대로입니다. 커널이 untyped로
+/// 넘길 구간을 미리 알아야 할 때도 이 함수를 써서 두 계산이 어긋나지 않게
+/// 합니다. 예약 구간끼리 겹쳐도 동작합니다(커서가 단조 전진).
+///
+/// # Arguments
+/// `m` - [check_regions]를 통과한 메모리 구간
+/// `reserved` - 제외할 구간들
+/// `f` - 틈마다 한 번 불리는 콜백. 에러를 반환하면 거기서 멈춤
+///
+/// # Errors
+/// 콜백이 반환한 에러
+pub fn for_each_gap<E>(
+    m: PhysRegion,
+    reserved: &[PhysRegion],
+    mut f: impl FnMut(PhysRegion) -> Result<(), E>,
+) -> Result<(), E> {
+    // 예약 구간을 오름차순으로 훑기 위한 선택 정렬(구간 수가 작아 충분함)
+    let mut cursor = m.base;
+    loop {
+        // cursor 이후에서 가장 낮은 예약 구간을 찾음
+        let mut lowest: Option<PhysRegion> = None;
+        for r in reserved {
+            if r.end() > cursor && r.base < m.end() {
+                match lowest {
+                    Some(n) if n.base <= r.base => {}
+                    _ => lowest = Some(*r),
+                }
+            }
+        }
+        let gap_end = match lowest {
+            Some(r) => r.base.min(m.end()),
+            None => m.end(),
+        };
+        if gap_end > cursor {
+            f(PhysRegion {
+                base: cursor,
+                size: gap_end - cursor,
+            })?;
+        }
+        match lowest {
+            Some(r) if r.end() < m.end() => cursor = r.end().max(cursor),
+            _ => return Ok(()),
+        }
+    }
+}
+
 /// 다음 빈 슬롯에 부트 원본 케이퍼빌리티를 넣고 번호를 전진시키는 함수입니다.
 ///
 /// # Errors
@@ -1182,37 +1261,15 @@ unsafe fn push_untypeds(
     m: PhysRegion,
     reserved: &[PhysRegion],
 ) -> Result<(), CapError> {
-    // 예약 구간을 오름차순으로 훑기 위한 선택 정렬(구간 수가 작아 충분함)
-    let mut cursor = m.base;
-    loop {
-        // cursor 이후에서 가장 낮은 예약 구간을 찾음
-        let mut lowest: Option<PhysRegion> = None;
-        for r in reserved {
-            if r.end() > cursor && r.base < m.end() {
-                match lowest {
-                    Some(n) if n.base <= r.base => {}
-                    _ => lowest = Some(*r),
-                }
-            }
-        }
-        let gap_end = match lowest {
-            Some(r) => r.base.min(m.end()),
-            None => m.end(),
+    for_each_gap(m, reserved, |gap| {
+        let cap = Cap::Untyped {
+            base: gap.base,
+            size: gap.size,
+            used: 0,
         };
-        if gap_end > cursor {
-            let cap = Cap::Untyped {
-                base: cursor,
-                size: gap_end - cursor,
-                used: 0,
-            };
-            // SAFETY: 함수 계약을 중계함
-            unsafe { push_root(cnode, next, cap) }?;
-        }
-        match lowest {
-            Some(r) if r.end() < m.end() => cursor = r.end().max(cursor),
-            _ => return Ok(()),
-        }
-    }
+        // SAFETY: 함수 계약을 중계함
+        unsafe { push_root(cnode, next, cap) }.map(|_| ())
+    })
 }
 
 #[cfg(test)]

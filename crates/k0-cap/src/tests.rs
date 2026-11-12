@@ -91,8 +91,9 @@ impl Env for Log {
     }
 }
 
-fn ok_prep(_: u64) -> Option<u16> {
-    Some(0)
+fn ok_prep(pa: u64) -> Option<u64> {
+    // 커널의 등록부처럼 루트가 놓인 그래뉼의 번호를 줌(0은 유효한 번호가 아님)
+    Some(pa / G)
 }
 
 #[test]
@@ -185,13 +186,42 @@ fn malformed_words_are_rejected_not_interpreted() {
     for w in bad {
         assert_eq!(decode(&w), Err(CapError::Corrupt), "{w:x?}");
     }
-    let mapped_bad_asid = [
-        KIND_FRAME | 0x1000 | 1 << RIGHTS_SHIFT | FLAG_MAPPED,
-        0x2000,
-        0x1_0000,
-        0,
-    ];
-    assert_eq!(decode(&mapped_bad_asid), Err(CapError::Corrupt));
+    // 주소 공간 번호는 그래뉼 번호라서 0과, 슬롯이 담을 수 있는 PA 밖의 값은
+    // 나올 수 없음
+    for asid in [0, (BASE_MASK >> 12) + 1, u64::MAX] {
+        let mapped_bad_asid = [
+            KIND_FRAME | 0x1000 | 1 << RIGHTS_SHIFT | FLAG_MAPPED,
+            0x2000,
+            asid,
+            0,
+        ];
+        assert_eq!(decode(&mapped_bad_asid), Err(CapError::Corrupt), "{asid:#x}");
+        let aspace_bad_asid = [KIND_ADDR_SPACE | 0x1000, asid, 0, 0];
+        assert_eq!(decode(&aspace_bad_asid), Err(CapError::Corrupt), "{asid:#x}");
+    }
+}
+
+#[test]
+fn address_space_numbers_wider_than_16_bits_round_trip() {
+    for asid in [1, 0xFFFF, 0x1_0000, 0x4_0000, BASE_MASK >> 12] {
+        let m = Mapping {
+            asid,
+            generation: u64::MAX,
+            va: 0x7000_0000,
+            level: 3,
+        };
+        let frame = Cap::Frame {
+            base: 0x1000,
+            rights: rights::R,
+            map: Some(m),
+        };
+        assert_eq!(decode(&encode(&frame)).unwrap().unwrap().cap, frame);
+        let aspace = Cap::AddrSpace {
+            root_pa: 0x1000,
+            asid,
+        };
+        assert_eq!(decode(&encode(&aspace)).unwrap().unwrap().cap, aspace);
+    }
 }
 
 #[test]
@@ -484,7 +514,7 @@ fn retype_rejects_bad_sources_and_destinations_without_prep() {
     let (c, next) = filled(&[r(0x10000, 4 * G)], &[]);
     let n = next as usize;
     unsafe { retype(c.add(5), c.add(n), ObjKind::Frame, G, ok_prep) }.unwrap();
-    let never = |_| -> Option<u16> { panic!("prep must not run") };
+    let never = |_| -> Option<u64> { panic!("prep must not run") };
     for src in [1, 2, 3, 4, n, n + 1] {
         assert_eq!(
             unsafe { retype(c.add(src), c.add(n + 2), ObjKind::Frame, G, never) },
@@ -1273,7 +1303,7 @@ impl World {
                     let map = match map {
                         Some(_) => None,
                         None => Some(Mapping {
-                            asid: 1 + rng.below(200) as u16,
+                            asid: 1 + rng.below(200),
                             generation: rng.next(),
                             va: rng.below(1 << 20) << 14,
                             level: 3,

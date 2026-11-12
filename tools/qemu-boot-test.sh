@@ -146,7 +146,7 @@ else
     reuse_sed=''
 fi
 
-markers="k0: entry phase 1 (pre-MMU)|k0: dtb = |k0: mmu on (identity + fixed image address)|k0: jumping to higher half|k0: higher half (pc = |k0: w^x checks pass|k0: memory |k0: platform |k0: root task integrity ok|k0: entropy dtb=|k0: pac=|k0: irq on (timer 1s)|k0: kernel table pool |k0: root task loaded|k0: untyped |k0: root cnode ready|k0: bootinfo page ready|k0: user w^x checks pass|k0: entering root task (el0)|root: hello from EL0|root: control byte filter [?]|root: retype/map tests pass|root: capability tests pass|root: untyped reuse test pass|root: child exit test pass|root: ipc tests pass|k0: task fault dabort-lower|k0: task fault fp-simd|root: fault isolation tests pass|root: preempt test pass|root: secret at |root: confined task reported|k0: task fault dabort-lower|root: isolation tests pass|k0: task fault dabort-lower|k0: task fault iabort-lower|k0: task fault dabort-lower|k0: unknown syscall 65535, killing task|root: violation tests pass|root: teardown tests pass|root: revocation tests pass|root: sched tests pass|k0: tick "
+markers="k0: entry phase 1 (pre-MMU)|k0: dtb = |k0: mmu on (identity + fixed image address)|k0: jumping to higher half|k0: higher half (pc = |k0: w^x checks pass|k0: memory |k0: platform |k0: root task integrity ok|k0: entropy dtb=|k0: pac=|k0: irq on (timer 1s)|k0: kernel table pool |k0: root task loaded|k0: kernel reserve |k0: untyped |k0: root cnode ready|k0: bootinfo page ready|k0: user w^x checks pass|k0: entering root task (el0)|root: hello from EL0|root: control byte filter [?]|root: retype/map tests pass|root: capability tests pass|root: untyped reuse test pass|root: child exit test pass|root: ipc tests pass|k0: task fault dabort-lower|k0: task fault fp-simd|root: fault isolation tests pass|root: preempt test pass|root: secret at |root: confined task reported|k0: task fault dabort-lower|root: isolation tests pass|k0: task fault dabort-lower|k0: task fault iabort-lower|k0: task fault dabort-lower|k0: unknown syscall 65535, killing task|root: violation tests pass|root: teardown tests pass|k0: idle (waiting for a timeout)|root: timeout tests pass|root: revocation tests pass|root: kernel reserve tests pass|root: sched tests pass|k0: tick "
 # 메모리의 로그에는 처음 몇 번의 틱만 남습니다. 자가 검증이 그보다 오래 걸리는
 # 호스트에서는 끝의 틱이 로그에 없을 수 있으므로 순서 목록에서는 빼고, 첫 틱이
 # 기록됐는지와(아래) 자가 검증 뒤에도 틱이 이어지는지를(위의 대기) 따로 봅니다.
@@ -190,6 +190,20 @@ if [ -z "$missing" ]; then
         | sed -n '/^root: confined task reported/,/^root: isolation tests pass/p' \
         | grep -q "^k0: task fault dabort-lower .* far 0x${secret})"; then
         missing="confined task fault at the root-only address 0x${secret}"
+    fi
+fi
+
+# 타임아웃 n틱은 n주기보다 짧게 끝나면 안 됩니다. EL0에는 시계가 없으므로 틱
+# 줄로 셉니다. 타임아웃 검증은 1틱짜리 대기를 두 번 차례로 끝까지 기다리고
+# (CALL의 응답 기한, 그다음 루트 자신의 수신 기한), 각각 건 뒤 두 번째 틱에서
+# 끝나므로 그 사이에 틱 줄이 적어도 4개 있어야 합니다. 메모리의 로그에는 처음
+# 몇 번의 틱만 남으므로 직렬 판정에서만 셉니다.
+if [ -z "$missing" ] && [ -z "$memlog" ]; then
+    waited="$(tr -d '\r' < "$log" \
+        | sed -n '/^root: teardown tests pass/,/^root: timeout tests pass/p' \
+        | grep -c '^k0: tick ' || true)"
+    if [ "$waited" -lt 4 ]; then
+        missing="at least 4 timer ticks during the timeout tests (found $waited)"
     fi
 fi
 

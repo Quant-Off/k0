@@ -16,12 +16,18 @@
 //! [finish]가 한곳에서 합니다. 종료된 태스크의 컨텍스트에는 반환값을 쓰지
 //! 않고 소거만 합니다.
 //!
+//! 실행할 태스크가 없어도 커널은 정지하지 않습니다. 현재 태스크가 블록되거나
+//! 종료됐는데 준비된 태스크가 없으면 [idle_until_ready]가 인터럽트를 받으며
+//! 기다리고, 틱마다 기한이 지난 IPC 대기자를 깨웁니다. 그래서 한 태스크가
+//! 마지막으로 블록되는 것만으로는 나머지 태스크의 타임아웃이 멈추지 않습니다.
+//!
 //! # Errors
-//! 미지의 시스템 콜 번호와 EL0 폴트는 호출한 태스크만 종료시킵니다. 실행할
-//! 태스크가 남지 않으면 fail-secure 파킹합니다. 케이퍼빌리티 슬롯이나
-//! 사용자 페이지 테이블의 손상은 `k0_arch::fatal`로 정지합니다.
+//! 미지의 시스템 콜 번호와 EL0 폴트는 호출한 태스크만 종료시킵니다.
+//! 케이퍼빌리티 슬롯이나 사용자 페이지 테이블의 손상은 `k0_arch::fatal`로
+//! 정지합니다.
 
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use k0_abi::err;
 use k0_arch::earlycon::EarlyCon;
@@ -30,7 +36,6 @@ use k0_cap::{Cap, CapError, CNodeRef, Entry, Mapping, Slot};
 use k0_task::{TaskState, Tcb};
 
 use crate::object::{self, Reaper};
-use crate::panic::park;
 
 // ABI의 권한 비트와 k0-cap의 권한 비트는 같은 값이어야 함
 const _: () = {
@@ -46,8 +51,7 @@ const _: () = {
 
 /// EL0 svc 트랩의 시스템 콜 정책 함수입니다. (k0-arch가 링크 계약으로 호출)
 ///
-/// 미지의 번호는 제로 트러스트 원칙대로 호출한 태스크를 종료시키고, 그게
-/// 마지막 태스크였다면 fail-secure 파킹합니다.
+/// 미지의 번호는 제로 트러스트 원칙대로 호출한 태스크를 종료시킵니다.
 ///
 /// # Arguments
 /// `ctx` - 사용자 컨텍스트, x8 = 번호, x0-x5 = 인자, x0(수신 계열은 x1-x5도) = 반환값
@@ -81,11 +85,24 @@ extern "C" fn k0_syscall(ctx: &mut Context) {
         nr::CAP_DELETE => Some(sys_cap_delete(a[0])),
         nr::CAP_REVOKE => Some(sys_cap_revoke(a[0])),
         // IPC는 블록 경로에서 반환 레지스터를 미래의 상대가 기록하므로
-        // 핸들러가 ctx 기록까지 직접 책임지고, false(교착)만 커널이 파킹
-        nr::SEND => ipc_or_park(&mut con, k0_ipc::sys_send(ctx)),
-        nr::RECV => ipc_or_park(&mut con, k0_ipc::sys_recv(ctx)),
-        nr::CALL => ipc_or_park(&mut con, k0_ipc::sys_call(ctx)),
-        nr::REPLY_RECV => ipc_or_park(&mut con, k0_ipc::sys_reply_recv(ctx)),
+        // 핸들러가 ctx 기록까지 직접 책임짐. false는 호출한 태스크가
+        // 블록됐는데 준비된 태스크가 없다는 뜻이고, 그때는 커널이 기다림
+        nr::SEND => {
+            let switched = k0_ipc::sys_send(ctx);
+            ipc_or_idle(ctx, switched)
+        }
+        nr::RECV => {
+            let switched = k0_ipc::sys_recv(ctx);
+            ipc_or_idle(ctx, switched)
+        }
+        nr::CALL => {
+            let switched = k0_ipc::sys_call(ctx);
+            ipc_or_idle(ctx, switched)
+        }
+        nr::REPLY_RECV => {
+            let switched = k0_ipc::sys_reply_recv(ctx);
+            ipc_or_idle(ctx, switched)
+        }
         other => {
             let _ = writeln!(con, "k0: unknown syscall {other}, killing task");
             kill_current();
@@ -120,19 +137,25 @@ extern "C" fn k0_fault(ctx: &mut Context, esr: u64, far: u64) {
 
 /// 타이머 틱의 선점 정책 함수입니다. (k0-arch가 EL0 IRQ 경로에서 링크
 /// 계약으로 호출)
+///
+/// 기한이 지난 IPC 대기자를 먼저 깨운 뒤 다음 태스크로 돌립니다. 틱은 실행
+/// 중인 태스크를 끊고 들어왔으므로 현재 태스크는 기한 목록에 없습니다.
 #[unsafe(no_mangle)]
 extern "C" fn k0_preempt() {
     // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ/FIQ 컨텍스트임
-    unsafe { k0_sched::rotate() };
+    unsafe {
+        k0_ipc::expire_timeouts(k0_arch::irq::ticks(), None);
+        k0_sched::rotate();
+    }
 }
 
 /// 핸들러가 끝난 뒤의 공통 종료 경로 함수입니다.
 ///
 /// 이 시점에는 케이퍼빌리티 삭제에 따른 정리가 전부 끝나 있습니다(k0-cap이
 /// 보류 목록을 비운 뒤에 반환함). 현재 태스크가 이번 진입 중에 종료됐으면
-/// 그 컨텍스트를 소거하고 다음 태스크로 넘어갑니다. 준비 큐에는 살아 있는
-/// 태스크만 있으므로(종료 처리가 큐에서 빼냄) 넘어간 태스크가 다시 종료
-/// 상태일 수는 없습니다.
+/// 그 컨텍스트를 소거하고 다음 태스크로 넘어갑니다. 준비된 태스크가 없으면
+/// 생길 때까지 기다립니다. 준비 큐에는 살아 있는 태스크만 있으므로(종료
+/// 처리가 큐에서 빼냄) 넘어간 태스크가 다시 종료 상태일 수는 없습니다.
 ///
 /// # Arguments
 /// `ctx` - 이번 진입을 일으킨 태스크의 컨텍스트
@@ -145,9 +168,7 @@ fn finish(ctx: &mut Context, ret: Option<i64>) {
             // 태스크의 컨텍스트이고 그 TCB 프레임은 아직 재사용 전임
             *ctx = Context::zeroed();
             if !k0_sched::block_and_switch() {
-                let mut con = EarlyCon;
-                let _ = writeln!(con, "k0: all tasks exited");
-                park()
+                idle_until_ready(ctx);
             }
             return;
         }
@@ -169,16 +190,58 @@ fn kill_current() {
     unsafe { k0_ipc::teardown(k0_sched::current()) };
 }
 
-/// IPC가 교착(전 태스크 블록)을 보고하면 fail-secure 파킹하는 함수입니다.
+/// IPC 처리 뒤에, 호출한 태스크가 블록됐는데 준비된 태스크가 없으면 생길
+/// 때까지 기다리는 함수입니다.
 ///
-/// 알림 오브젝트가 생기기 전까지는 블록된 태스크를 깨울 외부 주체가
-/// 없으므로 전 태스크 블록은 회복 불가능한 교착입니다.
-fn ipc_or_park(con: &mut EarlyCon, ok: bool) -> Option<i64> {
-    if !ok {
-        let _ = writeln!(con, "k0: all tasks blocked");
-        park()
+/// # Arguments
+/// `ctx` - 이번 진입을 일으킨 태스크의 컨텍스트
+/// `switched` - IPC 처리 함수의 반환값(false = 블록됐고 전환할 태스크가 없음)
+fn ipc_or_idle(ctx: &mut Context, switched: bool) -> Option<i64> {
+    if !switched {
+        idle_until_ready(ctx);
     }
     None
+}
+
+/// 준비된 태스크가 생길 때까지 인터럽트를 받으며 기다리는 함수입니다.
+///
+/// 현재 태스크가 블록됐거나 종료됐는데 준비 큐가 비었을 때 부릅니다. 코어를
+/// 세우지 않고 다음 인터럽트까지 재웠다가, 틱이 지나면 기한이 지난 IPC
+/// 대기자를 깨우고 준비된 태스크로 전환합니다. 깨어나는 태스크는 블록된 채
+/// 기다리던 현재 태스크 자신일 수도 있습니다. 지금 태스크를 깨울 수 있는
+/// 것은 타임아웃뿐이라서, 기한을 건 대기자가 하나도 없으면 이 함수는
+/// 돌아오지 않습니다(틱은 계속 처리함).
+///
+/// # Arguments
+/// `ctx` - 이번 진입을 일으킨 태스크(스케줄러의 현재 태스크)의 컨텍스트
+fn idle_until_ready(ctx: &mut Context) {
+    static WAITING: AtomicBool = AtomicBool::new(false);
+    static STOPPED: AtomicBool = AtomicBool::new(false);
+    let mut con = EarlyCon;
+    loop {
+        // 대기에 들어갈 때마다 찍으면 로그를 채우므로 종류마다 처음 한 번만
+        // 알림. 기한을 건 대기자가 없는 쪽은 회복할 길이 없는 상태이므로
+        // 예전의 정지 메시지와 같은 머리말을 써서 눈에 띄게 함
+        // SAFETY: 시스템 콜/폴트 컨텍스트라 스케줄러 접근이 배타적임
+        if unsafe { k0_sched::has_timed() } {
+            if !WAITING.swap(true, Ordering::Relaxed) {
+                let _ = writeln!(con, "k0: idle (waiting for a timeout)");
+            }
+        } else if !STOPPED.swap(true, Ordering::Relaxed) {
+            let _ = writeln!(con, "k0: all tasks stopped (none ready, no timeout pending)");
+        }
+        // SAFETY: EL0에서 진입한 예외의 핸들러 안이라 사용자 컨텍스트가 TCB에
+        //         저장돼 있고, 커널 스택은 최상단에서 시작해 여유가 있음.
+        //         ctx는 현재 태스크의 컨텍스트이며, 기한이 지난 현재 태스크의
+        //         반환값은 이 참조로만 기록됨
+        unsafe {
+            k0_arch::irq::wait_for_interrupt();
+            k0_ipc::expire_timeouts(k0_arch::irq::ticks(), Some(&mut *ctx));
+            if k0_sched::block_and_switch() {
+                return;
+            }
+        }
+    }
 }
 
 /// 오브젝트의 PA를 커널 별칭 주소로 바꾸는 함수입니다.
@@ -295,7 +358,7 @@ fn sys_retype(ut: u64, kind: u64, dest: u64) -> i64 {
         let cn = cspace()?;
         let ut = cn.slot(ut).ok_or(err::BAD_SLOT)?;
         let dest = cn.slot(dest).ok_or(err::BAD_SLOT)?;
-        let prep = |pa: u64| -> Option<u16> {
+        let prep = |pa: u64| -> Option<u64> {
             k0_mm::alias_object(pa).ok()?;
             // SAFETY: 방금 별칭 매핑을 확인한 커널 전용 구간이며, 자손이 없는
             //         untyped에서만 같은 자리가 다시 나오므로 살아 있는
@@ -321,7 +384,7 @@ fn sys_retype(ut: u64, kind: u64, dest: u64) -> i64 {
 /// # Errors
 /// AddrSpace가 아니면 BAD_CAP. 케이퍼빌리티는 있는데 등록부에 없으면 커널
 /// 불변식 위반이므로 정지합니다
-fn aspace_of(cn: &CNodeRef, index: u64) -> Result<(*mut Slot, u64, u16, u64), i64> {
+fn aspace_of(cn: &CNodeRef, index: u64) -> Result<(*mut Slot, u64, u64, u64), i64> {
     let (slot, e) = lookup(cn, index)?;
     let Cap::AddrSpace { root_pa, asid } = e.cap else {
         return Err(err::BAD_CAP);
