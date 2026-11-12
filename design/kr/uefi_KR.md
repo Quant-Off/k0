@@ -131,8 +131,8 @@ k0-loader: exiting boot services
 
 - **호스트 단위 테스트.** `crates/k0-efi/src/tests.rs`에 32개가 있습니다. 벡터는 실제로 측정한 펌웨어 메모리 맵입니다. 디스크립터 규칙, 겹침, 항목 한계, 작성기와 재작성, 검증기, ACPI 리더, 트리 합성을 다룹니다. 네 번째 퍼저 `fuzz_acpi_with_mutated_tables`는 테이블 이미지를 변형합니다. 2026-11-12에 200만에서 300만 케이스의 캠페인이 통과했고, 앞서 실제 불일치 하나를 찾았습니다(리더가 커널의 디스커버리가 거부하는 GIC 프레임 정렬을 받아들였습니다). 커널의 배치 규칙을 리더에 적용해 수정했습니다.
 - **`k0-efi`의 결정적 퍼저 셋**: `fuzz_plan_with_random_maps`, `fuzz_rewrite_with_mutated_trees`, `fuzz_prepare_end_to_end`. 다른 퍼저와 같은 변수 `K0_FUZZ_ITERS`, `K0_FUZZ_SEED`, `K0_FUZZ_CASE`를 씁니다. 기본값은 각각 20,000, 20,000, 5,000개의 케이스입니다. 주간 워크플로가 셋 모두를 500만 케이스로 실행합니다. 2026-11-12에 각각 500만 케이스의 캠페인이 통과했습니다. 계획 퍼저는 앞서 실제 버그 하나를 찾았습니다(물리 주소 0의 블록이 받아들여졌습니다). 수정되었습니다.
-- **`tools/host-test.sh`**는 이제 ARM 호스트에서 221개(`k0-abi` 12, `k0-cap` 41, `k0-boot` 76, `k0-efi` 32, 두 그래뉼 각각에 `k0-mm` 30)를, `k0-mm` 테스트를 건너뛰는 x86-64 호스트에서 161개를 실행합니다.
-- **`tools/pe-check.py <loader>.efi`**는 PE 형태(섹션 4개, 쓰기와 실행이 함께 가능한 섹션 없음)와 캐시 및 MMU 명령의 순서를 검사하고 `pe-check: ok (...)`를 출력합니다.
+- `tools/host-test.sh`는 이제 ARM 호스트에서 221개(`k0-abi` 12, `k0-cap` 41, `k0-boot` 76, `k0-efi` 32, 두 그래뉼 각각에 `k0-mm` 30)를, `k0-mm` 테스트를 건너뛰는 x86-64 호스트에서 161개를 실행합니다.
+- `tools/pe-check.py <loader>.efi`는 PE 형태(섹션 4개, 쓰기와 실행이 함께 가능한 섹션 없음)와 캐시 및 MMU 명령의 순서를 검사하고 `pe-check: ok (...)`를 출력합니다.
 - **EDK2 부팅 테스트.** `tools/qemu-virt-runner.sh`는 `.efi` 인자를 EDK2 펌웨어로 부팅합니다(기본 머신 `virt,gic-version=3,acpi=off`이므로 디바이스 트리 경로입니다. ACPI 행은 `K0_QEMU_MACHINE=virt,gic-version=3` 또는 `virt,gic-version=2`를 넘깁니다). `tools/qemu-boot-test.sh`는 로더의 첫 줄 `k0-loader: start`부터 실패를 판정하므로 펌웨어 메시지는 세지 않습니다. `tools/build-loader.sh <커널 ELF>`는 이미 빌드된 커널을 내장하고 `.efi`의 경로(`<커널 ELF>.efi`)를 출력합니다. 그래서 UEFI 행도 다른 행과 같은 커널 바이너리를 부팅합니다. 명령은 [USAGE_KR.md](../../USAGE_KR.md)에 있습니다.
 
 ## 부팅해 본 환경
@@ -151,7 +151,7 @@ k0-loader: exiting boot services
   - 디바이스 트리 행은 `acpi=off`인 QEMU virt에서 실행합니다. `uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k`, `uefi-acpi-rng` 행은 ACPI를 켜고 실행하며 로더 줄 `k0-loader: device tree built from ACPI tables`를 요구합니다. `uefi-acpi-rng`는 `k0: entropy dtb=32B`도 요구합니다. 거부 행 `uefi-no-dtb`는 그 펌웨어가 이제 부팅하므로 더 이상 없습니다.
   - 2단계, 2026-11-12에 직접 실행: `uefi-hvf-acpi`(Apple M5 Pro, HVF를 쓰는 QEMU 11.1.3).
   - 3단계, 부팅해 본 적 없음: 실제 ACPI 머신 전부(서버, 클라우드 VM, 노트북), EDK2 ArmVirtQemu 외의 펌웨어, GICv4, CPU 항목으로 기술된 리디스트리뷰터, SBSA UART와 16550 콘솔.
-- **2단계, 2026-11-12에 직접 실행.**
+- **2단계, 2026-11-12 기준**
   - `K0_MATRIX_HVF=1`로 `uefi-hvf-el1`, `uefi-hvf-el2`, `uefi-hvf-16k` 행을 Apple M5 Pro, HVF를 쓰는 QEMU 11.1.3, 같은 펌웨어로 실행.
   - 실제 로더의 Secure Boot 시험. 키는 일회용 컨테이너에서 pip 패키지 `virt-firmware`로 등록했고, 펌웨어는 하나뿐입니다(Debian 2022.11 AAVMF, QEMU 7.2 TCG). 서명한 로더는 FAT 드라이브 경로와 `-kernel` 모두에서 부팅합니다. 서명하지 않은 로더, 내장 커널의 한 바이트를 뒤집고 다시 서명하지 않은 로더, 등록되지 않은 키로 서명한 로더는 로더 코드가 실행되기 전에 펌웨어가 거부합니다. `-kernel` 경로도 펌웨어가 검증하므로 우회가 아닙니다. 부팅은 각각 60초에서 끊었습니다.
 - **3단계, 계약상 기대하지만 부팅해 본 적 없음:** 모든 실제 보드, U-Boot의 EFI 구현, Raspberry Pi UEFI, EDK2 ArmVirtQemu 외의 펌웨어, KVM, UEFI에서의 고정 모드(`K0_PIN`), 실제 하드웨어에서의 캐시 비우기.
