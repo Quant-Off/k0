@@ -42,8 +42,23 @@ cargo build -p k0-kernel --offline --features console,vault --target-dir target/
 imgvault="$root/target/vault/aarch64-unknown-none-softfloat/debug/k0-kernel"
 imgvault16="$root/target/vault16/aarch64-unknown-none-softfloat/debug/k0-kernel"
 imgvaultna="$root/target/vaultna/aarch64-unknown-none-softfloat/debug/k0-kernel"
+# 콘솔 입력과 운영자 터미널을 넣은 이미지들: 터미널과 볼트(4K, 16K), 터미널만,
+# 터미널과 알고리즘 없는 볼트, 입력 경로만, 수신 드라이버가 없는 16550과 입력
+cargo build -p k0-kernel --offline --features console,terminal,vault-ed25519 --target-dir target/term || exit 2
+cargo build -p k0-kernel --offline --no-default-features --features granule-16k,console,terminal,vault-ed25519 --target-dir target/term16 || exit 2
+cargo build -p k0-kernel --offline --features console,terminal --target-dir target/termnv || exit 2
+cargo build -p k0-kernel --offline --features console,terminal,vault --target-dir target/termna || exit 2
+cargo build -p k0-kernel --offline --features console,console-input --target-dir target/input || exit 2
+cargo build -p k0-kernel --offline --features console-16550,console-input --target-dir target/input16550 || exit 2
+imgterm="$root/target/term/aarch64-unknown-none-softfloat/debug/k0-kernel"
+imgterm16="$root/target/term16/aarch64-unknown-none-softfloat/debug/k0-kernel"
+imgtermnv="$root/target/termnv/aarch64-unknown-none-softfloat/debug/k0-kernel"
+imgtermna="$root/target/termna/aarch64-unknown-none-softfloat/debug/k0-kernel"
+imginput="$root/target/input/aarch64-unknown-none-softfloat/debug/k0-kernel"
+imginput16550="$root/target/input16550/aarch64-unknown-none-softfloat/debug/k0-kernel"
 # UEFI 로더: 위에서 빌드한 바로 그 커널을 내장함
 efi4="$(tools/build-loader.sh "$img4")" || exit 2
+efiterm="$(tools/build-loader.sh "$imgterm")" || exit 2
 efi16="$(tools/build-loader.sh "$img16")" || exit 2
 
 failed=""
@@ -72,6 +87,22 @@ pass() {
     want "$name" $only || return 0
     ran=$((ran + 1))
     if env "$@" K0_BOOT_LOG="$root/target/matrix-$name.log" tools/qemu-boot-test.sh "$elf" > "target/matrix-$name.out" 2>&1; then
+        echo "matrix: $name pass"
+    else
+        echo "matrix: $name FAIL"
+        show "target/matrix-$name.out"
+        failed="$failed $name"
+    fi
+}
+
+# 터미널 행: 이름, 이미지, 그 뒤는 환경 변수 대입들. 이미지를 부팅해 직렬
+# 포트로 명령을 넣고 답을 대조함(tools/term-test.py). 부팅 구간의 줄들은 그
+# 스크립트가 부팅 시험의 판정 전용 모드로 넘겨 같은 규칙으로 봄
+term() {
+    name="$1"; elf="$2"; shift 2
+    want "$name" $only || return 0
+    ran=$((ran + 1))
+    if env "$@" K0_TERM_LOG="$root/target/matrix-$name.log" tools/term-test.py "$elf" > "target/matrix-$name.out" 2>&1; then
         echo "matrix: $name pass"
     else
         echo "matrix: $name FAIL"
@@ -168,6 +199,29 @@ fi
 # 볼트의 코드가 feature대로만 들어가는지, 그리고 쓰기 가능한 static을 쓰지
 # 않는지 루트 태스크의 ELF에서 확인합니다. 격리 태스크의 주소 공간에는 이미지의
 # .data와 .bss가 없어서, 볼트나 암호 구현이 static에 쓰면 그 태스크가 죽습니다.
+# 콘솔 입력과 터미널은 고른 이미지에만 들어 있어야 함. 커널의 수신 코드는
+# 심볼로, 줄과 터미널(커널 ELF에 바이트로 든 루트 태스크 이미지)은 글자열로 봄
+if want input-symbols $only; then
+    ran=$((ran + 1))
+    host="$(rustc -vV | sed -n 's/^host: //p')"
+    nm="$(rustc --print sysroot)/lib/rustlib/${host}/bin/llvm-nm"
+    bad=""
+    for spec in "$img4:0:0" "$imgquiet:0:0" "$imgvault:0:0" "$imginput:1:0" "$imginput16550:1:0" "$imgterm:1:1" "$imgtermnv:1:1"; do
+        elf="${spec%%:*}"; rest="${spec#*:}"; want_in="${rest%%:*}"; want_term="${rest#*:}"
+        s="$("$nm" -C "$elf" 2>&1)" || { bad="$bad llvm-nm-failed"; continue; }
+        code=0; printf '%s\n' "$s" | grep -Eq 'k0_conin::|k0_arch::conin::|k0_ipc::console::|k0_console_event' && code=1
+        line=0; grep -aq 'k0: tick lines off' "$elf" && line=1
+        shell=0; grep -aq 'K0 operator console' "$elf" && shell=1
+        [ "$code$line$shell" = "$want_in$want_in$want_term" ] || bad="$bad ${elf#"$root"/target/}=$code$line$shell"
+    done
+    if [ -z "$bad" ]; then
+        echo "matrix: input-symbols pass"
+    else
+        echo "matrix: input-symbols FAIL (${bad# })"
+        failed="$failed input-symbols"
+    fi
+fi
+
 if want vault-symbols $only; then
     ran=$((ran + 1))
     host="$(rustc -vV | sed -n 's/^host: //p')"
@@ -243,6 +297,49 @@ pass vault-max       "$imgvault" K0_QEMU_CPU=max K0_BOOT_FAULTS=8 K0_BOOT_REQUIR
 pass vault-el2       "$imgvault" K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE="root: oracle tests pass"
 pass vault-16k       "$imgvault16" K0_QEMU_CPU=max K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE="root: oracle tests pass"
 pass vault-no-alg    "$imgvaultna" K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE="root: oracle tests pass"
+
+# 콘솔 입력: 입력 경로만 든 이미지는 루트 태스크의 입력 자가 검증까지 보고,
+# 수신 드라이버가 없는 16550만 든 이미지는 입력이 꺼졌다는 줄을 봄(QEMU의
+# 콘솔은 PL011이라 이 이미지는 직렬 포트에 아무것도 쓰지 않음)
+pass input-only      "$imginput" K0_BOOT_INPUT=on K0_BOOT_REQUIRE="k0: console input on (pl011 irq 33)|,irq33 "
+pass input-gicv2     "$imginput" K0_BOOT_INPUT=on K0_QEMU_MACHINE=virt,gic-version=2 K0_BOOT_REQUIRE="k0: console input on (pl011 irq 33)"
+pass input-16550     "$imginput16550" K0_BOOT_INPUT=off K0_BOOT_MEMLOG=0x40080000 K0_BOOT_SERIAL=empty K0_BOOT_CONSOLE_PAGE=unmapped K0_BOOT_REQUIRE="k0: console input off (console not attached)|root: console input tests pass (no input path)"
+# 디바이스 트리가 콘솔의 인터럽트로 이 컨트롤러에 없는 번호를 대는 경우: 그
+# 번호는 플랫폼 줄에 그대로 찍히고, 커널은 입력만 포기한 채 끝까지 부팅함
+if want input-bad-irq $only; then
+    bdt="$root/target/matrix-input-bad-irq.dtb"
+    if qemu-system-aarch64 -machine "virt,gic-version=3,dumpdtb=$bdt.orig" -cpu cortex-a72 -m 512M -smp 1 -nographic > target/matrix-input-bad-irq.dump 2>&1 < /dev/null \
+        && python3 - "$bdt.orig" "$bdt" >> target/matrix-input-bad-irq.dump 2>&1 <<'SWAP'
+import struct, sys
+data = bytearray(open(sys.argv[1], "rb").read())
+old = struct.pack(">III", 0, 1, 4)    # pl011의 interrupts: SPI 1번, 레벨
+new = struct.pack(">III", 0, 900, 4)  # INTID 932, QEMU의 GIC가 구현하지 않은 번호
+if data.count(old) != 1:
+    sys.exit(f"expected exactly one <0 1 4> in the device tree, found {data.count(old)}")
+at = data.index(old)
+data[at:at + 12] = new
+_, _, off_struct, off_strings, _, _, _, _, size_strings, size_struct = struct.unpack(">10I", data[:40])
+used = (max(off_struct + size_struct, off_strings + size_strings) + 7) & ~7
+data[4:8] = struct.pack(">I", used)
+open(sys.argv[2], "wb").write(data[:used])
+SWAP
+    then
+        pass input-bad-irq "$imginput" K0_QEMU_EXTRA="-dtb $bdt" K0_BOOT_INPUT=off K0_BOOT_REQUIRE=",irq932 |k0: console input off (interrupt number out of range)|root: console input tests pass (no input path)"
+    else
+        ran=$((ran + 1))
+        echo "matrix: input-bad-irq FAIL (could not prepare the device tree)"
+        show target/matrix-input-bad-irq.dump
+        failed="$failed input-bad-irq"
+    fi
+fi
+# 운영자 터미널: 자가 검증 뒤에 서비스가 뜨고, 직렬 포트로 넣은 명령에 답함
+term term            "$imgterm"
+term term-max        "$imgterm" K0_QEMU_CPU=max K0_TERM_SEED=rng-seed+rndr
+term term-el2        "$imgterm" K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on
+term term-gicv2      "$imgterm" K0_QEMU_MACHINE=virt,gic-version=2
+term term-16k        "$imgterm16" K0_QEMU_CPU=max K0_TERM_SEED=rng-seed+rndr
+term term-no-vault   "$imgtermnv" K0_TERM_VAULT=absent
+term term-no-alg     "$imgtermna" K0_TERM_VAULT=none
 pass gic3-el1-max    "$img4" K0_QEMU_CPU=max K0_BOOT_REQUIRE="rndr=on|k0: pac=on bti=present pan=on"
 pass gic3-el2        "$img4" K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on
 pass gic3-el2-max    "$img4" K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on K0_QEMU_CPU=max
@@ -380,6 +477,10 @@ pass uefi-acpi-smp4     "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-vers
 pass uefi-acpi-16k      "$efi16" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=3 K0_QEMU_CPU=max K0_BOOT_REQUIRE="$acpi"
 # ACPI에는 펌웨어의 씨앗이 없으므로 엔트로피는 펌웨어 난수 프로토콜의 32바이트뿐
 pass uefi-acpi-rng      "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=3 K0_QEMU_EXTRA="-device virtio-rng-pci" K0_BOOT_REQUIRE="$acpi|k0: entropy dtb=32B"
+# 운영자 터미널을 UEFI로: 펌웨어가 쓰던 UART를 넘겨받아 입력을 받음. 디바이스
+# 트리 경로와, 콘솔 인터럽트를 SPCR에서 읽는 ACPI 경로(씨앗은 펌웨어 난수에서)
+term term-uefi       "$efiterm" K0_BOOT_REUSE=skip
+term term-uefi-acpi  "$efiterm" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=3 K0_QEMU_EXTRA="-device virtio-rng-pci" K0_BOOT_REQUIRE="$acpi|,irq33 |k0: console input on (pl011 irq 33)"
 # 그래뉼이 없는 CPU는 로더가 거부
 refuse_serial uefi-16k-on-a72 "$efi16" "this cpu has no 16K translation granule"
 # 내장한 커널 이미지의 한 바이트가 바뀐 로더는 해시 불일치로 거부
@@ -403,6 +504,7 @@ if [ "${K0_MATRIX_HVF:-0}" = 1 ]; then
     pass uefi-hvf-acpi "$efi4" K0_BOOT_REUSE=skip K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_QEMU_MACHINE=virt,gic-version=3 K0_BOOT_REQUIRE="$acpi"
     pass hvf-el1     "$img4" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
     pass hvf-vault   "$imgvault" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE="root: oracle tests pass"
+    term hvf-term    "$imgterm" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
     pass hvf-el2     "$img4" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on
     pass hvf-16k     "$img16" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
     pass hvf-quiet   "$imgquiet" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_BOOT_MEMLOG=0x40080000 K0_BOOT_SERIAL=empty K0_BOOT_CONSOLE_PAGE=unmapped K0_BOOT_REQUIRE="$quietreq"

@@ -38,7 +38,14 @@ use core::ptr;
 pub const SLOT_SIZE: usize = 64;
 
 /// 루트 CNode의 슬롯 수
+///
+/// 자가 검증 뒤에 서비스(볼트와 터미널)를 새로 띄우는 이미지는 주소 공간 둘을
+/// 더 만들 슬롯이 필요하므로 feature `root-cnode-1024`로 두 배를 받습니다.
+/// 그 밖의 이미지는 그대로입니다.
+#[cfg(not(feature = "root-cnode-1024"))]
 pub const ROOT_CNODE_SLOTS: usize = 512;
+#[cfg(feature = "root-cnode-1024")]
+pub const ROOT_CNODE_SLOTS: usize = 1024;
 
 /// 파생 깊이 상한, 초과하는 복사는 거부됩니다
 pub const MAX_DEPTH: u64 = 1 << 32;
@@ -46,7 +53,8 @@ pub const MAX_DEPTH: u64 = 1 << 32;
 /// 케이퍼빌리티 권한 비트 모듈입니다.
 ///
 /// Frame은 R/W/X를 매핑 권한의 상한으로 쓰고, Endpoint는 R을 수신, W를
-/// 송신으로 씁니다. 다른 종류는 권한 비트를 갖지 않습니다.
+/// 송신으로, Console은 R을 입력 읽기, W를 출력으로 씁니다. 다른 종류는 권한
+/// 비트를 갖지 않습니다.
 pub mod rights {
     pub const R: u8 = 1;
     pub const W: u8 = 2;
@@ -123,8 +131,9 @@ pub enum Cap {
     CNode { base: u64, slots: u64 },
     /// 사용자 주소 공간(TTBR0 루트 테이블)
     AddrSpace { root_pa: u64, asid: u64 },
-    /// 커널 디버그 콘솔 출력 권한(오브젝트 없음)
-    Console,
+    /// 커널 콘솔에 대한 권한(오브젝트 없음), `rights`의 W가 출력이고 R이
+    /// 입력 읽기
+    Console { rights: u8 },
 }
 
 /// 재분류로 만들 수 있는 커널 오브젝트 종류를 나타내는 열거형입니다.
@@ -270,7 +279,7 @@ fn encode(cap: &Cap) -> [u64; 4] {
         ],
         Cap::CNode { base, slots } => [base | KIND_CNODE, *slots, 0, 0],
         Cap::AddrSpace { root_pa, asid } => [root_pa | KIND_ADDR_SPACE, *asid, 0, 0],
-        Cap::Console => [KIND_CONSOLE, 0, 0, 0],
+        Cap::Console { rights } => [KIND_CONSOLE | (u64::from(*rights) << RIGHTS_SHIFT), 0, 0, 0],
     }
 }
 
@@ -387,11 +396,11 @@ fn decode(w: &[u64; 4]) -> Result<Option<Entry>, CapError> {
             }
         }
         KIND_CONSOLE => {
-            plain(w[1] == 0 && w[2] == 0 && w[3] == 0)?;
-            if base != 0 {
+            let tail_zero = w[1] == 0 && w[2] == 0 && w[3] == 0;
+            if rights == 0 || rights & rights::X != 0 || mapped || base != 0 || !tail_zero {
                 return Err(CapError::Corrupt);
             }
-            Cap::Console
+            Cap::Console { rights }
         }
         _ => return Err(CapError::Corrupt),
     };
@@ -801,6 +810,17 @@ unsafe fn plan_copy(
                 badge,
             }
         }
+        Cap::Console { rights } => {
+            if badge != 0 {
+                return Err(CapError::BadBadge);
+            }
+            // 입력을 읽을 권한(R)은 복사로 줄일 수만 있음
+            let rights = rights & mask;
+            if rights == 0 {
+                return Err(CapError::NoRights);
+            }
+            Cap::Console { rights }
+        }
         other => {
             // 배지는 엔드포인트 전용. 다른 종류의 워드에 사용자 값이 섞이면
             // asid나 매핑 기록을 위조하는 길이 됨
@@ -1093,6 +1113,9 @@ pub struct BootObjects {
     pub addr_space_asid: u64,
     /// 루트 CNode 자신의 PA
     pub cnode: u64,
+    /// 루트 태스크의 Console 케이퍼빌리티가 갖는 권한. 출력(W)은 항상 있고,
+    /// 입력 읽기(R)는 커널에 콘솔 입력 경로가 있는 이미지에서만 줌
+    pub console_rights: u8,
 }
 
 /// 루트 CNode를 구성하는 부트스트랩 함수입니다.
@@ -1135,7 +1158,12 @@ pub unsafe fn bootstrap(
                 asid: objs.addr_space_asid,
             },
         ),
-        (boot_slot::CONSOLE, Cap::Console),
+        (
+            boot_slot::CONSOLE,
+            Cap::Console {
+                rights: objs.console_rights,
+            },
+        ),
         (
             boot_slot::CNODE,
             Cap::CNode {

@@ -8,9 +8,17 @@ publish.workspace = true
 [dependencies]
 k0-abi = { path = "../../crates/k0-abi" }
 k0-vault = { path = "../k0-vault", optional = true }
+k0-term = { path = "../k0-term", optional = true }
 
 # 키 볼트(서명 오라클)는 선택 기능입니다. `vault`는 서비스와 그 자가 검증을
 # 넣고, 알고리즘은 따로 더합니다. 아무것도 기본으로 켜지지 않습니다.
+#
+# `console-input`은 커널에 콘솔 입력 경로가 있다는 뜻이고(커널의 같은 이름
+# feature가 넘김) 입력 시스템 콜의 자가 검증을 넣습니다. `terminal`은 운영자
+# 터미널을 넣어 자가 검증 뒤에 서비스로 시작합니다. 볼트가 함께 있으면
+# 터미널이 볼트의 운영자 역할을 맡습니다.
 [features]
-vault = ["dep:k0-vault"]
+vault = ["dep:k0-vault", "k0-term?/vault"]
 vault-ed25519 = ["vault", "k0-vault/ed25519"]
+console-input = []
+terminal = ["console-input", "dep:k0-term"]

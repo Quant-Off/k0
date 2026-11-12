@@ -152,6 +152,8 @@ fn main() {
     for (var, name) in [
         ("CARGO_FEATURE_VAULT", "vault"),
         ("CARGO_FEATURE_VAULT_ED25519", "vault-ed25519"),
+        ("CARGO_FEATURE_CONSOLE_INPUT", "console-input"),
+        ("CARGO_FEATURE_TERMINAL", "terminal"),
     ] {
         if env::var_os(var).is_some() {
             features.push(name);
@@ -252,6 +254,8 @@ fn main() {
         "userspace/root-task/src",
         "userspace/k0-vault/src",
         "userspace/k0-vault/Cargo.toml",
+        "userspace/k0-term/src",
+        "userspace/k0-term/Cargo.toml",
         "Cargo.lock",
         "userspace/root-task/Cargo.toml",
         "userspace/root-task/build.rs",

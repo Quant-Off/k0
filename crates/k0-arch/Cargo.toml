@@ -13,6 +13,10 @@ publish.workspace = true
 console-pl011 = []
 # 16550 계열. 읽기만으로 확인할 식별 레지스터가 없음
 console-16550 = []
+# 콘솔 입력의 수신 경로(UART 수신 인터럽트와 그 SPI 하나). 수신 드라이버는
+# PL011과 SBSA UART에만 있어서 console-pl011과 함께 골라야 입력이 생김
+console-input = ["dep:k0-conin"]
 
 [dependencies]
 k0-abi = { path = "../k0-abi" }
+k0-conin = { path = "../k0-conin", optional = true }

@@ -65,6 +65,10 @@ pub struct Console {
     pub span: u64,
     /// DTB가 선언한 레지스터 구간 전체 (겹침 검사용)
     pub reg: Region,
+    /// 콘솔의 인터럽트 번호(INTID). 노드에 없거나, 발견한 인터럽트 컨트롤러의
+    /// SPI 하나로 읽히지 않으면 `None`이고 그때는 콘솔 입력이 없습니다.
+    /// 인터럽트를 못 읽는 것은 부팅 거부 사유가 아닙니다.
+    pub irq: Option<u32>,
 }
 
 /// 인터럽트 컨트롤러를 나타내는 열거형입니다.
@@ -240,12 +244,13 @@ pub fn discover_blob(blob: &[u8]) -> Result<Discovery, DiscoverError> {
         return Err(DiscoverError::DuplicatePhandle);
     }
     let (intc, interrupt_cells) = intc.ok_or(DiscoverError::IntcNotFound)??;
+    let timer_parent = timer.parent;
     let timer = Timer {
         intid: timer_intid(&timer, interrupt_cells)?,
         clock_hz: timer.clock.unwrap_or(0),
     };
 
-    let (console, no_console) = match find_console(&fdt, stdout)? {
+    let (console, no_console) = match find_console(&fdt, stdout, Some((timer_parent, interrupt_cells)))? {
         Ok(c) => (Some(c), None),
         Err(why) => (None, Some(why)),
     };
@@ -531,7 +536,15 @@ fn read_intc(levels: &Levels<'_>, node: &Node<'_>, depth: usize) -> Result<(Intc
 ///
 /// 콘솔을 못 찾는 경우는 전부 안쪽 `Err(NoConsole)`이고, 바깥 `Err`는 DTB
 /// 구조 위반뿐입니다.
-fn find_console(fdt: &Fdt<'_>, stdout: Option<&[u8]>) -> Result<Result<Console, NoConsole>, BootError> {
+///
+/// `gic`는 발견한 인터럽트 컨트롤러의 phandle과 `#interrupt-cells`입니다. 주면
+/// 콘솔의 인터럽트도 읽고, `None`이면(컨트롤러를 찾기 전의 조기 콘솔 탐색)
+/// 인터럽트 없이 돌려줍니다.
+fn find_console(
+    fdt: &Fdt<'_>,
+    stdout: Option<&[u8]>,
+    gic: Option<(u32, u32)>,
+) -> Result<Result<Console, NoConsole>, BootError> {
     let Some(value) = stdout else {
         return Ok(Err(NoConsole::NoStdoutPath));
     };
@@ -569,7 +582,10 @@ fn find_console(fdt: &Fdt<'_>, stdout: Option<&[u8]>) -> Result<Result<Console, 
             let mut names = levels[2..depth].iter().map(|l| l.name).chain(core::iter::once(node.name));
             if components.clone().all(|c| names.next() == Some(c)) {
                 matches += 1;
-                found = Some(read_console(levels, node, depth));
+                found = Some(read_console(levels, node, depth).map(|mut c| {
+                    c.irq = gic.and_then(|(phandle, cells)| console_irq(levels, node, depth, phandle, cells));
+                    c
+                }));
             }
         }
         Ok(Flow::Continue)
@@ -579,6 +595,39 @@ fn find_console(fdt: &Fdt<'_>, stdout: Option<&[u8]>) -> Result<Result<Console, 
         (0, _) => Err(NoConsole::NotFound),
         _ => Err(NoConsole::Ambiguous),
     })
+}
+
+/// 콘솔 노드의 interrupts에서 INTID를 얻는 함수입니다.
+///
+/// 인터럽트 부모는 타이머와 같은 규칙으로 찾고(노드 자신의 interrupt-parent,
+/// 없으면 조상의 것), 그것이 발견한 인터럽트 컨트롤러여야 합니다. 지정자는 셀
+/// 셋짜리 항목 하나만 받습니다. 셀 0은 종류(0 = SPI), 셀 1은 SPI 번호, 셀 2는
+/// 플래그이고 레벨 트리거에 액티브 하이(4)만 받습니다. 그 밖의 모양은 추측하지
+/// 않고 `None`을 돌려줍니다. 커널은 이 번호의 인터럽트를 켜므로, 번호는 플랫폼
+/// 줄에 찍혀 고정 모드의 대조 대상이 됩니다.
+fn console_irq(levels: &Levels<'_>, node: &Node<'_>, depth: usize, gic: u32, cells: u32) -> Option<u32> {
+    if node.has(P::InterruptsExtended) {
+        return None;
+    }
+    let spec = node.get(P::Interrupts)?;
+    let mut parent = node.u32(P::InterruptParent).ok()?;
+    let mut k = depth;
+    while parent.is_none() && k > 1 {
+        k -= 1;
+        if levels[k].has_interrupt_cells {
+            return None;
+        }
+        parent = levels[k].interrupt_parent().ok()?;
+    }
+    if parent? != gic || cells != 3 || spec.len() != 12 {
+        return None;
+    }
+    let cell = |i: usize| read_cells(&spec[i * 4..i * 4 + 4]);
+    // SPI 번호의 상한 987은 INTID 1019(1020부터는 특수 번호)
+    if cell(0) != 0 || cell(1) > 987 || cell(2) != 4 {
+        return None;
+    }
+    Some(32 + cell(1) as u32)
 }
 
 fn read_console(levels: &Levels<'_>, node: &Node<'_>, depth: usize) -> Result<Console, NoConsole> {
@@ -651,6 +700,7 @@ fn read_console(levels: &Levels<'_>, node: &Node<'_>, depth: usize) -> Result<Co
         base: reg.base + offset,
         span,
         reg,
+        irq: None,
     })
 }
 
@@ -799,7 +849,7 @@ pub(crate) fn console_of(blob: &[u8]) -> Option<Console> {
         Ok(Flow::Continue)
     })
     .ok()?;
-    find_console(&fdt, stdout).ok()?.ok()
+    find_console(&fdt, stdout, None).ok()?.ok()
 }
 
 impl fmt::Display for Platform {
@@ -808,13 +858,19 @@ impl fmt::Display for Platform {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.console {
             None => write!(f, "con=none")?,
-            Some(c) => match c.kind {
-                ConsoleKind::Pl011 => write!(f, "con=pl011@{:#x}", c.base)?,
-                ConsoleKind::SbsaUart => write!(f, "con=sbsa@{:#x}", c.base)?,
-                ConsoleKind::Ns16550 { reg_shift, io_width } => {
-                    write!(f, "con=ns16550@{:#x},s{reg_shift},w{io_width}", c.base)?;
+            Some(c) => {
+                match c.kind {
+                    ConsoleKind::Pl011 => write!(f, "con=pl011@{:#x}", c.base)?,
+                    ConsoleKind::SbsaUart => write!(f, "con=sbsa@{:#x}", c.base)?,
+                    ConsoleKind::Ns16550 { reg_shift, io_width } => {
+                        write!(f, "con=ns16550@{:#x},s{reg_shift},w{io_width}", c.base)?;
+                    }
                 }
-            },
+                // 커널이 켜는 인터럽트이므로 플랫폼 줄(고정 모드의 대조 대상)에 넣음
+                if let Some(irq) = c.irq {
+                    write!(f, ",irq{irq}")?;
+                }
+            }
         }
         match &self.intc {
             Intc::GicV2 { dist, cpu } => write!(f, " gic=v2@{:#x} cpu={:#x}", dist.base, cpu.base)?,

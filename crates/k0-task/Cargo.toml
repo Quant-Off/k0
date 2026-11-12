@@ -11,6 +11,8 @@ publish.workspace = true
 default = ["granule-4k"]
 granule-4k = ["k0-mm/granule-4k"]
 granule-16k = ["k0-mm/granule-16k"]
+# 콘솔 입력을 기다리는 태스크 상태(BlockedConsole)를 더함
+console-input = []
 
 [dependencies]
 k0-abi = { path = "../k0-abi" }

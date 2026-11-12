@@ -28,6 +28,9 @@
 
 #![no_std]
 
+#[cfg(feature = "console-input")]
+pub mod console;
+
 use k0_arch::usermode::Context;
 use k0_cap::{rights, Cap};
 use k0_task::{Endpoint, TaskState, Tcb};
@@ -443,7 +446,16 @@ pub unsafe fn expire_timeouts(now: u64, mut current_ctx: Option<&mut Context>) {
                     (*t).reply_from = 0;
                     k0_abi::err::REPLY_TIMEOUT as u64
                 }
-                _ => k0_arch::fatal("timeout on a task that is not blocked"),
+                #[cfg(feature = "console-input")]
+                TaskState::BlockedConsole => {
+                    console::drop_waiter(t);
+                    k0_abi::err::TIMEOUT as u64
+                }
+                TaskState::Inactive
+                | TaskState::Stopped
+                | TaskState::Ready
+                | TaskState::Running
+                | TaskState::Dead => k0_arch::fatal("timeout on a task that is not blocked"),
             };
             if t == cur {
                 match current_ctx.as_deref_mut() {
@@ -503,6 +515,10 @@ pub unsafe fn teardown(t: *mut Tcb) {
                 }
                 (*holder).reply_to = 0;
             }
+            // 콘솔 입력을 기다리던 태스크는 대기자 자리를 비워, 그 TCB의
+            // 메모리가 재분류된 뒤에 커널이 옛 포인터로 깨우는 일이 없게 함
+            #[cfg(feature = "console-input")]
+            TaskState::BlockedConsole => console::drop_waiter(t),
         }
         abort_reply(t);
         (*t).state = TaskState::Dead;

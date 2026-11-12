@@ -11,6 +11,9 @@ publish.workspace = true
 default = ["granule-4k"]
 granule-4k = ["k0-mm/granule-4k", "k0-task/granule-4k", "k0-sched/granule-4k"]
 granule-16k = ["k0-mm/granule-16k", "k0-task/granule-16k", "k0-sched/granule-16k"]
+# 콘솔 입력을 읽는 시스템 콜과 그 대기 상태. 고르지 않으면 이 크레이트에
+# 그 코드가 없음
+console-input = ["k0-arch/console-input", "k0-task/console-input"]
 
 [dependencies]
 k0-abi = { path = "../k0-abi" }

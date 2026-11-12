@@ -11,11 +11,17 @@
 //! 옮기며, 그 뒤로 볼트는 사본만 봅니다. 읽는 도중에 프레임이 바뀌면 사본이
 //! 뒤섞일 뿐이고, 그것은 클라이언트가 처음부터 보낼 수 있었던 내용입니다.
 //!
+//! 키는 두 걸음으로 생깁니다. 관리자가 시드를 넘기면([request::INIT]) 볼트는
+//! 재료를 확인한 뒤 시드를 쥐고, 관리자나 운영자가 알고리즘을 골라 키를 만들게
+//! 하면([request::KEYGEN]) 그 시드로 키를 만들고 시드를 지웁니다. 알고리즘이
+//! 하나도 없는 이미지의 볼트는 시드를 받지 않습니다.
+//!
 //! # Errors
 //! 자가 시험이나 쌍 일치 시험이 실패하면 [state::FAILED]가 되어 상태 조회
-//! 말고는 전부 [status::FAILED]로 거부합니다.
+//! 말고는 전부 [status::FAILED]로 거부합니다. 그 상태로 가는 모든 길에서
+//! 시드와 키를 지우므로, 오류 상태의 볼트는 비밀을 쥐고 있지 않습니다.
 
-use crate::proto::{alg, allowed, indicator, request, role_of, state, status, Role};
+use crate::proto::{alg, allowed, indicator, request, role_of, state, status, status_word};
 use crate::proto::{INIT_LEN, MAX_MESSAGE, MAX_RESPONSE, RESPONSE_HEADER};
 use crate::provider::{self, Key};
 
@@ -24,13 +30,27 @@ const MIN_RNG_SEED: u64 = 32;
 /// 커널이 준 시드 정보의 비트(k0-abi의 bootinfo 상수와 같음)
 const SEED_RNG_SEED_BYTES: u64 = k0_abi::bootinfo::SEED_RNG_SEED_BYTES;
 const SEED_RNDR: u64 = k0_abi::bootinfo::SEED_RNDR;
+/// 표시 비트 가운데 시드의 재료에 관한 것
+const SEED_BITS: u64 = indicator::SEED_RNG_SEED | indicator::SEED_RNDR;
+/// 이 이미지에 들어 있는 알고리즘의 비트맵(비트 n = 알고리즘 n)
+const BUILT: u64 = if provider::HAS_ED25519 { 1 << alg::ED25519 } else { 0 };
 
 /// 볼트의 상태를 담는 구조체입니다.
+///
+/// 비밀은 두 가지입니다. 키와, 키를 만들기 전까지 쥐고 있는 시드입니다. 시드는
+/// [state::SEEDED]인 동안에만 값이 있고, 키를 만들거나 지우거나 오류 상태로
+/// 가는 모든 길에서 0으로 덮습니다.
 pub struct Vault {
     state: u64,
     key: Key,
-    /// 표시 비트 가운데 자가 시험과 시드 재료에 관한 것
+    /// 지금 있는 키의 알고리즘(없으면 [alg::NONE])
+    key_alg: u64,
+    /// 관리자가 넘긴 시드. 키를 만들 때까지만 쥠
+    seed: [u8; 32],
+    /// 표시 비트 가운데 자가 시험과, 지금 있는 키의 시드 재료에 관한 것
     flags: u64,
+    /// 쥐고 있는 시드의 재료에 관한 표시 비트. 키가 만들어지면 `flags`로 옮김
+    pending: u64,
 }
 
 impl Vault {
@@ -42,7 +62,10 @@ impl Vault {
         Vault {
             state: if ok { state::FRESH } else { state::FAILED },
             key: Key::empty(),
+            key_alg: alg::NONE,
+            seed: [0; 32],
             flags: if ok { indicator::SELF_TEST_PASSED } else { 0 },
+            pending: 0,
         }
     }
 
@@ -50,7 +73,7 @@ impl Vault {
     ///
     /// 응답 레지스터 네 개를 전부 채워 돌려주고(쓰지 않는 값이 새지 않게),
     /// 응답 본문은 `out`의 앞에 씁니다. 본문 길이는 응답의 두 번째 값입니다
-    /// (상태 조회에서는 그 자리가 볼트의 상태이고 본문은 없음).
+    /// (상태 조회에서는 그 자리가 상태 워드이고 본문은 없음).
     ///
     /// # Arguments
     /// `badge` - 커널이 전달한 호출자의 배지
@@ -60,34 +83,47 @@ impl Vault {
     pub fn handle(&mut self, badge: u64, mr: [u64; 4], body: &[u8], out: &mut [u8; MAX_RESPONSE]) -> [u64; 4] {
         let nonce = mr[2];
         let reply = |status: u64, len: u64, ind: u64| [status, len, ind, nonce];
-        let Some((role, _)) = role_of(badge) else {
+        let Some(role) = role_of(badge) else {
             return reply(status::DENIED, 0, 0);
         };
         let (op, algo) = (mr[0] & 0xFF, (mr[0] >> 8) & 0xFF);
         // 예약 비트가 서 있거나, 말한 길이와 옮겨 온 본문의 길이가 다르면
-        // (버퍼보다 긴 본문은 잘려서 옴) 요청 전체를 거부함
+        // (버퍼보다 긴 본문은 잘려서 오고, 본문이 없는 연산과 요청 프레임이
+        // 없는 호출자의 본문은 아예 옮겨 오지 않음) 요청 전체를 거부함
         if mr[0] >> 16 != 0 || mr[3] != 0 || mr[1] != body.len() as u64 {
             return reply(status::BAD_REQUEST, 0, 0);
         }
         if !matches!(
             op,
-            request::STATUS | request::PUBLIC_KEY | request::SIGN | request::INIT | request::ZEROIZE
+            request::STATUS
+                | request::PUBLIC_KEY
+                | request::SIGN
+                | request::INIT
+                | request::ZEROIZE
+                | request::KEYGEN
         ) {
             return reply(status::BAD_REQUEST, 0, 0);
         }
         if !allowed(role, op) {
             return reply(status::DENIED, 0, 0);
         }
+        if !request::takes_body(op) && !body.is_empty() {
+            return reply(status::BAD_REQUEST, 0, 0);
+        }
         if op == request::STATUS {
-            return reply(status::OK, self.state, self.flags);
+            // 시드의 재료는 키가 있으면 그 키의 것, 시드를 쥐고 있으면 그
+            // 시드의 것을 알림
+            let word = status_word::pack(self.state, self.key_alg, BUILT);
+            return reply(status::OK, word, self.flags | self.pending);
         }
         if self.state == state::FAILED {
             return reply(status::FAILED, 0, self.flags);
         }
         match op {
-            request::INIT => self.init(role, body, reply),
+            request::INIT => self.init(body, reply),
+            request::KEYGEN => self.keygen(algo, reply),
             request::ZEROIZE => {
-                self.key.wipe();
+                self.forget();
                 self.state = state::ZEROIZED;
                 scrub_stack();
                 reply(status::OK, 0, self.flags)
@@ -96,7 +132,17 @@ impl Vault {
         }
     }
 
-    fn init(&mut self, _role: Role, body: &[u8], reply: impl Fn(u64, u64, u64) -> [u64; 4]) -> [u64; 4] {
+    /// 키와 시드, 그리고 그것들에 관한 표시를 지우는 함수입니다.
+    fn forget(&mut self) {
+        self.key.wipe();
+        self.key_alg = alg::NONE;
+        wipe(&mut self.seed);
+        self.pending = 0;
+        self.flags &= !SEED_BITS;
+    }
+
+    /// 시드를 받는 함수입니다. 키는 만들지 않습니다.
+    fn init(&mut self, body: &[u8], reply: impl Fn(u64, u64, u64) -> [u64; 4]) -> [u64; 4] {
         if self.state != state::FRESH {
             return reply(status::DENIED, 0, self.flags);
         }
@@ -115,22 +161,51 @@ impl Vault {
         if info & SEED_RNDR != 0 {
             seed_flags |= indicator::SEED_RNDR;
         }
-        if seed_flags == 0 {
-            // 재료가 카운터뿐인 시드로는 키를 만들지 않음
+        // 재료가 카운터뿐인 시드로는 키를 만들지 않음. 전부 0인 시드는 재료
+        // 정보가 무엇이라 하든 받지 않음(이미 소거된 시드가 다시 넘어온 경우)
+        let blank = seed.iter().fold(0u8, |acc, b| acc | b) == 0;
+        if seed_flags == 0 || blank {
             wipe(&mut seed);
             return reply(status::NO_ENTROPY, 0, self.flags);
         }
-        let made = provider::keygen(&mut seed);
+        if BUILT == 0 {
+            // 알고리즘이 하나도 없는 이미지에서는 쓸 일이 없는 비밀을 쥐지 않음
+            wipe(&mut seed);
+            return reply(status::UNSUPPORTED, 0, self.flags);
+        }
+        self.seed = seed;
         wipe(&mut seed);
+        self.pending = seed_flags;
+        self.state = state::SEEDED;
+        reply(status::OK, 0, self.flags)
+    }
+
+    /// 쥐고 있는 시드로 키를 만드는 함수입니다.
+    fn keygen(&mut self, algo: u64, reply: impl Fn(u64, u64, u64) -> [u64; 4]) -> [u64; 4] {
+        if algo != alg::ED25519 || !provider::HAS_ED25519 {
+            return reply(status::UNSUPPORTED, 0, self.flags);
+        }
+        match self.state {
+            state::SEEDED => {}
+            state::READY => return reply(status::KEY_EXISTS, 0, self.flags),
+            state::ZEROIZED => return reply(status::ZEROIZED, 0, self.flags),
+            _ => return reply(status::NO_ENTROPY, 0, self.flags),
+        }
+        let made = provider::keygen(&mut self.seed);
+        // 시드는 키가 됐든 안 됐든 여기서 끝남
+        wipe(&mut self.seed);
         scrub_stack();
         match made {
             Some(key) => {
                 self.key = key;
+                self.key_alg = algo;
                 self.state = state::READY;
-                self.flags |= seed_flags;
+                self.flags |= self.pending;
+                self.pending = 0;
                 reply(status::OK, 0, self.flags)
             }
             None => {
+                self.forget();
                 self.state = state::FAILED;
                 self.flags &= !indicator::SELF_TEST_PASSED;
                 reply(status::FAILED, 0, self.flags)
@@ -150,15 +225,12 @@ impl Vault {
             return reply(status::UNSUPPORTED, 0, self.flags);
         }
         match self.state {
-            state::FRESH => return reply(status::NOT_READY, 0, self.flags),
+            state::READY => {}
             state::ZEROIZED => return reply(status::ZEROIZED, 0, self.flags),
-            _ => {}
+            _ => return reply(status::NOT_READY, 0, self.flags),
         }
         let ind = self.flags | indicator::FIPS_186_5_ALGORITHM;
         if op == request::PUBLIC_KEY {
-            if !body.is_empty() {
-                return reply(status::BAD_REQUEST, 0, self.flags);
-            }
             let Some(public) = self.key.public() else {
                 return reply(status::NOT_READY, 0, self.flags);
             };
@@ -185,8 +257,24 @@ impl Vault {
         Vault {
             state: state::FAILED,
             key: Key::empty(),
+            key_alg: alg::NONE,
+            seed: [0; 32],
             flags: 0,
+            pending: 0,
         }
+    }
+
+    /// 볼트가 시드나 키를 쥐고 있는지 알려 주는 함수입니다(테스트 전용).
+    pub fn holds_a_secret(&self) -> bool {
+        self.seed.iter().any(|b| *b != 0) || self.key.public().is_some()
+    }
+
+    /// 키 생성 뒤의 쌍 일치 시험이 실패했을 때와 같은 길로 볼트를 오류 상태에
+    /// 넣는 함수입니다(테스트 전용).
+    pub fn fail_for_test(&mut self) {
+        self.forget();
+        self.state = state::FAILED;
+        self.flags &= !indicator::SELF_TEST_PASSED;
     }
 }
 

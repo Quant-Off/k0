@@ -7,6 +7,8 @@
 
 #![no_std]
 
+#[cfg(feature = "console-input")]
+pub mod conin;
 pub mod earlycon;
 pub mod hardening;
 pub mod irq;

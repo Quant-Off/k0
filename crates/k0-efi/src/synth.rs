@@ -98,6 +98,14 @@ pub fn synthesize(found: &Found, placeholder: MemRegion, out: &mut [u8]) -> Resu
             w.prop(b"reg-shift", &0u32.to_be_bytes())?;
             w.prop(b"reg-io-width", &1u32.to_be_bytes())?;
         }
+        if let Some(irq) = serial.irq {
+            // 종류 0(SPI), SPI 번호, 레벨 트리거에 액티브 하이. 커널의 파서가
+            // 받는 모양은 이것 하나뿐임
+            let mut spec = [0u8; 12];
+            spec[4..8].copy_from_slice(&(irq - 32).to_be_bytes());
+            spec[8..].copy_from_slice(&4u32.to_be_bytes());
+            w.prop(b"interrupts", &spec)?;
+        }
         w.end()?;
     }
 

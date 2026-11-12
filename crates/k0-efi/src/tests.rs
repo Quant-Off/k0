@@ -895,10 +895,25 @@ mod acpi_tables {
         sdt(b"GTDT", &body)
     }
 
+    /// QEMU가 만드는 SPCR과 같은 모양: 인터럽트는 GIC의 SPI 1번(GSIV 33)
     fn spcr(interface: u8, space: u8, width: u8, access: u8, addr: u64) -> Vec<u8> {
-        let mut body = vec![0u8; 44];
+        spcr_irq(interface, space, width, access, addr, 44, 0x08, 33)
+    }
+
+    /// 인터럽트 칸을 따로 정한 SPCR입니다.
+    ///
+    /// # Arguments
+    /// `body_len` - 헤더 뒤의 길이(인터럽트 칸까지 담으려면 22 이상)
+    /// `kind` - 인터럽트 종류(비트 3이 GIC)
+    /// `gsiv` - 인터럽트 번호
+    #[allow(clippy::too_many_arguments)]
+    fn spcr_irq(interface: u8, space: u8, width: u8, access: u8, addr: u64, body_len: usize, kind: u8, gsiv: u32) -> Vec<u8> {
+        let mut body = vec![0u8; body_len.max(22)];
         (body[0], body[4], body[5], body[7]) = (interface, space, width, access);
         body[8..16].copy_from_slice(&addr.to_le_bytes());
+        body[16] = kind;
+        body[18..22].copy_from_slice(&gsiv.to_le_bytes());
+        body.truncate(body_len);
         sdt(b"SPCR", &body)
     }
 
@@ -1124,6 +1139,37 @@ mod acpi_tables {
             let d = discover_blob(&tree(&found)).unwrap();
             assert!(d.platform.console.is_none() && d.no_console.is_some());
         }
+    }
+
+    #[test]
+    fn the_console_interrupt_is_taken_only_as_one_gic_spi() {
+        let irq = |t: Vec<u8>| read(&with(qemu_v3(), 2, t), RSDP, 0).unwrap().serial.unwrap().irq;
+        let pl011 = |len: usize, kind: u8, gsiv: u32| spcr_irq(0x03, 0, 32, 3, 0x900_0000, len, kind, gsiv);
+        assert_eq!(irq(pl011(44, 0x08, 33)), Some(33));
+        assert_eq!(irq(pl011(44, 0x08, 32)), Some(32));
+        assert_eq!(irq(pl011(44, 0x08, 1019)), Some(1019));
+        // 번호까지 담는 가장 짧은 테이블(58바이트)
+        assert_eq!(irq(pl011(22, 0x08, 33)), Some(33));
+        // 번호가 잘린 테이블, SPI가 아닌 번호, GIC가 아니거나 다른 종류가 섞인 표시:
+        // 콘솔은 받되 인터럽트는 없음
+        for t in [
+            pl011(21, 0x08, 33),
+            pl011(16, 0x08, 33),
+            pl011(44, 0x08, 31),
+            pl011(44, 0x08, 1020),
+            pl011(44, 0x08, u32::MAX),
+            pl011(44, 0x00, 33),
+            pl011(44, 0x01, 33),
+            pl011(44, 0x09, 33),
+            pl011(44, 0x18, 33),
+        ] {
+            assert_eq!(irq(t), None);
+        }
+        // 만든 트리에서 커널의 파서가 같은 번호를 읽음
+        let found = read(&with(qemu_v3(), 2, pl011(44, 0x08, 300)), RSDP, 0).unwrap();
+        assert_eq!(discover_blob(&tree(&found)).unwrap().platform.console.unwrap().irq, Some(300));
+        let found = read(&with(qemu_v3(), 2, pl011(44, 0x00, 300)), RSDP, 0).unwrap();
+        assert_eq!(discover_blob(&tree(&found)).unwrap().platform.console.unwrap().irq, None);
     }
 
     #[test]

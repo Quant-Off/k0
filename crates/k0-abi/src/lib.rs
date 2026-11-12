@@ -34,9 +34,11 @@ pub const PA_CEILING: u64 = KERNEL_IMAGE_VA - KERNEL_VA_OFFSET;
 pub mod syscall {
     /// 바이트 하나를 커널 디버그 콘솔로 출력
     ///
-    /// x0 = Console 슬롯, x1 = 바이트(하위 8비트만 사용). 출력 가능한
-    /// ASCII(0x20-0x7E)와 개행만 그대로 나가고 그 외 바이트(터미널 제어
-    /// 문자 등)는 `?`로 바뀝니다. 성공 시 x0 = 0, 실패 시 음수 에러
+    /// x0 = Console 슬롯(쓰기 권한 W 필요), x1 = 바이트(하위 8비트만 사용).
+    /// 출력 가능한 ASCII(0x20-0x7E)와 개행만 그대로 나가고 그 외 바이트(터미널
+    /// 제어 문자 등)는 `?`로 바뀝니다. `console-input`으로 빌드한 이미지에서
+    /// 읽기 권한 R도 있는 케이퍼빌리티로 부르면 백스페이스(0x08)가 그대로
+    /// 나갑니다(입력한 글자를 지우는 데 필요). 성공 시 x0 = 0, 실패 시 음수 에러
     pub const DEBUG_PUTC: u64 = 0;
     /// 스케줄러 양보(준비된 다른 태스크가 없으면 즉시 복귀)
     pub const YIELD: u64 = 1;
@@ -104,8 +106,8 @@ pub mod syscall {
     ///
     /// x0 = 원본 슬롯, x1 = 목적지 CNode를 가리키는 CNode 슬롯, x2 = 그
     /// CNode 안의 빈 목적지 슬롯, x3 = 남길 권한 비트([super::rights]),
-    /// x4 = 배지(0 = 붙이지 않음). 권한은 줄일 수만 있고 Frame / Endpoint에만
-    /// 적용됩니다. 배지는 배지가 없는 Endpoint에만 붙일 수 있습니다. 복사본은
+    /// x4 = 배지(0 = 붙이지 않음). 권한은 줄일 수만 있고 Frame / Endpoint /
+    /// Console에만 적용됩니다. 배지는 배지가 없는 Endpoint에만 붙일 수 있습니다. 복사본은
     /// 원본의 자식이라 원본을 회수하거나 삭제하면 함께 사라집니다. Untyped와
     /// PageTable은 복사할 수 없습니다. 성공 시 x0 = 0
     pub const CAP_COPY: u64 = 12;
@@ -125,6 +127,34 @@ pub mod syscall {
     /// x0 = 슬롯. untyped를 회수하면 거기서 잘라낸 오브젝트가 전부 종료되고
     /// 메모리를 다시 재분류할 수 있습니다. 성공 시 x0 = 0
     pub const CAP_REVOKE: u64 = 15;
+    /// 콘솔 입력에서 바이트 하나를 읽음(커널을 `console-input`으로 빌드한
+    /// 이미지에만 있음)
+    ///
+    /// x0 = Console 슬롯(읽기 권한 R 필요), x1 = 플래그([super::console]).
+    /// 받아 둔 바이트가 없으면 올 때까지 블록됩니다. 한 번에 한 태스크만
+    /// 기다릴 수 있습니다. 성공 시 x0 = 0, x1 = 바이트, x2 = 이 바이트 바로
+    /// 앞에서 입력이 유실됐으면 [super::console::LOST], 아니면 0. 커널은
+    /// 바이트를 해석하지 않습니다. 기다리는 동안 그 케이퍼빌리티를 잃으면
+    /// REVOKED로 깨어납니다
+    pub const CONSOLE_READ: u64 = 16;
+}
+
+/// CONSOLE_READ의 플래그(x1)와 결과(x2) 모듈입니다.
+pub mod console {
+    /// 받아 둔 바이트가 없으면 블록 대신 WOULD_BLOCK으로 즉시 복귀
+    pub const NONBLOCK: u64 = 1;
+    /// 읽기 전에, 지금까지 받아 둔 입력과 유실 표시를 전부 버림
+    ///
+    /// 프롬프트를 내기 전에 들어온 입력이 명령으로 읽히지 않게 하는 데
+    /// 씁니다. 버리는 양은 커널의 버퍼와 장치의 FIFO 크기로 묶여 있습니다
+    pub const FLUSH: u64 = 2;
+    /// 플래그 레지스터에서 뜻이 정해지지 않은 비트. 하나라도 서 있으면
+    /// BAD_FLAGS로 거부됩니다. 상위 32비트는 IPC와 같은 형식의 타임아웃입니다
+    /// ([super::ipc::TIMEOUT_SHIFT])
+    pub const RESERVED: u64 = 0xFFFF_FFFC;
+    /// 결과(x2): 이 바이트 바로 앞에서 입력이 유실됨(장치의 FIFO가 넘쳤거나
+    /// 오류가 난 문자를 버렸음)
+    pub const LOST: u64 = 1;
 }
 
 /// IPC 플래그(x1) 모듈입니다.
@@ -185,9 +215,9 @@ pub mod perm {
 
 /// 케이퍼빌리티 권한 비트 모듈입니다. (CAP_COPY의 x3)
 pub mod rights {
-    /// Frame: 읽기 매핑, Endpoint: 수신
+    /// Frame: 읽기 매핑, Endpoint: 수신, Console: 입력 읽기
     pub const R: u64 = 1;
-    /// Frame: 쓰기 매핑, Endpoint: 송신
+    /// Frame: 쓰기 매핑, Endpoint: 송신, Console: 출력
     pub const W: u64 = 2;
     /// Frame: 실행 매핑
     pub const X: u64 = 4;
@@ -231,7 +261,8 @@ pub mod err {
     pub const NO_REPLY: i64 = -15;
     /// 케이퍼빌리티에 이 연산에 필요한 권한 비트가 없음
     pub const NO_RIGHTS: i64 = -16;
-    /// 대기하던 엔드포인트가 종료됨
+    /// 대기하던 엔드포인트가 종료됨. 콘솔 입력을 기다리던 중이라면 그
+    /// Console 케이퍼빌리티를 잃었음
     pub const REVOKED: i64 = -17;
     /// 배지를 붙일 수 없는 케이퍼빌리티이거나 이미 다른 배지가 있음
     pub const BAD_BADGE: i64 = -18;
@@ -245,6 +276,10 @@ pub mod err {
     pub const REPLY_TIMEOUT: i64 = -21;
     /// IPC 플래그 레지스터에 뜻이 정해지지 않은 비트가 서 있음
     pub const BAD_FLAGS: i64 = -22;
+    /// 다른 태스크가 이미 콘솔 입력을 기다리는 중임
+    pub const BUSY: i64 = -23;
+    /// 이 이미지나 이 기계에 콘솔 입력 경로가 없거나, 커널이 그 경로를 껐음
+    pub const NO_DEVICE: i64 = -24;
 }
 
 /// 커널이 루트 태스크에 RO로 매핑해 주는 bootinfo 페이지 모듈입니다.
@@ -257,7 +292,10 @@ pub mod bootinfo {
     /// bootinfo 페이지의 사용자 VA(양 플랫폼 그래뉼 정렬)
     pub const VA: u64 = 0x0F00_0000;
     /// 레이아웃 버전(불일치 시 루트 태스크는 진행하면 안 됨)
-    pub const VERSION: u64 = 3;
+    ///
+    /// 버전 4부터 Console 케이퍼빌리티에 권한 비트가 있습니다(R = 입력 읽기,
+    /// W = 출력). 디스크립터의 `rights`가 그 값을 알립니다
+    pub const VERSION: u64 = 4;
 
     /// 루트 태스크의 진입 레지스터 x4로 오는 시드 정보에서, 시드에 들어간
     /// `rng-seed` 바이트 수를 담는 비트
@@ -301,8 +339,9 @@ pub mod bootinfo {
     ///
     /// untyped는 `base` / `size`가 물리 구간입니다. 루트 태스크 이미지의
     /// Frame은 `base`가 그 프레임이 루트 주소 공간에 매핑된 VA, `size`가
-    /// 프레임 크기, `rights`가 권한 비트([super::rights])입니다. 나머지
-    /// 종류는 전부 0입니다(커널 내부 주소 노출 최소화).
+    /// 프레임 크기, `rights`가 권한 비트([super::rights])입니다. Console은
+    /// `rights`만 채웁니다. 나머지 종류는 전부 0입니다(커널 내부 주소 노출
+    /// 최소화).
     #[repr(C)]
     pub struct CapDesc {
         pub kind: u64,

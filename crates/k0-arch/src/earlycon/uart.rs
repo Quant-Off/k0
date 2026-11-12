@@ -1,7 +1,9 @@
 //! 콘솔 UART 송신 드라이버 모듈입니다.
 //!
 //! # Features
-//! 커널이 기계 밖으로 출력을 내보내는 유일한 경로입니다. 송신만 합니다.
+//! 커널이 기계 밖으로 출력을 내보내는 유일한 경로입니다. 송신만 합니다(수신은
+//! feature `console-input`을 고른 빌드에서 [crate::conin]이 같은 레지스터
+//! 프레임으로 따로 합니다).
 //! 초기화 쓰기와 보율 설정은 하지 않고 부트로더가 켜 둔 상태를 그대로 씁니다.
 //! 송신 가능 대기에는 시간 상한이 있어서, 응답 없는 UART가 인터럽트를 막은 채
 //! 커널을 붙잡지 못합니다.
@@ -186,6 +188,13 @@ pub unsafe fn attach(uart: Uart, base: usize, counter_hz: u64) {
         }
         hw_put(b);
     }
+}
+
+/// 붙어 있는 콘솔이 PL011(또는 SBSA UART)이면 그 레지스터 0의 주소를 주는
+/// 함수입니다. 수신 경로가 같은 레지스터 프레임을 씁니다.
+#[cfg(all(feature = "console-pl011", feature = "console-input"))]
+pub(crate) fn pl011_base() -> Option<usize> {
+    (KIND.load(Ordering::Relaxed) == KIND_PL011).then(|| BASE.load(Ordering::Relaxed))
 }
 
 /// 콘솔이 붙어 있는지 알려 주는 함수입니다.

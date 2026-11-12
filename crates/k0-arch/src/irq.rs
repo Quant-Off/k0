@@ -9,6 +9,10 @@
 //! 정리한 뒤, 타이머 PPI 하나만 켭니다. 가상 타이머를 쓰는 이유는 하이퍼바이저
 //! 게스트에서도 항상 쓸 수 있는 타이머가 그것뿐이기 때문입니다.
 //!
+//! feature `console-input`을 고른 빌드에서는 콘솔 UART의 SPI 하나를 더 받을 수
+//! 있습니다([enable_console_irq]). 그 번호는 DTB가 알려 준 것이라 틀릴 수 있고,
+//! 틀린 번호가 선을 붙들면 수신 로직이 몇 번 만에 그 선을 끕니다([crate::conin]).
+//!
 //! 설계상 발생할 수 없는 FIQ와 미지의 `INTID`는 fail-secure로 정지합니다.
 //!
 //! 틱 주기는 1초입니다. 틱은 선점 신호이면서 IPC 타임아웃의 단위이고, EL0가
@@ -62,6 +66,15 @@ pub enum IrqError {
     NoFrequency,
     /// 타이머의 INTID가 PPI 범위(16..=31) 밖
     BadIntid,
+    /// 콘솔 인터럽트 번호가 이 컨트롤러의 SPI 범위 밖임
+    #[cfg(feature = "console-input")]
+    SpiOutOfRange,
+    /// 콘솔의 SPI를 레벨 트리거로 둘 수 없음
+    #[cfg(feature = "console-input")]
+    SpiNotLevel,
+    /// 콘솔의 SPI가 이 보안 상태의 것이 아님(켜기 비트가 서지 않음)
+    #[cfg(feature = "console-input")]
+    SpiNotOwned,
 }
 
 const KIND_NONE: u8 = 0;
@@ -74,6 +87,18 @@ static GICC: AtomicUsize = AtomicUsize::new(0);
 static TIMER_INTID: AtomicU32 = AtomicU32::new(0);
 static TIMER_HZ: AtomicU64 = AtomicU64::new(0);
 static TICKS: AtomicU64 = AtomicU64::new(0);
+/// 디스트리뷰터 레지스터의 가상 주소(콘솔의 SPI를 켜고 끄는 데 씀)
+#[cfg(feature = "console-input")]
+static GICD: AtomicUsize = AtomicUsize::new(0);
+/// 이 컨트롤러가 구현한 INTID의 수(1020을 넘지 않게 묶음)
+#[cfg(feature = "console-input")]
+static INTID_LIMIT: AtomicU32 = AtomicU32::new(0);
+/// 콘솔의 INTID. 켠 적이 없으면 어떤 INTID와도 같지 않은 값
+#[cfg(feature = "console-input")]
+static CONSOLE_INTID: AtomicU32 = AtomicU32::new(u32::MAX);
+/// 주기적인 틱 줄을 멈췄는지
+#[cfg(feature = "console-input")]
+static QUIET_TICKS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// 로그에 남기는 틱 줄의 수. 이후의 틱은 콘솔에만 찍음
 const LOGGED_TICKS: u64 = 4;
@@ -137,10 +162,33 @@ pub mod gicv3 {
     use super::*;
 
     const GICD_CTLR: usize = 0x0000;
-    const GICD_TYPER: usize = 0x0004;
+    pub(super) const GICD_TYPER: usize = 0x0004;
+    #[cfg(feature = "console-input")]
+    const GICD_IGROUPR: usize = 0x0080;
+    #[cfg(feature = "console-input")]
+    const GICD_ISENABLER: usize = 0x0100;
     const GICD_ICENABLER: usize = 0x0180;
     const GICD_ICPENDR: usize = 0x0280;
     const GICD_ICACTIVER: usize = 0x0380;
+    #[cfg(feature = "console-input")]
+    const GICD_IPRIORITYR: usize = 0x0400;
+    #[cfg(feature = "console-input")]
+    const GICD_ICFGR: usize = 0x0C00;
+    #[cfg(feature = "console-input")]
+    const GICD_IGRPMODR: usize = 0x0D00;
+    #[cfg(feature = "console-input")]
+    const GICD_IROUTER: u64 = 0x6000;
+
+    /// SPI의 라우팅 레지스터(GICD_IROUTER)가 디스트리뷰터 프레임 안에서 놓이는
+    /// 위치를 주는 함수입니다. 초기화에 쓰는 첫 페이지 밖에 있어서, 콘솔의
+    /// SPI를 켜려면 호출자가 그 페이지를 따로 매핑해야 합니다.
+    ///
+    /// # Arguments
+    /// `intid` - SPI의 INTID
+    #[cfg(feature = "console-input")]
+    pub const fn router_offset(intid: u32) -> u64 {
+        GICD_IROUTER + 8 * intid as u64
+    }
     /// 식별 레지스터 PIDR2가 프레임 안에서 놓이는 위치
     pub const PIDR2: u64 = 0xFFE8;
     pub const GICR_TYPER: u64 = 0x0008;
@@ -379,6 +427,59 @@ pub mod gicv3 {
         Ok(())
     }
 
+    /// SPI 하나를 이 코어로 오게 구성하고 켜는 함수입니다.
+    ///
+    /// 비보안 Group 1, 타이머와 같은 우선순위, 레벨 트리거로 두고 이 코어의
+    /// 어피니티로 보냅니다. 보안 상태가 소유한 SPI는 비보안에서 쓰기가
+    /// 무시되므로 켜기 비트를 읽어 보아 가립니다.
+    ///
+    /// # Safety
+    /// `dist`는 [init]이 초기화를 마친 디스트리뷰터 프레임의 매핑된 주소,
+    /// `router`는 이 SPI의 라우팅 레지스터([router_offset])가 매핑된 주소여야
+    /// 하고, `intid`는 이 컨트롤러가 구현한 SPI여야 합니다.
+    #[cfg(feature = "console-input")]
+    pub(super) unsafe fn enable_spi(dist: usize, router: usize, intid: u32) -> Result<(), IrqError> {
+        let n = intid as usize;
+        let (word, bit) = (4 * (n / 32), 1u32 << (n % 32));
+        let mpidr: u64;
+        // SAFETY: MPIDR_EL1 읽기는 부작용이 없음
+        unsafe { asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)) };
+        // GICD_IROUTER의 어피니티 배치는 MPIDR과 같음(Aff3이 비트 39..32). 비트
+        // 31(아무 코어로나 보내기)은 0으로 둠
+        let route = mpidr & 0xFF_00FF_FFFF;
+        // SAFETY: 함수 계약대로 매핑된 디스트리뷰터 레지스터에 대한 접근
+        unsafe {
+            write32(dist + GICD_IGROUPR + word, read32(dist + GICD_IGROUPR + word) | bit);
+            write32(dist + GICD_IGRPMODR + word, read32(dist + GICD_IGRPMODR + word) & !bit);
+            write8(dist + GICD_IPRIORITYR + n, PRIORITY as u8);
+            // 설정은 꺼진 동안에만 바꿀 수 있음. init이 SPI를 전부 꺼 두었음
+            let cfg = dist + GICD_ICFGR + 4 * (n / 16);
+            let cfg_bit = 1u32 << (2 * (n % 16) + 1);
+            write32(cfg, read32(cfg) & !cfg_bit);
+            if read32(cfg) & cfg_bit != 0 {
+                return Err(IrqError::SpiNotLevel);
+            }
+            core::ptr::write_volatile(router as *mut u64, route);
+            write32(dist + GICD_ISENABLER + word, bit);
+            wait_clear(dist + GICD_CTLR, CTLR_RWP, IrqError::GicRwpTimeout)?;
+            if read32(dist + GICD_ISENABLER + word) & bit == 0 {
+                return Err(IrqError::SpiNotOwned);
+            }
+        }
+        Ok(())
+    }
+
+    /// SPI 하나를 끄는 함수입니다.
+    ///
+    /// # Safety
+    /// [enable_spi]와 같습니다.
+    #[cfg(feature = "console-input")]
+    pub(super) unsafe fn disable_spi(dist: usize, intid: u32) {
+        let n = intid as usize;
+        // SAFETY: 함수 계약대로 매핑된 디스트리뷰터 레지스터에 대한 접근
+        unsafe { write32(dist + GICD_ICENABLER + 4 * (n / 32), 1u32 << (n % 32)) };
+    }
+
     pub(super) fn ack() -> u64 {
         let iar: u64;
         // SAFETY: ICC_IAR1_EL1 읽기는 최고 우선순위 대기 인터럽트를 승인함
@@ -397,13 +498,15 @@ pub mod gicv2 {
     use super::*;
 
     const GICD_CTLR: usize = 0x000;
-    const GICD_TYPER: usize = 0x004;
+    pub(super) const GICD_TYPER: usize = 0x004;
     const GICD_IGROUPR: usize = 0x080;
     const GICD_ISENABLER: usize = 0x100;
     const GICD_ICENABLER: usize = 0x180;
     const GICD_ICPENDR: usize = 0x280;
     const GICD_ICACTIVER: usize = 0x380;
     const GICD_IPRIORITYR: usize = 0x400;
+    #[cfg(feature = "console-input")]
+    const GICD_ITARGETSR: usize = 0x800;
     const GICD_ICFGR: usize = 0xC00;
     const GICD_PIDR2: usize = 0xFE8;
     const GICC_CTLR: usize = 0x00;
@@ -481,6 +584,55 @@ pub mod gicv2 {
         }
         Ok(())
     }
+
+    /// SPI 하나를 이 코어로 오게 구성하고 켜는 함수입니다.
+    ///
+    /// # Safety
+    /// `dist`는 [init]이 초기화를 마친 디스트리뷰터 프레임의 매핑된 주소여야
+    /// 하고, `intid`는 이 컨트롤러가 구현한 SPI여야 합니다.
+    #[cfg(feature = "console-input")]
+    pub(super) unsafe fn enable_spi(dist: usize, intid: u32) -> Result<(), IrqError> {
+        let n = intid as usize;
+        let (word, bit) = (4 * (n / 32), 1u32 << (n % 32));
+        // SAFETY: 함수 계약대로 매핑된 디스트리뷰터 레지스터에 대한 접근
+        unsafe {
+            // 타이머와 같은 그룹에 둠. 보안 확장이 있으면 이 레지스터는
+            // 비보안에서 읽기 0 / 쓰기 무시임
+            if read32(dist + GICD_TYPER) & (1 << 10) == 0 {
+                write32(dist + GICD_IGROUPR + word, read32(dist + GICD_IGROUPR + word) & !bit);
+            }
+            write8(dist + GICD_IPRIORITYR + n, PRIORITY as u8);
+            let cfg = dist + GICD_ICFGR + 4 * (n / 16);
+            let cfg_bit = 1u32 << (2 * (n % 16) + 1);
+            write32(cfg, read32(cfg) & !cfg_bit);
+            if read32(cfg) & cfg_bit != 0 {
+                return Err(IrqError::SpiNotLevel);
+            }
+            // 이 CPU 인터페이스의 마스크는 ITARGETSR0의 첫 바이트로 읽힘. CPU가
+            // 하나뿐인 구현에서는 이 레지스터가 읽기 0 / 쓰기 무시이고 모든
+            // 인터럽트가 그 CPU로 가므로, 0이면 쓰지 않음
+            let me = read32(dist + GICD_ITARGETSR) & 0xFF;
+            if me != 0 {
+                write8(dist + GICD_ITARGETSR + n, me as u8);
+            }
+            write32(dist + GICD_ISENABLER + word, bit);
+            if read32(dist + GICD_ISENABLER + word) & bit == 0 {
+                return Err(IrqError::SpiNotOwned);
+            }
+        }
+        Ok(())
+    }
+
+    /// SPI 하나를 끄는 함수입니다.
+    ///
+    /// # Safety
+    /// [enable_spi]와 같습니다.
+    #[cfg(feature = "console-input")]
+    pub(super) unsafe fn disable_spi(dist: usize, intid: u32) {
+        let n = intid as usize;
+        // SAFETY: 함수 계약대로 매핑된 디스트리뷰터 레지스터에 대한 접근
+        unsafe { write32(dist + GICD_ICENABLER + 4 * (n / 32), 1u32 << (n % 32)) };
+    }
 }
 
 /// 초기화할 인터럽트 컨트롤러와 그 레지스터의 가상 주소입니다.
@@ -524,8 +676,20 @@ fn timer_arm(interval: u64) {
 fn timer_tick() {
     let n = TICKS.load(Ordering::Relaxed) + 1;
     TICKS.store(n, Ordering::Relaxed);
+    // 수신 인터럽트가 오지 않는 UART(수신 타임아웃이 없거나 번호가 조용히
+    // 틀린 경우)에서도 입력이 늦게나마 도착하게 틱마다 한 번 들여다봄. 닫혀
+    // 있는 동안에는 아무 일도 하지 않음
+    #[cfg(feature = "console-input")]
+    crate::conin::poll();
+    // 태스크가 콘솔 입력을 쓰기 시작한 뒤에는 틱 줄을 내지 않음(입력하는 줄
+    // 사이에 끼어들지 않게). 틱과 타임아웃은 그대로 동작함
+    #[cfg(feature = "console-input")]
+    let quiet = QUIET_TICKS.load(Ordering::Relaxed);
+    #[cfg(not(feature = "console-input"))]
+    let quiet = false;
     // 틱은 끝없이 이어지므로 처음 몇 줄만 로그에 남김
-    if n <= LOGGED_TICKS {
+    if quiet {
+    } else if n <= LOGGED_TICKS {
         let _ = writeln!(EarlyCon, "k0: tick {n}");
     } else {
         // 콘솔 드라이버가 없는 빌드에는 쓸 곳이 없으므로 서식 작업도 하지 않음
@@ -541,6 +705,100 @@ fn timer_tick() {
 /// IPC 타임아웃의 기한이 이 값을 기준으로 정해집니다.
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
+}
+
+/// 주기적인 틱 줄을 멈추는 함수입니다. 처음 불렸으면 true를 돌려줍니다.
+///
+/// 태스크가 콘솔 입력을 쓰기 시작할 때 커널이 부릅니다. 틱 자체와 IPC
+/// 타임아웃은 그대로 동작합니다.
+#[cfg(feature = "console-input")]
+pub fn quiet_ticks() -> bool {
+    !QUIET_TICKS.swap(true, Ordering::Relaxed)
+}
+
+/// 콘솔 UART의 SPI를 이 코어로 오게 구성하고 켜는 함수입니다.
+///
+/// UART 쪽의 인터럽트는 [crate::conin::prepare]가 먼저 전부 막아 두었어야
+/// 합니다. 그래야 여기서 선을 켜도 태스크가 입력을 쓰기 전까지는 인터럽트가
+/// 오지 않습니다.
+///
+/// # Arguments
+/// `_irq` - 컨트롤러가 초기화됐음을 증명하는 토큰
+/// `intid` - DTB가 알려 준 콘솔의 INTID
+/// `router` - GICv3에서 이 SPI의 라우팅 레지스터([gicv3::router_offset])가
+///            매핑된 주소. GICv2에서는 쓰지 않음
+///
+/// # Safety
+/// [init]에 넘긴 디스트리뷰터의 매핑이 그대로 살아 있어야 하고, GICv3라면
+/// `router`가 Device로 매핑된 그 레지스터의 주소여야 합니다.
+///
+/// # Errors
+/// 번호가 이 컨트롤러의 SPI가 아니거나 타이머의 번호이면 `SpiOutOfRange`,
+/// 레벨 트리거로 둘 수 없으면 `SpiNotLevel`, 켜기 비트가 서지 않으면
+/// `SpiNotOwned`. 어느 경우든 잃는 것은 콘솔 입력뿐이고 부팅은 계속됩니다
+#[cfg(feature = "console-input")]
+pub unsafe fn enable_console_irq(_irq: &Irq, intid: u32, router: Option<usize>) -> Result<(), IrqError> {
+    let limit = INTID_LIMIT.load(Ordering::Relaxed);
+    if !(32..limit).contains(&intid) || intid == TIMER_INTID.load(Ordering::Relaxed) {
+        return Err(IrqError::SpiOutOfRange);
+    }
+    let dist = GICD.load(Ordering::Relaxed);
+    // 켜자마자 인터럽트가 올 수 있으므로 분배기가 알아볼 번호를 먼저 적어 둠
+    CONSOLE_INTID.store(intid, Ordering::Relaxed);
+    // SAFETY: 함수 계약대로 매핑된 디스트리뷰터이고 번호는 위에서 확인한 SPI임
+    let r = unsafe {
+        match KIND.load(Ordering::Relaxed) {
+            KIND_V3 => match router {
+                Some(router) => gicv3::enable_spi(dist, router, intid),
+                None => Err(IrqError::ProbeFailed),
+            },
+            KIND_V2 => gicv2::enable_spi(dist, intid),
+            _ => Err(IrqError::WrongGic),
+        }
+    };
+    if r.is_err() {
+        // 반쯤 구성된 선은 꺼 둠. 번호는 그대로 두어, 이미 전달돼 있던
+        // 인터럽트가 "미지의 INTID"로 커널을 멈추지 않게 함
+        // SAFETY: 위와 같음
+        unsafe { disable_console_irq() };
+    }
+    r
+}
+
+/// 콘솔의 SPI를 끄는 함수입니다.
+///
+/// # Safety
+/// [enable_console_irq]와 같습니다.
+#[cfg(feature = "console-input")]
+unsafe fn disable_console_irq() {
+    let (dist, intid) = (GICD.load(Ordering::Relaxed), CONSOLE_INTID.load(Ordering::Relaxed));
+    if intid == u32::MAX {
+        return;
+    }
+    // SAFETY: 함수 계약을 그대로 전달
+    unsafe {
+        match KIND.load(Ordering::Relaxed) {
+            KIND_V3 => gicv3::disable_spi(dist, intid),
+            KIND_V2 => gicv2::disable_spi(dist, intid),
+            _ => {}
+        }
+    }
+}
+
+/// 콘솔 인터럽트 하나를 처리하는 함수입니다.
+///
+/// 수신 로직이 원인 없는 인터럽트가 이어진다고 판단하면(DTB가 다른 장치의
+/// 번호를 준 경우) 컨트롤러에서 그 선을 끄고 한 줄을 남깁니다. 커널은 계속
+/// 실행되고 입력만 없어집니다.
+#[cfg(feature = "console-input")]
+fn console_irq() {
+    if crate::conin::interrupt() == k0_conin::Irq::CutOff {
+        // SAFETY: 이 인터럽트가 왔다는 것은 enable_console_irq가 선을 켰다는
+        //         뜻이고, 그 계약대로 디스트리뷰터가 매핑돼 있음
+        unsafe { disable_console_irq() };
+        let intid = CONSOLE_INTID.load(Ordering::Relaxed);
+        let _ = writeln!(EarlyCon, "k0: console input off (interrupt {intid} fired without a uart cause)");
+    }
 }
 
 /// 실행할 태스크가 없을 때 다음 인터럽트까지 코어를 재우고 그 인터럽트를
@@ -596,12 +854,16 @@ pub unsafe fn init(_vectors: &Vectors, gic: &Gic, intid: u32, hz: u64) -> Result
         Gic::V3(frames) => unsafe {
             gicv3::init(frames, intid)?;
             KIND.store(KIND_V3, Ordering::Relaxed);
+            #[cfg(feature = "console-input")]
+            remember_distributor(frames.dist, read32(frames.dist + gicv3::GICD_TYPER));
         },
         // SAFETY: 함수 계약을 그대로 전달
         Gic::V2 { dist, cpu } => unsafe {
             gicv2::init(*dist, *cpu, intid)?;
             GICC.store(*cpu, Ordering::Relaxed);
             KIND.store(KIND_V2, Ordering::Relaxed);
+            #[cfg(feature = "console-input")]
+            remember_distributor(*dist, read32(*dist + gicv2::GICD_TYPER));
         },
     }
     TIMER_INTID.store(intid, Ordering::Relaxed);
@@ -612,6 +874,15 @@ pub unsafe fn init(_vectors: &Vectors, gic: &Gic, intid: u32, hz: u64) -> Result
     //         pending으로 쌓였다가 EL0 진입 후 엉뚱한 문맥에서 터짐
     unsafe { asm!("msr DAIFClr, #6", options(nomem, nostack)) };
     Ok(Irq { _sealed: () })
+}
+
+/// 콘솔의 SPI를 켤 때 쓸 디스트리뷰터 주소와 INTID의 상한을 적어 두는
+/// 함수입니다. 상한은 GICD_TYPER의 ITLinesNumber에서 나오고, 1020부터는 특수
+/// 번호라 넘지 않게 묶습니다.
+#[cfg(feature = "console-input")]
+fn remember_distributor(dist: usize, typer: u32) {
+    GICD.store(dist, Ordering::Relaxed);
+    INTID_LIMIT.store((32 * ((typer & 0x1F) + 1)).min(1020), Ordering::Relaxed);
 }
 
 /// 설계상 발생할 수 없는 인터럽트를 fail-secure로 정지시키는 함수입니다.
@@ -637,13 +908,32 @@ unsafe extern "C" {
     /// EL0에서 진입한 IRQ/FIQ 컨텍스트에서 벡터가 사용자 컨텍스트 저장을
     /// 마친 뒤에만 호출됩니다.
     fn k0_preempt();
+
+    /// 콘솔 입력이 도착했을 때 기다리는 태스크를 깨우는 정책, 커널 바이너리가
+    /// 정의함 (링크 계약)
+    ///
+    /// # Safety
+    /// [k0_preempt]와 같습니다.
+    #[cfg(feature = "console-input")]
+    fn k0_console_event();
 }
+
+/// 분배 결과: 타이머 틱이었음(EL0 경로의 선점 판단용)
+const EV_TICK: u8 = 1;
+/// 분배 결과: 콘솔 인터럽트였음(기다리는 태스크를 깨울지 커널이 판단)
+#[cfg(feature = "console-input")]
+const EV_CONSOLE: u8 = 2;
 
 /// EL1과 EL0 양쪽 IRQ 벡터가 공유하는 실제 분배 함수입니다.
 ///
-/// 타이머 틱이었으면 true를 반환합니다(EL0 경로의 선점 판단용).
-fn dispatch_irq() -> bool {
+/// 무슨 인터럽트였는지를 `EV_` 비트로 돌려줍니다. 콘솔 인터럽트의 가지는 그
+/// 선을 끈 뒤에도 남겨 둡니다. 끄기 전에 이미 CPU로 전달돼 있던 인터럽트가
+/// 미지의 INTID로 취급되어 커널을 멈추면 안 되기 때문입니다(그때의 수신
+/// 로직은 레지스터를 건드리지 않고 돌아옴).
+fn dispatch_irq() -> u8 {
     let timer = u64::from(TIMER_INTID.load(Ordering::Relaxed));
+    #[cfg(feature = "console-input")]
+    let console = u64::from(CONSOLE_INTID.load(Ordering::Relaxed));
     match KIND.load(Ordering::Relaxed) {
         KIND_V3 => {
             let iar = gicv3::ack();
@@ -651,9 +941,15 @@ fn dispatch_irq() -> bool {
                 id if id == timer => {
                     timer_tick();
                     gicv3::eoi(iar);
-                    true
+                    EV_TICK
                 }
-                1020..=1023 => false, // 스퓨리어스: 승인 없이 복귀
+                #[cfg(feature = "console-input")]
+                id if id == console => {
+                    console_irq();
+                    gicv3::eoi(iar);
+                    EV_CONSOLE
+                }
+                1020..=1023 => 0, // 스퓨리어스: 승인 없이 복귀
                 other => unexpected("irq", other),
             }
         }
@@ -666,9 +962,16 @@ fn dispatch_irq() -> bool {
                     timer_tick();
                     // SAFETY: 승인에서 받은 값 그대로 완료 통지
                     unsafe { write32(cpu + gicv2::GICC_EOIR, iar) };
-                    true
+                    EV_TICK
                 }
-                1020..=1023 => false,
+                #[cfg(feature = "console-input")]
+                id if id == console => {
+                    console_irq();
+                    // SAFETY: 승인에서 받은 값 그대로 완료 통지
+                    unsafe { write32(cpu + gicv2::GICC_EOIR, iar) };
+                    EV_CONSOLE
+                }
+                1020..=1023 => 0,
                 other => unexpected("irq", other),
             }
         }
@@ -680,7 +983,7 @@ fn dispatch_irq() -> bool {
 ///
 /// 커널은 모든 인터럽트를 IRQ로만 받으므로 FIQ는 설계상 없고, 들어오면
 /// fail-secure로 정지합니다.
-fn dispatch_fiq() -> bool {
+fn dispatch_fiq() -> u8 {
     unexpected("fiq", 0)
 }
 
@@ -705,7 +1008,13 @@ extern "C" fn fiq_current() {
 /// 복원하며 수행합니다.
 #[unsafe(no_mangle)]
 extern "C" fn irq_lower(_ctx: &mut crate::usermode::Context) {
-    if dispatch_irq() {
+    let events = dispatch_irq();
+    #[cfg(feature = "console-input")]
+    if events & EV_CONSOLE != 0 {
+        // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ 경로임
+        unsafe { k0_console_event() };
+    }
+    if events & EV_TICK != 0 {
         // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ 경로임
         unsafe { k0_preempt() };
     }
@@ -714,7 +1023,7 @@ extern "C" fn irq_lower(_ctx: &mut crate::usermode::Context) {
 /// 사용자 공간(EL0) 실행 중 FIQ 벡터가 사용하는 디스패처 함수입니다.
 #[unsafe(no_mangle)]
 extern "C" fn fiq_lower(_ctx: &mut crate::usermode::Context) {
-    if dispatch_fiq() {
+    if dispatch_fiq() & EV_TICK != 0 {
         // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 FIQ 경로임
         unsafe { k0_preempt() };
     }

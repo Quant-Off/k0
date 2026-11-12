@@ -38,6 +38,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "vault")]
 mod oracle;
+#[cfg(feature = "terminal")]
+mod service;
 
 use k0_abi::bootinfo::slot;
 use k0_abi::{bootinfo, err, ipc, obj, perm, rights, syscall};
@@ -158,6 +160,32 @@ fn yield_now() {
 
 fn putc(slot: u64, b: u8) -> i64 {
     sys(syscall::DEBUG_PUTC, [slot, u64::from(b), 0, 0, 0, 0]) as i64
+}
+
+/// 콘솔 입력에서 바이트 하나를 읽는 함수입니다. (상태, 바이트, 유실 표시)를
+/// 돌려줍니다. 커널에 콘솔 입력 경로가 있는 이미지에서만 부를 수 있습니다.
+///
+/// static을 쓰지 않으므로 격리된 태스크에서도 부를 수 있습니다.
+///
+/// # Arguments
+/// `slot` - 읽기 권한이 있는 Console 슬롯
+/// `flags` - [k0_abi::console]의 플래그와 타임아웃
+#[cfg(feature = "console-input")]
+#[inline(always)]
+fn console_read(slot: u64, flags: u64) -> (i64, u8, bool) {
+    let (status, byte, lost): (u64, u64, u64);
+    // SAFETY: svc는 커널로의 동기 트랩이고 커널이 컨텍스트 전체를 복원함
+    unsafe {
+        asm!(
+            "svc #0",
+            in("x8") syscall::CONSOLE_READ,
+            inlateout("x0") slot => status,
+            inlateout("x1") flags => byte,
+            lateout("x2") lost,
+            options(nostack),
+        );
+    }
+    (status as i64, byte as u8, lost & k0_abi::console::LOST != 0)
 }
 
 fn put_str(s: &str) {
@@ -708,15 +736,17 @@ static BOOT_SEED: [AtomicU64; 4] = [
 ];
 static SEED_INFO: AtomicU64 = AtomicU64::new(0);
 
-/// 부트 시드를 꺼내고 보관하던 자리를 지우는 함수입니다. 두 번째부터는 0만
-/// 나옵니다.
+/// 부트 시드와 그 재료 정보를 꺼내고 보관하던 자리를 지우는 함수입니다. 두
+/// 번째부터는 시드도 정보도 0만 나옵니다. 정보까지 지우는 까닭은, 이미 꺼낸
+/// 시드(전부 0)가 "재료가 충분함"이라는 정보와 함께 다시 넘어가 누구나 아는
+/// 키가 만들어지는 일을 막기 위해서입니다.
 #[allow(dead_code)]
 fn take_boot_seed() -> ([u8; 32], u64) {
     let mut seed = [0u8; 32];
     for (chunk, word) in seed.chunks_exact_mut(8).zip(&BOOT_SEED) {
         chunk.copy_from_slice(&word.swap(0, Ordering::Relaxed).to_le_bytes());
     }
-    (seed, SEED_INFO.load(Ordering::Relaxed))
+    (seed, SEED_INFO.swap(0, Ordering::Relaxed))
 }
 
 #[unsafe(no_mangle)]
@@ -747,8 +777,9 @@ extern "C" fn _start(s0: u64, s1: u64, s2: u64, s3: u64, seed_info: u64) -> ! {
     put_str("root: boot seed from rng-seed bytes ");
     put_hex(seed_info & bootinfo::SEED_RNG_SEED_BYTES);
     put_str(if seed_info & bootinfo::SEED_RNDR != 0 { " and rndr\n" } else { " without rndr\n" });
-    // 시드를 쓸 서비스가 없는 이미지에서는 보관하지 않고 바로 지움
-    #[cfg(not(feature = "vault"))]
+    // 시드를 쓰는 것은 서비스의 볼트뿐임(자가 검증의 볼트는 공개 시험 시드를
+    // 씀). 그 서비스가 없는 이미지에서는 보관하지 않고 바로 지움
+    #[cfg(not(all(feature = "vault", feature = "terminal")))]
     let _ = take_boot_seed();
     check(
         "bootinfo frame size",
@@ -822,13 +853,197 @@ extern "C" fn _start(s0: u64, s1: u64, s2: u64, s3: u64, seed_info: u64) -> ! {
     test_sched_ipc_fault(&b);
     test_isolation(&b);
     #[cfg(feature = "vault")]
-    oracle::test_oracle(&b);
+    oracle::test_oracle(&b, seed_info);
     test_reserve(&b);
+    // 입력을 처음 읽으면 커널이 주기적인 틱 줄을 멈추므로, 틱 줄을 세는 검증이
+    // 모두 끝난 뒤인 맨 마지막에 돌림
+    #[cfg(feature = "console-input")]
+    test_console_input(&b);
 
     put_str("root: sched tests pass\n");
+    // 자가 검증을 모두 통과한 뒤에만 서비스를 시작함. 시작했으면 돌아오지 않음
+    #[cfg(feature = "terminal")]
+    service::start(&b);
     loop {
         yield_now();
     }
+}
+
+/// 앞의 검증들이 쓰지 않는 untyped 가운데 가장 큰 것을 고르는 함수입니다. 그런
+/// 것이 없으면 0입니다. 볼트 검증, 입력 검증, 서비스가 차례로 씁니다(앞의
+/// 검증들은 주 untyped를 거의 다 쓰기도 함).
+#[allow(dead_code)]
+fn spare_untyped(b: &Boot) -> u64 {
+    // SAFETY: 커널이 이 VA에 bootinfo 페이지를 RO로 매핑하고 내용을 채웠음
+    let cap_count = unsafe { (*(bootinfo::VA as *const bootinfo::Header)).cap_count };
+    let (mut best, mut best_frames) = (0, 0);
+    for i in 0..cap_count {
+        let d = desc(i);
+        if d.kind != bootinfo::cap_kind::UNTYPED || i == b.ut_main || i == b.ut_small || i == b.ut_reuse {
+            continue;
+        }
+        let n = frames_in(d, b.frame_size);
+        if n >= 512 && n > best_frames {
+            best = i;
+            best_frames = n;
+        }
+    }
+    best
+}
+
+/// 자가 검증의 끝과 그 뒤의 서비스가 오브젝트를 만들 untyped를 고르는
+/// 함수입니다. 앞의 검증들이 쓰지 않는 큰 untyped가 있으면 그것을, 없으면 주
+/// untyped를 씁니다. 주 untyped에는 커널 예약 검증이 이 단계의 몫을 남겨
+/// 둡니다([test_reserve]).
+#[allow(dead_code)]
+fn late_untyped(b: &Boot) -> u64 {
+    match spare_untyped(b) {
+        0 => b.ut_main,
+        spare => spare,
+    }
+}
+
+/// 콘솔 입력을 기다리다 그 결과를 [INPUT_SEEN]에 적는 자식 스레드의
+/// 진입점입니다.
+///
+/// # Arguments
+/// `slot` - 읽을 Console 슬롯
+#[cfg(feature = "console-input")]
+extern "C" fn input_waiter_entry(slot: u64) -> ! {
+    INPUT_SEEN.store(INPUT_WAITING, Ordering::Relaxed);
+    let (status, _, _) = console_read(slot, 0);
+    INPUT_SEEN.store(status as u64, Ordering::Relaxed);
+    sys1(syscall::EXIT, 0);
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// [input_waiter_entry]가 본 상태. 기다리는 동안은 [INPUT_WAITING]
+#[cfg(feature = "console-input")]
+static INPUT_SEEN: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "console-input")]
+const INPUT_WAITING: u64 = 0x1D1E;
+
+/// 콘솔 입력 시스템 콜의 권한과 대기를 검증하는 함수입니다.
+///
+/// 누가 읽을 수 있는지(읽기 권한이 있는 Console 케이퍼빌리티만), 대기자 자리가
+/// 하나뿐인 것, 기한, 대기자의 삭제와 권한 회수를 봅니다. 직렬 선은 커널
+/// 밖의 것이라 이 검증 도중에 바이트가 들어올 수 있습니다. 그런 경우는
+/// 실패로 치지 않고 그 뒤의 검증을 건너뛴 뒤 한 줄로 알립니다(바이트 하나로
+/// 자가 검증이 실패해 서비스가 뜨지 않으면 안 됨).
+#[cfg(feature = "console-input")]
+fn test_console_input(b: &Boot) {
+    use k0_abi::console::{FLUSH, NONBLOCK};
+    let (ut, fs) = (late_untyped(b), b.frame_size);
+    let con = slot::CONSOLE as i64;
+
+    // 출력만 남긴 복사본: 읽지 못하고 백스페이스도 `?`로 바뀜
+    let wo = copy_here(con, rights::W, 0);
+    check("console copy w", wo > 0);
+    check("read needs the input right", console_read(wo as u64, NONBLOCK).0 == err::NO_RIGHTS);
+    put_str("root: backspace without the input right [");
+    check("putc bs w-only", putc(wo as u64, 0x08) == 0);
+    put_str("]\n");
+    // 입력만 남긴 복사본: 출력하지 못함. 권한은 복사로 되살릴 수 없음
+    let ro = copy_here(con, rights::R, 0);
+    check("console copy r", ro > 0);
+    check("write needs the output right", putc(ro as u64, b'x') == err::NO_RIGHTS);
+    check("rights do not come back", copy_here(wo, rights::R, 0) == err::NO_RIGHTS as i64);
+    check("rights do not come back", copy_here(ro, rights::W, 0) == err::NO_RIGHTS as i64);
+    // 거부 경로는 받아 둔 입력을 건드리지 않음
+    check("read bad cap", console_read(slot::ADDR_SPACE, NONBLOCK).0 == err::BAD_CAP);
+    check("read bad slot", console_read(9999, NONBLOCK).0 == err::BAD_SLOT);
+    check("read null slot", console_read(0, NONBLOCK).0 == err::BAD_SLOT);
+    check("read reserved flags", console_read(slot::CONSOLE, 4 | NONBLOCK).0 == err::BAD_FLAGS);
+
+    let first = console_read(slot::CONSOLE, NONBLOCK | FLUSH).0;
+    if first == err::NO_DEVICE {
+        // 수신 드라이버가 없는 UART이거나 인터럽트를 쓸 수 없는 기계
+        check("no input path", console_read(ro as u64, 0).0 == err::NO_DEVICE);
+        put_str("root: console input tests pass (no input path)\n");
+        return;
+    }
+    let busy_line = || put_str("root: console input tests cut short (the line is busy)\n");
+    if first != err::WOULD_BLOCK {
+        check("first read", first == 0);
+        return busy_line();
+    }
+    // 기한이 있는 읽기는 입력이 없으면 기한에 끝남
+    match console_read(ro as u64, FLUSH | ipc::timeout(1)).0 {
+        0 => return busy_line(),
+        e => check("read times out", e == err::TIMEOUT),
+    }
+
+    // 대기자 자리는 하나: 자식이 기다리는 동안 다른 읽기는 BUSY
+    let stack = retype(ut, obj::FRAME);
+    check("input waiter stack", stack > 0);
+    check("input waiter stack map", map(stack, TEST_VA + 0x70 * 0x4000, perm::RW) == 0);
+    let sp = TEST_VA + 0x70 * 0x4000 + fs;
+    let waiter = |slot: i64| {
+        INPUT_SEEN.store(0, Ordering::Relaxed);
+        let tcb = retype(ut, obj::TCB);
+        check(
+            "input waiter",
+            tcb > 0
+                && tcb_configure(tcb, input_waiter_entry as usize as u64, sp, slot::ADDR_SPACE as i64, slot::CNODE as i64, slot as u64)
+                    == 0
+                && tcb_resume(tcb) == 0,
+        );
+        for _ in 0..8 {
+            yield_now();
+        }
+        tcb
+    };
+    // 여기서부터는 직렬 선에서 바이트 하나가 들어오면 결과가 달라짐(기다리던
+    // 자식이 그 바이트를 받아 자리가 비거나, 링에 바이트가 남음). 그런 경우는
+    // 실패가 아니므로 만든 것을 치우고 건너뜀
+    let still_waiting = || INPUT_SEEN.load(Ordering::Relaxed) == INPUT_WAITING;
+    let empty = || console_read(slot::CONSOLE, NONBLOCK | FLUSH).0 == err::WOULD_BLOCK;
+    let child = waiter(ro);
+    let busy = still_waiting()
+        && console_read(slot::CONSOLE, NONBLOCK).0 == err::BUSY
+        && console_read(slot::CONSOLE, ipc::timeout(1)).0 == err::BUSY;
+    // 기다리던 태스크를 삭제하면 자리가 빔
+    check("delete the waiter", cap_delete(child) == 0);
+    if !busy || !empty() {
+        check("input stack unmap", unmap(stack) == 0);
+        return busy_line();
+    }
+
+    // 기다리는 동안 그 케이퍼빌리티를 잃은 태스크는 곧바로 REVOKED로 깨어남.
+    // 삭제와 이동 둘 다 그러함
+    for by_move in [false, true] {
+        let lease = copy_here(con, rights::R, 0);
+        check("console lease", lease > 0);
+        let child = waiter(lease);
+        let waiting = still_waiting();
+        let taken = if by_move {
+            let away = alloc_slot();
+            let moved = cap_move(lease, slot::CNODE as i64, away) == 0;
+            check("console lease moved", moved);
+            away as i64
+        } else {
+            check("take the lease back", cap_delete(lease) == 0);
+            0
+        };
+        for _ in 0..8 {
+            yield_now();
+        }
+        let seen = INPUT_SEEN.load(Ordering::Relaxed);
+        check("input waiter delete", cap_delete(child) == 0);
+        if taken != 0 {
+            check("moved lease delete", cap_delete(taken) == 0);
+        }
+        if !waiting || seen != err::REVOKED as u64 || !empty() {
+            // 자식이 바이트를 받고 끝났으면 0이 보임. 그 밖의 값은 진짜 실패임
+            check("waiter saw the revocation or a byte", !waiting || seen == 0 || seen == err::REVOKED as u64);
+            check("input stack unmap", unmap(stack) == 0);
+            return busy_line();
+        }
+    }
+    check("input stack unmap", unmap(stack) == 0);
+    put_str("root: console input tests pass\n");
 }
 
 /// 콘솔 거부 경로와 제어 문자 필터를 검증하는 함수입니다.
@@ -1994,8 +2209,16 @@ fn test_reserve(b: &Boot) {
     // 남짓이었으므로 40구획을 넘기면 반드시 바닥났음. untyped가 그보다 작은
     // 배치에서는 끝까지 감
     let per_table = fs / 8;
+    // 이 검증 뒤에 오브젝트를 더 만드는 이미지(입력 검증, 서비스)에서는 주
+    // untyped의 절반까지만 걸어 그 몫을 남김. 그래뉼이 큰 배치에서는 40구획이
+    // untyped보다 커서, 끝까지 걸으면 뒤에 쓸 메모리가 없음
+    let limit = if cfg!(feature = "console-input") {
+        (40 * per_table).min(frames_in(desc(ut), fs) / 2)
+    } else {
+        40 * per_table
+    };
     let mut walked = 0u64;
-    while walked < 40 * per_table {
+    while walked < limit {
         let r = retype_at(ut, obj::FRAME, tmp);
         if r == err::EXHAUSTED {
             break;

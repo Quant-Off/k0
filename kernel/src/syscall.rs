@@ -21,6 +21,11 @@
 //! 기다리고, 틱마다 기한이 지난 IPC 대기자를 깨웁니다. 그래서 한 태스크가
 //! 마지막으로 블록되는 것만으로는 나머지 태스크의 타임아웃이 멈추지 않습니다.
 //!
+//! 커널을 `console-input`으로 빌드하면 콘솔 입력을 읽는 시스템 콜이 하나
+//! 더 있습니다(CONSOLE_READ). 입력을 기다리며 잠든 태스크는 바이트가 도착했을
+//! 때 깨어나고, 그 태스크만 남아 있는 동안 커널은 조용히 기다립니다(운영자의
+//! 입력을 기다리는 것은 정상 상태라서 줄을 찍지 않음).
+//!
 //! # Errors
 //! 미지의 시스템 콜 번호와 EL0 폴트는 호출한 태스크만 종료시킵니다.
 //! 케이퍼빌리티 슬롯이나 사용자 페이지 테이블의 손상은 `k0_arch::fatal`로
@@ -103,6 +108,12 @@ extern "C" fn k0_syscall(ctx: &mut Context) {
             let switched = k0_ipc::sys_reply_recv(ctx);
             ipc_or_idle(ctx, switched)
         }
+        // 블록되면 반환 레지스터는 깨우는 쪽이 쓰므로 IPC와 같은 길을 탐
+        #[cfg(feature = "console-input")]
+        nr::CONSOLE_READ => {
+            let switched = k0_ipc::console::sys_console_read(ctx);
+            ipc_or_idle(ctx, switched)
+        }
         other => {
             let _ = writeln!(con, "k0: unknown syscall {other}, killing task");
             kill_current();
@@ -144,9 +155,25 @@ extern "C" fn k0_fault(ctx: &mut Context, esr: u64, far: u64) {
 extern "C" fn k0_preempt() {
     // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ/FIQ 컨텍스트임
     unsafe {
+        // 틱이 장치를 들여다보다 가져온 입력이 있으면 기다리는 태스크를 깨움
+        #[cfg(feature = "console-input")]
+        k0_ipc::console::wake(None);
         k0_ipc::expire_timeouts(k0_arch::irq::ticks(), None);
         k0_sched::rotate();
     }
+}
+
+/// 콘솔 입력이 도착했을 때의 정책 함수입니다. (k0-arch가 EL0 IRQ 경로에서
+/// 링크 계약으로 호출)
+///
+/// 입력을 기다리는 태스크가 있으면 바이트를 전달하고 준비 큐의 끝에 넣습니다.
+/// 실행 중이던 태스크는 그대로 이어서 실행됩니다(입력이 선점을 일으키지 않음).
+#[cfg(feature = "console-input")]
+#[unsafe(no_mangle)]
+extern "C" fn k0_console_event() {
+    // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ 컨텍스트라 스케줄러
+    //         접근이 배타적이고, 실행 중이던 태스크는 대기자가 아님
+    unsafe { k0_ipc::console::wake(None) };
 }
 
 /// 핸들러가 끝난 뒤의 공통 종료 경로 함수입니다.
@@ -209,8 +236,9 @@ fn ipc_or_idle(ctx: &mut Context, switched: bool) -> Option<i64> {
 /// 세우지 않고 다음 인터럽트까지 재웠다가, 틱이 지나면 기한이 지난 IPC
 /// 대기자를 깨우고 준비된 태스크로 전환합니다. 깨어나는 태스크는 블록된 채
 /// 기다리던 현재 태스크 자신일 수도 있습니다. 지금 태스크를 깨울 수 있는
-/// 것은 타임아웃뿐이라서, 기한을 건 대기자가 하나도 없으면 이 함수는
-/// 돌아오지 않습니다(틱은 계속 처리함).
+/// 것은 타임아웃과 (입력 경로가 있는 이미지에서는) 콘솔 입력뿐이라서, 기한을
+/// 건 대기자도 입력을 기다리는 태스크도 없으면 이 함수는 돌아오지
+/// 않습니다(틱은 계속 처리함).
 ///
 /// # Arguments
 /// `ctx` - 이번 진입을 일으킨 태스크(스케줄러의 현재 태스크)의 컨텍스트
@@ -227,6 +255,9 @@ fn idle_until_ready(ctx: &mut Context) {
             if !WAITING.swap(true, Ordering::Relaxed) {
                 let _ = writeln!(con, "k0: idle (waiting for a timeout)");
             }
+        } else if console_waiting() {
+            // 운영자의 입력을 기다리는 것은 정상 상태임. 줄을 찍으면 프롬프트
+            // 뒤에 끼어들므로 아무것도 찍지 않음
         } else if !STOPPED.swap(true, Ordering::Relaxed) {
             let _ = writeln!(con, "k0: all tasks stopped (none ready, no timeout pending)");
         }
@@ -236,12 +267,25 @@ fn idle_until_ready(ctx: &mut Context) {
         //         반환값은 이 참조로만 기록됨
         unsafe {
             k0_arch::irq::wait_for_interrupt();
+            // 방금의 인터럽트가 입력을 가져왔으면 기다리는 태스크를 깨움.
+            // 대기자가 블록된 현재 태스크 자신일 수 있어 ctx를 넘김
+            #[cfg(feature = "console-input")]
+            k0_ipc::console::wake(Some(&mut *ctx));
             k0_ipc::expire_timeouts(k0_arch::irq::ticks(), Some(&mut *ctx));
             if k0_sched::block_and_switch() {
                 return;
             }
         }
     }
+}
+
+/// 콘솔 입력을 기다리는 태스크가 있는지 알려 주는 함수입니다. 입력 경로가 없는
+/// 이미지에서는 언제나 false입니다.
+fn console_waiting() -> bool {
+    #[cfg(feature = "console-input")]
+    return k0_ipc::console::waiting();
+    #[cfg(not(feature = "console-input"))]
+    false
 }
 
 /// 오브젝트의 PA를 커널 별칭 주소로 바꾸는 함수입니다.
@@ -311,9 +355,15 @@ fn done(r: Result<(), i64>) -> i64 {
 
 /// DEBUG_PUTC 시스템 콜 처리 함수입니다.
 ///
-/// Console 케이퍼빌리티 제시가 필요합니다(암묵 권한 없음). 출력 가능한
-/// ASCII와 개행만 그대로 내보내고 나머지 바이트는 `?`로 바꿔 터미널 제어
-/// 문자 주입을 막습니다.
+/// 쓰기 권한(W)이 있는 Console 케이퍼빌리티 제시가 필요합니다(암묵 권한
+/// 없음). 출력 가능한 ASCII와 개행만 그대로 내보내고 나머지 바이트는 `?`로
+/// 바꿔 터미널 제어 문자 주입을 막습니다.
+///
+/// 입력 경로가 있는 이미지에서, 읽기 권한(R)도 있는 케이퍼빌리티로 부르면
+/// 백스페이스(0x08) 하나만 더 통과시킵니다. 운영자가 입력한 글자를 화면에서
+/// 지우는 데 필요하고, 그 권한은 터미널 태스크만 받습니다. 백스페이스는 같은
+/// 줄 안에서만 커서를 되돌리므로 이미 끝난 줄(커널의 줄 포함)은 건드리지
+/// 못합니다.
 ///
 /// # Arguments
 /// `slot` - Console 슬롯(x0)
@@ -322,11 +372,15 @@ fn sys_putc(slot: u64, byte: u64) -> i64 {
     done((|| {
         let cn = cspace()?;
         let (_, e) = lookup(&cn, slot)?;
-        if e.cap != Cap::Console {
+        let Cap::Console { rights } = e.cap else {
             return Err(err::BAD_CAP);
+        };
+        if rights & k0_cap::rights::W == 0 {
+            return Err(err::NO_RIGHTS);
         }
         let b = byte as u8;
-        let safe = if b == b'\n' || (0x20..=0x7E).contains(&b) { b } else { b'?' };
+        let erase = cfg!(feature = "console-input") && b == 0x08 && rights & k0_cap::rights::R != 0;
+        let safe = if b == b'\n' || (0x20..=0x7E).contains(&b) || erase { b } else { b'?' };
         EarlyCon.put_user_byte(safe);
         Ok(())
     })())
@@ -586,7 +640,10 @@ fn sys_cap_move(src: u64, cnode: u64, index: u64) -> i64 {
         let (s, _) = lookup(&cn, src)?;
         let d = dest_slot(&cn, cnode, index)?;
         // SAFETY: 두 슬롯은 살아 있는 CNode의 범위 안 슬롯이고 접근이 배타적임
-        unsafe { k0_cap::move_cap(s, d) }.map_err(cap_err)
+        let r = unsafe { k0_cap::move_cap(s, d) }.map_err(cap_err);
+        // 대기자가 쥔 Console이 다른 슬롯으로 옮겨졌으면 그 대기자를 바로 깨움
+        console_recheck();
+        r
     })())
 }
 
@@ -605,8 +662,26 @@ fn sys_cap_delete(slot: u64) -> i64 {
         let (s, _) = lookup(&cn, slot)?;
         // SAFETY: s는 살아 있는 슬롯이고, 파생 리스트로 이어진 슬롯은 전부
         //         살아 있는 CNode / TCB 안에 있으며 접근이 배타적임
-        unsafe { k0_cap::delete(s, &mut Reaper) }.map_err(cap_err)
+        let r = unsafe { k0_cap::delete(s, &mut Reaper) }.map_err(cap_err);
+        console_recheck();
+        r
     })())
+}
+
+/// 케이퍼빌리티가 지워진 뒤, 콘솔 입력을 기다리던 태스크가 그 권한을 잃었으면
+/// 바로 깨우는 함수입니다. 입력 경로가 없는 이미지에서는 아무 일도 하지
+/// 않습니다.
+///
+/// 삭제와 회수가 끝난 뒤에 부릅니다(슬롯이 바뀌는 도중의 콜백 안에서는 부르지
+/// 않음). 권한이 그대로면 대기자는 계속 기다립니다. 바이트가 이미 와 있었다면
+/// 여기서 전달될 수도 있습니다.
+fn console_recheck() {
+    // SAFETY: 시스템 콜 컨텍스트라 스케줄러 접근이 배타적이고, 시스템 콜을
+    //         부른 실행 중인 태스크는 대기자가 아님
+    #[cfg(feature = "console-input")]
+    unsafe {
+        k0_ipc::console::wake(None)
+    };
 }
 
 /// CAP_REVOKE 시스템 콜 처리 함수입니다.
@@ -622,7 +697,9 @@ fn sys_cap_revoke(slot: u64) -> i64 {
         let cn = cspace()?;
         let (s, _) = lookup(&cn, slot)?;
         // SAFETY: sys_cap_delete와 동일
-        unsafe { k0_cap::revoke(s, &mut Reaper) }.map_err(cap_err)
+        let r = unsafe { k0_cap::revoke(s, &mut Reaper) }.map_err(cap_err);
+        console_recheck();
+        r
     })())
 }
 

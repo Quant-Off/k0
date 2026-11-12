@@ -27,10 +27,20 @@ log="${K0_BOOT_LOG:-$root/target/qemu-boot-test.log}"
 memlog="${K0_BOOT_MEMLOG:-}"
 serial_rule="${K0_BOOT_SERIAL:-}"
 page_rule="${K0_BOOT_CONSOLE_PAGE:-}"
+# 콘솔 입력이 든 이미지의 판정. on이면 입력 경로가 켜진 줄과 입력 자가 검증의
+# 줄을 요구하고, off면 입력 경로가 없다는 줄을 요구함(수신 드라이버가 없는
+# UART나 인터럽트를 못 쓰는 기계). 비어 있으면 입력이 없는 이미지로 봄
+input_rule="${K0_BOOT_INPUT:-}"
+# 터미널이 든 이미지의 판정. vault면 볼트와 터미널, plain이면 터미널만 서비스로
+# 시작한 줄들을 요구함
+service_rule="${K0_BOOT_SERVICE:-}"
+# 판정 전용: 값이 있으면 QEMU를 띄우지 않고 그 파일을 직렬 로그로 보고 줄들만
+# 대조함. tools/term-test.py가 자기가 띄운 QEMU의 부팅 구간을 넘길 때 씀
+judge="${K0_BOOT_JUDGE:-}"
 # 커널이 로그에 남기는 틱 줄의 수(crates/k0-arch/src/irq.rs의 LOGGED_TICKS)
 logged_ticks=4
 
-if [ ! -f "$elf" ]; then
+if [ -z "$judge" ] && [ ! -f "$elf" ]; then
     echo "boot-test: kernel ELF not found: $elf" >&2
     echo "boot-test: build it first with: cargo build -p k0-kernel --features console --offline" >&2
     exit 2
@@ -55,7 +65,11 @@ case "$memlog:$elf" in
 esac
 
 mkdir -p "$(dirname "$log")"
-: > "$log"
+if [ -z "$judge" ]; then
+    : > "$log"
+elif [ "$judge" != "$log" ]; then
+    cp "$judge" "$log"
+fi
 
 # 메모리에서 읽을 때는 직렬 포트의 출력을 따로 받아 둡니다. QEMU 자신의 경고는
 # 표준 오류로 나오므로 직렬 포트의 바이트와 섞이지 않게 나눕니다.
@@ -65,7 +79,10 @@ cleanup() {
     [ -z "$sock" ] || rm -f "$sock" "$log.new"
     [ -z "$sockdir" ] || rmdir "$sockdir" 2>/dev/null || true
 }
-if [ -n "$memlog" ]; then
+if [ -n "$judge" ]; then
+    serial="$log"
+    pid=""
+elif [ -n "$memlog" ]; then
     serial="$log.serial"
     : > "$log.reader"
     # 모니터 소켓은 이 실행만 쓰는 디렉토리에 둠. 유닉스 소켓 경로는 길이 제한이
@@ -77,8 +94,8 @@ else
     serial="$log"
     "$root/tools/qemu-virt-runner.sh" "$elf" "$@" > "$log" 2>&1 < /dev/null &
 fi
-pid=$!
-trap 'kill "$pid" 2>/dev/null || true; cleanup' EXIT INT TERM
+[ -n "$judge" ] || pid=$!
+trap '[ -z "$pid" ] || kill "$pid" 2>/dev/null || true; cleanup' EXIT INT TERM
 
 fail_re='root: FAIL|k0: EXCEPTION|k0: PANIC|k0: FATAL|k0: UNEXPECTED|rejected|failed|check fail|k0: all tasks|corrupt|overflow|no frame window|too many root task segments|k0-loader: refused'
 
@@ -95,6 +112,10 @@ elapsed=0
 state=timeout
 pass_ticks=""
 while [ "$elapsed" -lt "$timeout_s" ]; do
+    if [ -n "$judge" ]; then
+        if judged | grep -Eq "$fail_re"; then state=failure; else state=done; fi
+        break
+    fi
     if [ -n "$memlog" ]; then
         # 읽기에 성공한 마지막 기록만 남김(모니터가 아직 안 떴거나 로그가 비어 있으면 실패함)
         if "$root/tools/boot-log.py" "$elf" "$memlog" "$sock" > "$log.new" 2> "$log.reader"; then
@@ -123,6 +144,11 @@ while [ "$elapsed" -lt "$timeout_s" ]; do
     elif sed -n '/^root: sched tests pass/,$p' "$log" | grep -q '^k0: tick '; then
         state=done
         break
+    elif grep -q '^root: sched tests pass' "$log" && grep -q '^k0: tick lines off ' "$log"; then
+        # 태스크가 콘솔 입력을 쓰기 시작한 이미지는 틱 줄을 더 내지 않음. 그
+        # 줄이 나온 뒤에 자가 검증의 마지막 줄까지 왔다는 것이 살아 있다는 증거임
+        state=done
+        break
     fi
     if ! kill -0 "$pid" 2>/dev/null; then
         state=exited
@@ -132,7 +158,7 @@ while [ "$elapsed" -lt "$timeout_s" ]; do
     elapsed=$(($(date +%s) - started))
 done
 
-kill "$pid" 2>/dev/null || true
+[ -z "$pid" ] || kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
 trap - EXIT INT TERM
 cleanup
@@ -154,6 +180,36 @@ markers="k0: entry phase 1 (pre-MMU)|k0: dtb = |k0: mmu on (identity + fixed ima
 if [ -n "$memlog" ]; then
     markers="${markers%|k0: tick }"
 fi
+# 콘솔 입력이 든 이미지: 입력 경로의 줄과 입력 자가 검증의 줄을 순서에 끼워
+# 넣음. 입력을 처음 읽는 순간 커널이 틱 줄을 멈추므로 끝의 틱은 요구하지 않음
+case "$input_rule" in
+on)
+    markers="$(printf '%s' "$markers" | sed -e 's/|k0: irq on (timer 1s)|/|k0: irq on (timer 1s)|k0: console input on (|/' \
+        -e 's/|root: sched tests pass/|root: backspace without the input right [?]|k0: tick lines off (console input in use)|root: console input tests pass|root: sched tests pass/')"
+    markers="${markers%|k0: tick }"
+    ;;
+off)
+    markers="$(printf '%s' "$markers" | sed -e 's/|k0: irq on (timer 1s)|/|k0: irq on (timer 1s)|k0: console input off (|/' \
+        -e 's/|root: sched tests pass/|root: backspace without the input right [?]|root: console input tests pass (no input path)|root: sched tests pass/')"
+    ;;
+"") ;;
+*)
+    echo "boot-test: K0_BOOT_INPUT must be on or off" >&2
+    exit 2
+    ;;
+esac
+# 터미널이 든 이미지: 자가 검증 뒤에 서비스가 시작되는 줄들. 터미널과 똑같이
+# 배선한 적대적 태스크 둘이 폴트로 끝나야 함
+case "$service_rule" in
+vault) markers="$markers|root: vault |root: terminal console filter [?|root: terminal wiring holds|k0: task fault dabort-lower|k0: task fault dabort-lower|root: service started" ;;
+plain) markers="$markers|root: terminal console filter [?|root: terminal wiring holds|k0: task fault dabort-lower|k0: task fault dabort-lower|root: service started" ;;
+none) markers="$markers|root: no console input, terminal not started" ;;
+"") ;;
+*)
+    echo "boot-test: K0_BOOT_SERVICE must be vault, plain or none" >&2
+    exit 2
+    ;;
+esac
 
 missing="$(tr -d '\r' < "$log" | sed "$reuse_sed" | awk -v markers="$markers" '
 BEGIN {

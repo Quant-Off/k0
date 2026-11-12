@@ -16,25 +16,39 @@
 //! 격리 태스크에는 이미지의 `.data`와 `.bss`가 매핑되지 않으므로, 볼트와
 //! 클라이언트의 진입점에서는 static을 쓰지 않습니다(출력과 `check`도 못 씀).
 //! 결과는 보고용 엔드포인트로 루트에 알립니다.
+//!
+//! 이 자가 검증의 볼트는 RFC 8032에 실린 공개 시험 벡터의 시드로 키를
+//! 만듭니다. 커널이 준 진짜 부트 시드는 여기서 쓰지 않습니다(서비스의 볼트가
+//! 한 번만 씀). 그래서 이 검증의 볼트와 클라이언트가 쓰던 메모리에는 비밀이
+//! 남지 않습니다. 재료가 충분한지의 판정에는 진짜 시드의 재료 정보를 그대로
+//! 씁니다.
 
-use k0_vault::proto::{self, alg, request, state, status, MAX_MESSAGE, MAX_RESPONSE, RESPONSE_HEADER};
+use k0_vault::proto::{self, alg, request, state, status, status_word};
+use k0_vault::proto::{MAX_MESSAGE, MAX_RESPONSE, RESPONSE_HEADER};
 use k0_vault::provider;
 use k0_vault::server::{fetch, publish, wipe, Vault};
 
 use super::{
-    call, cap_copy, cap_delete, cap_revoke, check, copy_here, desc, err, frames_in, ipc, make_aspace, map,
-    map_into, obj, perm, put_str, recv, reply_recv, retype, rights, send, take_boot_seed, tcb_configure,
+    call, cap_copy, cap_delete, cap_revoke, check, copy_here, err, ipc, make_aspace, map,
+    map_into, obj, perm, put_str, recv, reply_recv, retype, rights, send, spare_untyped, tcb_configure,
     tcb_resume, yield_now, Boot, TEST_VA,
 };
 
+/// RFC 8032 7.1절 첫 시험 벡터의 비밀키(시드). 누구나 아는 값이라 자가 검증의
+/// 볼트는 비밀을 쥐지 않습니다
+const TEST_SEED: [u8; 32] = [
+    0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c, 0xc4, 0x44,
+    0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60,
+];
+
 /// 볼트와 클라이언트의 스택(각자의 주소 공간에서 같은 VA). 곡선 연산이 깊어
 /// 격리 검증의 한 장짜리 스택으로는 모자람
-const STACK_BASE: u64 = 0x52_0000;
-const STACK_SIZE: u64 = 0x8000;
+pub(super) const STACK_BASE: u64 = 0x52_0000;
+pub(super) const STACK_SIZE: u64 = 0x8000;
 /// 볼트가 n번 호출자의 요청 프레임과 응답 프레임을 보는 VA(n = 0은 관리자)
-const VAULT_REQ: u64 = 0x54_0000;
-const VAULT_RESP: u64 = 0x58_0000;
-const FRAME_STEP: u64 = 0x8000;
+pub(super) const VAULT_REQ: u64 = 0x54_0000;
+pub(super) const VAULT_RESP: u64 = 0x58_0000;
+pub(super) const FRAME_STEP: u64 = 0x8000;
 /// 클라이언트가 자기 요청 프레임과 응답 프레임을 보는 VA
 const CLIENT_REQ: u64 = VAULT_REQ;
 const CLIENT_RESP: u64 = VAULT_RESP;
@@ -61,7 +75,11 @@ const MODE_AFTER_ZEROIZE: u64 = 4;
 /// 자가 시험을 돌린 뒤 요청을 하나씩 처리합니다. 요청 본문은 호출자의 요청
 /// 프레임에서 한 번만 옮겨 오고, 응답 본문은 성공했을 때만 그 호출자의 응답
 /// 프레임에 씁니다. 응답 레지스터 네 개는 항상 전부 채웁니다.
-extern "C" fn vault_entry(_arg: u64) -> ! {
+///
+/// 어느 프레임을 읽고 쓸지는 프로토콜의 계획 함수가 배지와 연산만 보고
+/// 정합니다. 본문이 없는 연산이나 요청 프레임이 없는 호출자(운영자)의 요청은
+/// 길이를 무엇이라 말하든 어떤 프레임도 읽지 않습니다.
+pub(super) extern "C" fn vault_entry(_arg: u64) -> ! {
     let mut vault = Vault::new();
     let mut body = [0u8; MAX_MESSAGE];
     let mut out = [0u8; MAX_RESPONSE];
@@ -73,25 +91,24 @@ extern "C" fn vault_entry(_arg: u64) -> ! {
                 yield_now();
             }
         }
-        let reply = match proto::role_of(r.badge) {
-            Some((_, index)) => {
+        let n = match proto::fetch_plan(r.badge, &r.mr) {
+            Some((index, len)) => {
                 let req = (VAULT_REQ + index * FRAME_STEP) as *const u8;
-                // SAFETY: 루트가 이 호출자의 요청 프레임을 이 VA에 읽기 전용으로
-                //         매핑해 두었고 버퍼는 프레임보다 작음
-                let n = unsafe { fetch(req, r.mr[1], &mut body) };
-                let reply = vault.handle(r.badge, r.mr, &body[..n], &mut out);
-                wipe(&mut body[..n]);
-                if reply[0] == status::OK && r.mr[0] & 0xFF != request::STATUS {
-                    let resp = (VAULT_RESP + index * FRAME_STEP) as *mut u8;
-                    let len = (reply[1] as usize).min(MAX_RESPONSE);
-                    // SAFETY: 루트가 이 호출자의 응답 프레임을 이 VA에 쓰기
-                    //         가능으로 매핑해 두었고 프레임은 정렬돼 있음
-                    unsafe { publish(resp, r.mr[2], &out[..len]) };
-                }
-                reply
+                // SAFETY: 요청 프레임이 있는 호출자마다 루트가 그 프레임을 이
+                //         VA에 읽기 전용으로 매핑해 두었고 버퍼는 프레임보다 작음
+                unsafe { fetch(req, len, &mut body) }
             }
-            None => vault.handle(r.badge, r.mr, &[], &mut out),
+            None => 0,
         };
+        let reply = vault.handle(r.badge, r.mr, &body[..n], &mut out);
+        wipe(&mut body[..n]);
+        if let Some(index) = proto::publish_plan(r.badge, &r.mr, reply[0]) {
+            let resp = (VAULT_RESP + index * FRAME_STEP) as *mut u8;
+            let len = (reply[1] as usize).min(MAX_RESPONSE);
+            // SAFETY: 응답을 받는 호출자마다 루트가 그 응답 프레임을 이 VA에
+            //         쓰기 가능으로 매핑해 두었고 프레임은 정렬돼 있음
+            unsafe { publish(resp, r.mr[2], &out[..len]) };
+        }
         r = reply_recv(1, 0, reply);
     }
 }
@@ -135,8 +152,10 @@ fn ask(op: u64, algo: u64, len: u64, nonce: u64) -> (u64, u64, u64) {
 /// 서명 클라이언트의 정상 경로 함수입니다. 실패한 단계의 번호를 주고 전부
 /// 통과하면 0
 fn signer_path() -> u64 {
-    let (st, vault_state, _) = ask(request::STATUS, alg::NONE, 0, 1);
-    if st != status::OK || vault_state != state::READY {
+    let (st, word, _) = ask(request::STATUS, alg::NONE, 0, 1);
+    // 알고리즘 없이 빌드한 이미지의 볼트는 시드를 받지 않아 처음 상태 그대로임
+    let want = if provider::HAS_ED25519 { state::READY } else { state::FRESH };
+    if st != status::OK || status_word::state(word) != want {
         return 1;
     }
     let msg = b"k0 signing oracle self test message";
@@ -171,8 +190,15 @@ fn signer_path() -> u64 {
         || ask(request::SIGN, 9, 1, 5).0 != status::UNSUPPORTED
         || ask(request::INIT, alg::NONE, 0, 6).0 != status::DENIED
         || ask(request::ZEROIZE, alg::NONE, 0, 7).0 != status::DENIED
+        || ask(request::KEYGEN, alg::ED25519, 0, 8).0 != status::DENIED
     {
         return 7;
+    }
+    // 본문이 없는 연산에 길이를 말하면 볼트는 프레임을 읽지 않고 거부함
+    if ask(request::PUBLIC_KEY, alg::ED25519, 5, 9).0 != status::BAD_REQUEST
+        || ask(request::STATUS, alg::NONE, 5, 10).0 != status::BAD_REQUEST
+    {
+        return 8;
     }
     0
 }
@@ -223,28 +249,8 @@ extern "C" fn client_entry(mode: u64) -> ! {
     }
 }
 
-/// 이 검증이 쓸 untyped를 고르는 함수입니다. 다른 검증이 쓰지 않는 것 중 가장
-/// 큰 것이고, 그런 것이 없으면 0
-fn spare_untyped(b: &Boot) -> u64 {
-    // SAFETY: 커널이 이 VA에 bootinfo 페이지를 RO로 매핑하고 내용을 채웠음
-    let cap_count = unsafe { (*(super::bootinfo::VA as *const super::bootinfo::Header)).cap_count };
-    let (mut best, mut best_frames) = (0, 0);
-    for i in 0..cap_count {
-        let d = desc(i);
-        if d.kind != super::bootinfo::cap_kind::UNTYPED || i == b.ut_main || i == b.ut_small || i == b.ut_reuse {
-            continue;
-        }
-        let n = frames_in(d, b.frame_size);
-        if n >= 512 && n > best_frames {
-            best = i;
-            best_frames = n;
-        }
-    }
-    best
-}
-
 /// 주소 공간 하나와 그 안의 스택을 만드는 함수입니다. 주소 공간 슬롯을 줍니다.
-fn make_space(ut: u64, b: &Boot) -> i64 {
+pub(super) fn make_space(ut: u64, b: &Boot) -> i64 {
     let (aspace, _) = make_aspace(ut, b);
     let mut va = STACK_BASE;
     while va < STACK_BASE + STACK_SIZE {
@@ -262,7 +268,7 @@ fn make_space(ut: u64, b: &Boot) -> i64 {
 /// # Arguments
 /// `rw` - (주소 공간 슬롯, VA). 주소 공간이 0이면 루트 자신
 /// `ro` - 읽기 전용으로 볼 쪽
-fn link(ut: u64, rw: (i64, u64), ro: (i64, u64)) {
+pub(super) fn link(ut: u64, rw: (i64, u64), ro: (i64, u64)) {
     let frame = retype(ut, obj::FRAME);
     let view = copy_here(frame, rights::R, 0);
     check("oracle frame", frame > 0 && view > 0);
@@ -274,7 +280,7 @@ fn link(ut: u64, rw: (i64, u64), ro: (i64, u64)) {
 }
 
 /// 태스크 하나를 만들어 실행 대기 상태로 만드는 함수입니다. TCB 슬롯을 줍니다.
-fn spawn(ut: u64, aspace: i64, entry: u64, arg: u64, caps: &[(i64, u64, u64)]) -> i64 {
+pub(super) fn spawn(ut: u64, aspace: i64, entry: u64, arg: u64, caps: &[(i64, u64, u64)]) -> i64 {
     let cnode = retype(ut, obj::CNODE);
     check("oracle cnode", cnode > 0);
     for (i, &(src, mask, badge)) in caps.iter().enumerate() {
@@ -303,7 +309,10 @@ fn client(ut: u64, space: i64, ep: i64, report: i64, badge: u64, mode: u64) -> i
 }
 
 /// 서명 오라클을 띄우고 검증하는 함수입니다.
-pub fn test_oracle(b: &Boot) {
+///
+/// # Arguments
+/// `info` - 커널이 준 부트 시드의 재료 정보. 시드 자체는 쓰지 않음
+pub fn test_oracle(b: &Boot, info: u64) {
     let spare = spare_untyped(b);
     let ut = if spare != 0 { spare } else { b.ut_main };
     let (ep, report) = (retype(ut, obj::ENDPOINT), retype(ut, obj::ENDPOINT));
@@ -322,33 +331,65 @@ pub fn test_oracle(b: &Boot) {
     };
 
     // 자가 시험을 통과한 볼트는 아직 키가 없는 상태임. 배지 없는 호출은 거부됨
-    let (st, vault_state, ind) = ask(admin, request::STATUS, 0, 1);
-    check("vault self test", st == status::OK && vault_state == state::FRESH);
+    let (st, word, ind) = ask(admin, request::STATUS, 0, 1);
+    check("vault self test", st == status::OK && status_word::state(word) == state::FRESH);
     check("vault self test indicator", ind == proto::indicator::SELF_TEST_PASSED);
     check("call without a badge refused", ask(ep, request::STATUS, 0, 2).0 == status::DENIED);
+    let built = status_word::built(word);
+    check("vault algorithms", (built != 0) == provider::HAS_ED25519);
 
-    // 커널이 준 부트 시드를 관리자 프레임으로 넘겨 키를 만들게 하고, 루트 쪽
-    // 사본은 지움. 재료가 모자란 시드로는 볼트가 키를 만들지 않음
-    let (mut seed, info) = take_boot_seed();
-    for (i, byte) in seed.iter().chain(&info.to_le_bytes()).enumerate() {
+    // 공개 시험 시드를 관리자 프레임으로 넘김. 재료 정보는 이 부팅의 진짜
+    // 값이라서, 재료가 모자란 부팅에서는 볼트가 시드를 받지 않음
+    for (i, byte) in TEST_SEED.iter().chain(&info.to_le_bytes()).enumerate() {
         // SAFETY: 방금 이 VA에 관리자 요청 프레임을 쓰기 가능으로 매핑했음
         unsafe { (ROOT_REQ as *mut u8).add(i).write_volatile(*byte) };
     }
-    wipe(&mut seed);
     let init = ask(admin, request::INIT, proto::INIT_LEN as u64, 3).0;
-    for i in 0..proto::INIT_LEN {
-        // SAFETY: 위와 같음
-        unsafe { (ROOT_REQ as *mut u8).add(i).write_volatile(0) };
-    }
+    let vault_state = |nonce: u64| status_word::state(ask(admin, request::STATUS, 0, nonce).1);
     if init == status::NO_ENTROPY {
-        check("no key without entropy", ask(admin, request::STATUS, 0, 4).1 == state::FRESH);
+        check("no key without entropy", vault_state(4) == state::FRESH);
         check("cleanup", cap_delete(vault_tcb) == 0);
         put_str("root: oracle made no key (boot seed has no entropy)\n");
         return;
     }
-    check("vault key made", init == status::OK);
-    check("second init refused", ask(admin, request::INIT, proto::INIT_LEN as u64, 5).0 == status::DENIED);
-    check("admin cannot sign", ask(admin, request::SIGN, 1, 6).0 == status::DENIED);
+    // 운영자 배지의 호출: 요청 프레임이 없는 호출자가 길이를 말해도 볼트는
+    // 어떤 프레임도 읽지 않고 거부하며, 서명과 시드 전달은 허용되지 않음
+    let operator = copy_here(ep, rights::W, proto::OPERATOR_BADGE);
+    check("oracle operator cap", operator > 0);
+    for (nonce, op) in [request::STATUS, request::SIGN, request::INIT, request::KEYGEN, request::ZEROIZE]
+        .into_iter()
+        .enumerate()
+    {
+        let r = ask(operator, op, 1, 20 + nonce as u64).0;
+        check("operator length refused", r == status::BAD_REQUEST);
+    }
+    check("operator cannot sign", ask(operator, request::SIGN, 0, 30).0 == status::DENIED);
+    check("operator cannot seed", ask(operator, request::INIT, 0, 31).0 == status::DENIED);
+    if provider::HAS_ED25519 {
+        check("vault seeded", init == status::OK && vault_state(5) == state::SEEDED);
+        check("second seed refused", ask(admin, request::INIT, proto::INIT_LEN as u64, 6).0 == status::DENIED);
+        // 이미지에 없는 알고리즘으로는 키를 만들지 않고 시드를 그대로 쥠
+        let r = call(admin, WAIT, [request::word(request::KEYGEN, 9), 0, 7, 0]);
+        check("unknown algorithm refused", r.status == 0 && r.mr[0] == status::UNSUPPORTED);
+        let r = call(admin, WAIT, [request::word(request::KEYGEN, alg::ED25519), 0, 8, 0]);
+        check("vault key made", r.status == 0 && r.mr[0] == status::OK && r.mr[3] == 8);
+        let (_, word, _) = ask(admin, request::STATUS, 0, 9);
+        check(
+            "vault ready",
+            status_word::state(word) == state::READY && status_word::key_alg(word) == alg::ED25519,
+        );
+        let r = call(operator, WAIT, [request::word(request::KEYGEN, alg::ED25519), 0, 10, 0]);
+        check("one key per boot", r.status == 0 && r.mr[0] == status::KEY_EXISTS);
+    } else {
+        // 알고리즘이 없는 이미지의 볼트는 쓸 일이 없는 시드를 받지 않음
+        check("no algorithm, no seed", init == status::UNSUPPORTED && vault_state(5) == state::FRESH);
+    }
+    for i in 0..proto::INIT_LEN {
+        // SAFETY: 위와 같음
+        unsafe { (ROOT_REQ as *mut u8).add(i).write_volatile(0) };
+    }
+    check("admin cannot sign", ask(admin, request::SIGN, 0, 11).0 == status::DENIED);
+    check("vault still answers", ask(admin, request::STATUS, 0, 12).0 == status::OK);
 
     // 클라이언트들의 주소 공간과 1번 호출자의 프레임 한 쌍
     let space = make_space(ut, b);
@@ -378,7 +419,7 @@ pub fn test_oracle(b: &Boot) {
 
     // 관리자가 키를 지우게 하면 볼트는 더는 서명하지 않음
     check("zeroize", ask(admin, request::ZEROIZE, 0, 7).0 == status::OK);
-    check("vault zeroized", ask(admin, request::STATUS, 0, 8).1 == state::ZEROIZED);
+    check("vault zeroized", vault_state(13) == state::ZEROIZED);
     reports(MODE_AFTER_ZEROIZE, proto::signer_badge(1));
 
     // 볼트가 사라진 뒤의 호출은 영원히 기다리지 않고 기한에 끝남

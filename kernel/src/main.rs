@@ -214,6 +214,8 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     match setup_irq(&traps, &platform, counter_hz) {
         Ok(_irq) => {
             let _ = writeln!(con, "k0: irq on (timer 1s)");
+            #[cfg(feature = "console-input")]
+            setup_console_input(&mut con, &_irq, &platform);
         }
         Err(e) => {
             let _ = writeln!(con, "k0: irq init failed: {e:?}");
@@ -374,6 +376,8 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         addr_space_root: user_root,
         addr_space_asid: root_asid,
         cnode: cnode_frame,
+        // 입력을 읽을 권한은 커널에 입력 경로가 있는 이미지에서만 줌
+        console_rights: k0_cap::rights::W | if cfg!(feature = "console-input") { k0_cap::rights::R } else { 0 },
     };
     // 예약 구간은 위에서 이미 뺐으므로 남은 구간이 그대로 untyped가 됨
     // SAFETY: cnode의 슬롯은 전부 비어 있고 접근이 배타적임
@@ -753,7 +757,10 @@ fn write_bootinfo(frame_pa: u64, cnode: &k0_cap::CNodeRef, count: u64, image: &I
                 None => plain(cap_kind::EMPTY),
                 Some(Cap::Tcb { .. }) => plain(cap_kind::TCB),
                 Some(Cap::AddrSpace { .. }) => plain(cap_kind::ADDR_SPACE),
-                Some(Cap::Console) => plain(cap_kind::CONSOLE),
+                Some(Cap::Console { rights }) => CapDesc {
+                    rights: u64::from(rights),
+                    ..plain(cap_kind::CONSOLE)
+                },
                 Some(Cap::CNode { .. }) => plain(cap_kind::CNODE),
                 Some(Cap::PageTable { .. }) => plain(cap_kind::PAGE_TABLE),
                 Some(Cap::Endpoint { .. }) => plain(cap_kind::ENDPOINT),
@@ -936,6 +943,72 @@ fn attach_console(con: &mut EarlyCon, c: &k0_boot::Console, counter_hz: u64) {
     // SAFETY: 드라이버가 건드리는 범위가 한 그래뉼 안임을 검증했고(validate),
     //         그 그래뉼을 방금 Device로 매핑함
     unsafe { k0_arch::earlycon::attach(uart, va as usize, counter_hz) };
+}
+
+/// 붙어 있는 콘솔에 입력 경로를 준비하는 함수입니다.
+///
+/// UART의 인터럽트를 전부 막아 둔 다음 인터럽트 컨트롤러에서 콘솔의 선을
+/// 켭니다. UART 쪽의 수신 인터럽트는 태스크가 입력을 처음 읽을 때 켜지므로,
+/// 그때까지는 직렬 선에 무엇이 들어와도 커널에 인터럽트가 오지 않습니다.
+///
+/// 어느 단계에서든 실패하면 입력만 없는 채로 부팅을 계속하고 까닭을 한 줄로
+/// 남깁니다. 인터럽트 번호는 디바이스 트리가 준 것이라 틀릴 수 있는데, 틀린
+/// 번호가 선을 붙드는 경우는 수신 로직이 실행 중에 그 선을 끕니다.
+#[cfg(feature = "console-input")]
+fn setup_console_input(con: &mut EarlyCon, irq: &k0_arch::irq::Irq, platform: &k0_boot::Platform) {
+    use k0_arch::irq::IrqError;
+    // 수신 로직이 건드리는 레지스터의 끝(인터럽트 지우기 레지스터 0x44의 뒤)
+    const RX_SPAN: u64 = 0x48;
+    let outcome = (|| {
+        let c = platform.console.as_ref().ok_or("no console")?;
+        let (name, has_cr) = match c.kind {
+            k0_boot::ConsoleKind::Pl011 => ("pl011", true),
+            k0_boot::ConsoleKind::SbsaUart => ("sbsa", false),
+            k0_boot::ConsoleKind::Ns16550 { .. } => return Err("no receive driver for this uart"),
+        };
+        let intid = c.irq.ok_or("no usable interrupt in the device tree")?;
+        // 송신 드라이버보다 넓은 범위를 건드리므로, 그 범위가 선언된 구간과
+        // 매핑해 둔 그래뉼 안에 있는지 따로 확인함
+        let g = k0_mm::GRANULE as u64;
+        if c.base - c.reg.base + RX_SPAN > c.reg.size || c.base % g + RX_SPAN > g {
+            return Err("register frame too small");
+        }
+        // SAFETY: 콘솔이 붙어 있을 때만 준비가 이루어지고(붙지 않았으면 false),
+        //         수신 로직이 쓰는 범위가 매핑된 그래뉼 안임을 위에서 확인함
+        if !unsafe { k0_arch::conin::prepare(has_cr) } {
+            return Err("console not attached");
+        }
+        // GICv3는 SPI마다 라우팅 레지스터가 있고, 그 자리는 초기화에 쓰는 첫
+        // 페이지의 밖임. 선언된 디스트리뷰터 구간 안에 있을 때만 매핑함
+        let router = match &platform.intc {
+            k0_boot::Intc::GicV3 { dist, .. } => {
+                let at = k0_arch::irq::gicv3::router_offset(intid);
+                if at + 8 > dist.size {
+                    return Err("interrupt not available");
+                }
+                Some(k0_mm::map_device(dist.base + at).map_err(|_| "interrupt not available")? as usize)
+            }
+            k0_boot::Intc::GicV2 { .. } => None,
+        };
+        // SAFETY: setup_irq가 매핑한 디스트리뷰터는 커널이 사는 동안 그대로이고,
+        //         라우팅 레지스터는 방금 Device로 매핑함
+        if let Err(e) = unsafe { k0_arch::irq::enable_console_irq(irq, intid, router) } {
+            k0_arch::conin::shut();
+            return Err(match e {
+                IrqError::SpiOutOfRange => "interrupt number out of range",
+                _ => "interrupt not available",
+            });
+        }
+        Ok((name, intid))
+    })();
+    match outcome {
+        Ok((name, intid)) => {
+            let _ = writeln!(con, "k0: console input on ({name} irq {intid})");
+        }
+        Err(why) => {
+            let _ = writeln!(con, "k0: console input off ({why})");
+        }
+    }
 }
 
 /// 콘솔 드라이버가 없는 빌드의 연결 함수입니다.

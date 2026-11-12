@@ -36,6 +36,7 @@ fn qemu_virt_gicv3_is_discovered() {
                 base: 0x900_0000,
                 span: 0x1C,
                 reg: Region { base: 0x900_0000, size: 0x1000 },
+                irq: Some(33),
             }),
             intc: Intc::GicV3 {
                 dist: Region { base: 0x800_0000, size: 0x1_0000 },
@@ -48,7 +49,7 @@ fn qemu_virt_gicv3_is_discovered() {
     );
     assert_eq!(
         d.platform.to_string(),
-        "con=pl011@0x9000000 gic=v3@0x8000000 rd=0x80a0000+0xf60000 tmr=27"
+        "con=pl011@0x9000000,irq33 gic=v3@0x8000000 rd=0x80a0000+0xf60000 tmr=27"
     );
 }
 
@@ -65,7 +66,7 @@ fn qemu_virt_gicv2_is_discovered() {
     assert_eq!(d.platform.timer.intid, 27);
     assert_eq!(
         d.platform.to_string(),
-        "con=pl011@0x9000000 gic=v2@0x8000000 cpu=0x8010000 tmr=27"
+        "con=pl011@0x9000000,irq33 gic=v2@0x8000000 cpu=0x8010000 tmr=27"
     );
 }
 
@@ -79,6 +80,7 @@ fn raspberry_pi_4_shape_is_translated_through_soc_ranges() {
             base: 0xfe21_5040,
             span: 24,
             reg: Region { base: 0xfe21_5040, size: 0x40 },
+            irq: None,
         })
     );
     assert_eq!(
@@ -104,10 +106,87 @@ fn rk3399_shape_uses_four_cell_specifiers_and_a_shifted_uart() {
             base: 0xff1a_0000,
             span: 24,
             reg: Region { base: 0xff1a_0000, size: 0x100 },
+            irq: None,
         })
     );
     assert_eq!(d.platform.intc.redist(), &[Region { base: 0xfef0_0000, size: 0xc_0000 }]);
     assert_eq!(d.platform.timer.intid, 27);
+}
+
+#[test]
+fn the_console_interrupt_is_one_level_high_spi_of_the_discovered_controller() {
+    let irq = |t: &N| ok(t).platform.console.unwrap().irq;
+    assert_eq!(irq(&virt3()), Some(33));
+    assert_eq!(irq(&virt2()), Some(33));
+
+    // 가장 큰 SPI 번호는 INTID 1019
+    let mut t = virt3();
+    t.kid("pl011@9000000").set("interrupts", cells(&[0, 987, 4]));
+    assert_eq!(irq(&t), Some(1019));
+    assert!(ok(&t).platform.to_string().starts_with("con=pl011@0x9000000,irq1019 "));
+
+    // 받지 않는 모양은 전부 "인터럽트 없음"이고 부팅 거부가 아님
+    let bad: [&[u32]; 9] = [
+        &[0, 988, 4],       // 특수 INTID에 닿는 번호
+        &[1, 1, 4],         // PPI
+        &[2, 1, 4],         // 모르는 종류
+        &[0, 1, 1],         // 에지 트리거
+        &[0, 1, 8],         // 액티브 로우
+        &[0, 1, 0x104],     // 플래그에 다른 비트
+        &[0, 1],            // 셀이 모자람
+        &[0, 1, 4, 0],      // 셀이 남음
+        &[0, 1, 4, 0, 2, 4], // 항목이 둘
+    ];
+    for spec in bad {
+        let mut t = virt3();
+        t.kid("pl011@9000000").set("interrupts", cells(spec));
+        let d = ok(&t);
+        assert_eq!(d.platform.console.unwrap().irq, None, "{spec:?}");
+        assert!(d.platform.to_string().starts_with("con=pl011@0x9000000 gic="), "{spec:?}");
+    }
+
+    // 속성이 없는 콘솔, interrupts-extended를 쓰는 콘솔
+    let mut t = virt3();
+    t.kid("pl011@9000000").del("interrupts");
+    assert_eq!(irq(&t), None);
+    let mut t = virt3();
+    t.kid("pl011@9000000").set("interrupts-extended", cells(&[GIC_PHANDLE, 0, 1, 4]));
+    assert_eq!(irq(&t), None);
+
+    // 인터럽트 부모가 발견한 컨트롤러가 아니면 읽지 않음
+    let mut t = virt3();
+    t.kid("pl011@9000000").set("interrupt-parent", cells(&[GIC_PHANDLE + 1]));
+    assert_eq!(irq(&t), None);
+    // 노드 자신의 interrupt-parent가 그 컨트롤러면 읽음
+    let mut t = virt3();
+    t.kid("pl011@9000000").set("interrupt-parent", cells(&[GIC_PHANDLE]));
+    assert_eq!(irq(&t), Some(33));
+}
+
+#[test]
+fn a_controller_with_four_cell_specifiers_gives_no_console_interrupt() {
+    // rk3399 모양: 컨트롤러의 #interrupt-cells가 4라서 셀 셋짜리 지정자를
+    // 추측해 읽지 않음
+    let mut t = rk3399();
+    let d = ok(&t);
+    assert_eq!(d.platform.console.unwrap().irq, None);
+    // 지정자를 넷으로 맞춰 줘도 받지 않음(받는 모양은 셀 셋뿐)
+    fn uart(n: &mut N) -> Option<&mut N> {
+        if n.name.starts_with("serial@") {
+            return Some(n);
+        }
+        n.kids.iter_mut().find_map(uart)
+    }
+    if let Some(u) = uart(&mut t) {
+        u.set("interrupts", cells(&[0, 100, 4, 0]));
+    }
+    assert_eq!(ok(&t).platform.console.unwrap().irq, None);
+}
+
+#[test]
+fn early_console_discovery_does_not_read_the_interrupt() {
+    // 컨트롤러를 찾기 전의 조기 탐색은 출력만 쓰므로 인터럽트를 읽지 않음
+    assert_eq!(console_of(&virt3().blob()).unwrap().irq, None);
 }
 
 #[test]
@@ -217,7 +296,7 @@ fn console_nodes_are_checked_before_use() {
     let mut t = virt3();
     t.kid("pl011@9000000").set("compatible", strs(&["arm,sbsa-uart"]));
     assert_eq!(ok(&t).platform.console.map(|c| c.kind), Some(ConsoleKind::SbsaUart));
-    assert!(ok(&t).platform.to_string().starts_with("con=sbsa@0x9000000 "));
+    assert!(ok(&t).platform.to_string().starts_with("con=sbsa@0x9000000,irq33 "));
 }
 
 #[test]

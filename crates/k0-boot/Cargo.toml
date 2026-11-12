@@ -13,6 +13,10 @@ roottask = []
 # 보고 루트 태스크의 빌드에 같은 이름의 feature를 넘김
 vault = ["roottask"]
 vault-ed25519 = ["vault"]
+# 콘솔 입력: 루트 태스크의 자가 검증에 입력 시스템 콜의 시험을 넣음
+console-input = ["roottask"]
+# 운영자 터미널: 자가 검증 뒤에 서비스(볼트가 있으면 볼트와 터미널)를 시작함
+terminal = ["console-input"]
 # 테스트용 DTB 빌더와 퍼즈 도우미를 다른 크레이트의 테스트에 공개함(std 필요)
 test-support = []
 

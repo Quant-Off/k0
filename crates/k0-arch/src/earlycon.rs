@@ -38,6 +38,8 @@ pub use uart::{Uart, attach, attached};
 
 #[cfg(any(feature = "console-pl011", feature = "console-16550"))]
 use uart::hw_put;
+#[cfg(all(feature = "console-pl011", feature = "console-input"))]
+pub(crate) use uart::pl011_base;
 
 /// 드라이버가 하나도 없는 빌드에서 UART 송신 자리를 채우는 함수입니다.
 /// 아무것도 하지 않으며, 이 빌드에는 UART에 접근하는 코드가 없습니다.
@@ -123,14 +125,14 @@ fn log_push(b: u8, user: bool) {
     restore_irqs(daif);
 }
 
-fn mask_irqs() -> u64 {
+pub(crate) fn mask_irqs() -> u64 {
     let daif: u64;
     // SAFETY: DAIF를 읽고 전부 마스크함, 호출자가 restore_irqs로 되돌림
     unsafe { asm!("mrs {}, daif", "msr daifset, #0xf", out(reg) daif, options(nostack)) };
     daif
 }
 
-fn restore_irqs(daif: u64) {
+pub(crate) fn restore_irqs(daif: u64) {
     // SAFETY: mask_irqs가 읽어 둔 값을 그대로 복원함
     unsafe { asm!("msr daif, {}", in(reg) daif, options(nostack)) };
 }

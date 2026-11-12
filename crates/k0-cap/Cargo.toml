@@ -5,4 +5,9 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# 루트 CNode를 1024슬롯으로 만듦. 자가 검증 뒤에 서비스를 새로 띄우는 이미지
+# (터미널)가 켬. 주지 않으면 512슬롯 그대로임
+[features]
+root-cnode-1024 = []
+
 [dependencies]

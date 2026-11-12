@@ -237,6 +237,7 @@ pub fn pl011() -> N {
     N::new("pl011@9000000")
         .p("compatible", strs(&["arm,pl011", "arm,primecell"]))
         .p("reg", cells(&[0, 0x900_0000, 0, 0x1000]))
+        .p("interrupts", cells(&[0, 1, 4]))
 }
 
 pub fn gicv3() -> N {

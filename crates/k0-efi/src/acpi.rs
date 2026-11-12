@@ -34,6 +34,8 @@ pub enum Uart {
 pub struct Serial {
     pub kind: Uart,
     pub reg: MemRegion,
+    /// 콘솔의 인터럽트 번호(GSIV). SPCR이 GIC의 SPI 하나로 밝힌 경우에만 있음
+    pub irq: Option<u32>,
 }
 
 /// 인터럽트 컨트롤러입니다.
@@ -309,7 +311,18 @@ fn serial_of(t: &[u8]) -> Option<Serial> {
     if kind != Uart::Ns16550 && base % 4 != 0 {
         return None;
     }
-    Some(Serial { kind, reg: MemRegion { base, size } })
+    // 인터럽트: 종류가 GIC 하나뿐이고(비트 3만) 번호가 SPI일 때만 받음. 종류는
+    // 오프셋 52, 번호는 54부터 4바이트라서 테이블이 58바이트보다 짧으면
+    // 인터럽트 없이 콘솔만 받음
+    let irq = match (t.get(52), le32(t, 54)) {
+        (Some(&0x08), Some(gsiv)) if (32..=1019).contains(&gsiv) => Some(gsiv),
+        _ => None,
+    };
+    Some(Serial {
+        kind,
+        reg: MemRegion { base, size },
+        irq,
+    })
 }
 
 /// ACPI 정적 테이블에서 콘솔, 인터럽트 컨트롤러, 타이머 인터럽트를 읽는

@@ -9,6 +9,7 @@ const BOOT: BootObjects = BootObjects {
     addr_space_root: 0x7000_1000,
     addr_space_asid: 1,
     cnode: 0x7000_2000,
+    console_rights: rights::R | rights::W,
 };
 
 fn r(base: u64, size: u64) -> PhysRegion {
@@ -151,7 +152,10 @@ fn every_kind_round_trips_through_the_raw_words() {
             root_pa: 0x4000_6000,
             asid: 200,
         },
-        Cap::Console,
+        Cap::Console { rights: rights::W },
+        Cap::Console {
+            rights: rights::R | rights::W,
+        },
     ];
     for cap in caps {
         for flags in [0, FLAG_ORIGINAL, FLAG_BOUND, FLAG_ORIGINAL | FLAG_BOUND] {
@@ -245,7 +249,12 @@ fn fixed_slots_come_first() {
             asid: 1
         }
     );
-    assert_eq!(cap_at(c, 3), Cap::Console);
+    assert_eq!(
+        cap_at(c, 3),
+        Cap::Console {
+            rights: rights::R | rights::W
+        }
+    );
     assert_eq!(
         cap_at(c, 4),
         Cap::CNode {
@@ -610,6 +619,60 @@ fn random_retypes_never_overlap() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn console_rights_only_shrink() {
+    let (c, _) = filled(&[r(0x4000_0000, 16 * G)], &[]);
+    let both = Cap::Console {
+        rights: rights::R | rights::W,
+    };
+    unsafe {
+        assert_eq!(cap_at(c, 3), both);
+        // 다 사라지는 복사, 콘솔에 없는 권한만 남기는 복사, 배지를 붙이는 복사는 거부
+        assert_eq!(copy(c.add(3), c.add(30), 0, 0, false), Err(CapError::NoRights));
+        assert_eq!(copy(c.add(3), c.add(30), rights::X, 0, false), Err(CapError::NoRights));
+        assert_eq!(copy(c.add(3), c.add(30), rights::ALL, 5, false), Err(CapError::BadBadge));
+        assert_eq!(get(c, 30), None);
+        // 출력만 남긴 복사본에서는 입력 권한을 되살릴 수 없음
+        copy(c.add(3), c.add(30), rights::W, 0, false).unwrap();
+        assert_eq!(cap_at(c, 30), Cap::Console { rights: rights::W });
+        copy(c.add(30), c.add(31), rights::ALL, 0, false).unwrap();
+        assert_eq!(cap_at(c, 31), Cap::Console { rights: rights::W });
+        assert_eq!(copy(c.add(30), c.add(32), rights::R, 0, false), Err(CapError::NoRights));
+        // 입력만 남긴 복사본도 마찬가지
+        copy(c.add(3), c.add(32), rights::R, 0, false).unwrap();
+        assert_eq!(cap_at(c, 32), Cap::Console { rights: rights::R });
+        assert_eq!(copy(c.add(32), c.add(33), rights::W, 0, false), Err(CapError::NoRights));
+        // 전부 남기는 복사와 이동은 권한을 그대로 옮김
+        copy(c.add(3), c.add(33), rights::ALL, 0, false).unwrap();
+        assert_eq!(cap_at(c, 33), both);
+        move_cap(c.add(33), c.add(34)).unwrap();
+        assert_eq!(cap_at(c, 34), both);
+        // 원본을 회수하면 복사본이 전부 사라짐
+        let mut log = Log::default();
+        revoke(c.add(3), &mut log).unwrap();
+        for i in 30..35 {
+            assert_eq!(get(c, i), None);
+        }
+        assert_eq!(cap_at(c, 3), both);
+    }
+}
+
+#[test]
+fn a_console_word_without_rights_or_with_execute_is_corrupt() {
+    for rights in [0u64, 4, 5, 6, 7] {
+        assert_eq!(decode(&[KIND_CONSOLE | rights << RIGHTS_SHIFT, 0, 0, 0]), Err(CapError::Corrupt));
+    }
+    for rights in [1u64, 2, 3] {
+        let w = [KIND_CONSOLE | rights << RIGHTS_SHIFT, 0, 0, 0];
+        assert_eq!(decode(&w).unwrap().unwrap().cap, Cap::Console { rights: rights as u8 });
+        // 콘솔에는 오브젝트도 매핑 기록도 꼬리 워드도 없음
+        assert_eq!(decode(&[w[0] | 0x1000, 0, 0, 0]), Err(CapError::Corrupt));
+        assert_eq!(decode(&[w[0] | FLAG_MAPPED, 0, 0, 0]), Err(CapError::Corrupt));
+        assert_eq!(decode(&[w[0], 1, 0, 0]), Err(CapError::Corrupt));
+        assert_eq!(decode(&[w[0], 0, 0, 1]), Err(CapError::Corrupt));
     }
 }
 
@@ -1039,7 +1102,7 @@ fn a_very_deep_derivation_chain_is_deleted_iteratively() {
         let c = node(N + 8);
         let mut log = Log::default();
         unsafe {
-            insert_root(c.add(1), Cap::Console).unwrap();
+            insert_root(c.add(1), Cap::Console { rights: rights::W }).unwrap();
             for i in 1..N {
                 copy(c.add(i), c.add(i + 1), rights::ALL, 0, false).unwrap();
             }
@@ -1096,7 +1159,7 @@ const TCB_N: usize = 3;
 fn ident(cap: &Cap) -> (u8, u64) {
     match *cap {
         Cap::Untyped { base, .. } => (0, base),
-        Cap::Console => (1, 0),
+        Cap::Console { .. } => (1, 0),
         Cap::Frame { base, .. }
         | Cap::PageTable { base, .. }
         | Cap::Tcb { base }
@@ -1108,7 +1171,7 @@ fn ident(cap: &Cap) -> (u8, u64) {
 
 fn cap_rights(cap: &Cap) -> u8 {
     match *cap {
-        Cap::Frame { rights, .. } | Cap::Endpoint { rights, .. } => rights,
+        Cap::Frame { rights, .. } | Cap::Endpoint { rights, .. } | Cap::Console { rights } => rights,
         _ => 0,
     }
 }

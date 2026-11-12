@@ -78,6 +78,10 @@ pub enum TaskState {
     BlockedReply = 7,
     /// 엔드포인트 대기 큐에서 수신자를 기다리는 중(CALL, 전달 시 응답 대기로 전환)
     BlockedCall = 8,
+    /// 콘솔 입력을 기다리는 중(CONSOLE_READ). 어떤 큐에도 없고 커널의 대기자
+    /// 자리 하나가 가리킴. `blocked_on`에는 제시한 슬롯 번호가 들어 있음
+    #[cfg(feature = "console-input")]
+    BlockedConsole = 9,
 }
 
 /// TCB 내장 슬롯 배열에서 케이퍼빌리티 공간(CNode)이 드는 자리

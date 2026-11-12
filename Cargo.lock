@@ -120,6 +120,7 @@ name = "k0-arch"
 version = "0.1.0"
 dependencies = [
  "k0-abi",
+ "k0-conin",
 ]
 
 [[package]]
@@ -131,6 +132,10 @@ dependencies = [
 
 [[package]]
 name = "k0-cap"
+version = "0.1.0"
+
+[[package]]
+name = "k0-conin"
 version = "0.1.0"
 
 [[package]]
@@ -203,6 +208,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "k0-term"
+version = "0.1.0"
+dependencies = [
+ "k0-vault",
+]
+
+[[package]]
 name = "k0-vault"
 version = "0.1.0"
 dependencies = [
@@ -240,6 +252,7 @@ name = "root-task"
 version = "0.1.0"
 dependencies = [
  "k0-abi",
+ "k0-term",
  "k0-vault",
 ]
 
