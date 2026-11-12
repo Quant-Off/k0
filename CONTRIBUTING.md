@@ -66,7 +66,7 @@ cargo build -p k0-kernel --offline
 tools/qemu-boot-test.sh                      # boot under QEMU and check the self-tests
 ```
 
-`tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap`, `k0-boot` and `k0-efi` on any host (214 tests on an AArch64 host, 154 elsewhere). The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
+`tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap`, `k0-boot` and `k0-efi` on any host (221 tests on an AArch64 host, 161 elsewhere). The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
 
 `tools/qemu-boot-test.sh` boots the debug kernel, checks the boot log line by line in a fixed order, fails on any error marker, and stops QEMU as soon as the root task reports `root: sched tests pass`. Set `K0_BOOT_TIMEOUT` (seconds) on slow machines.
 
@@ -93,7 +93,7 @@ Two things in the loader cannot be tested by QEMU: the cache flush and the MMU s
 | `k0-abi` constants and shared layouts | yes | indirectly |
 | `k0-cap` untyped bootstrap and retype | yes | yes |
 | `k0-boot` DTB parser, PAC key derivation, root task image | yes, plus fuzzing | yes |
-| `k0-efi` memory plan from the UEFI memory map, DTB rewrite, independent check | yes, plus fuzzing | yes, through the `uefi-*` rows of the boot matrix |
+| `k0-efi` memory plan from the UEFI memory map, DTB rewrite, independent check, ACPI table reader and tree synthesis | yes, plus fuzzing | yes, through the `uefi-*` rows of the boot matrix |
 | `loader` (UEFI application: firmware calls, cache flush, MMU off, jump) | no | yes, through the `uefi-*` rows, plus the static check `tools/pe-check.py` |
 | `k0-mm` page tables and W^X attributes | yes, on AArch64 hosts | yes |
 | `k0-arch`, `k0-task`, `k0-sched`, `k0-ipc` | no | yes |

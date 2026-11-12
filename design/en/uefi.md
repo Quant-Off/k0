@@ -28,7 +28,7 @@ The loader embeds the kernel Image in its own PE file. It does not load a kernel
 
 1. **Print `k0-loader: start ...`** with the entry exception level, the size and granule of the embedded kernel, and the first four bytes of its SHA-256.
 2. **Check the embedded kernel.** The Image header must be a little-endian Linux arm64 Image that can be loaded at any address, with a 4 KiB or 16 KiB page size, and a size within 64 MiB (`image.rs`). The header must match the values baked in at build time. The SHA-256 of the whole Image must match the hash baked in (a corruption check, see "Known gaps"). The CPU must support the kernel's granule, with the same test as the kernel's `enable_paging`, so that the reason shows on screen.
-3. **Find the firmware device tree** in the UEFI configuration table. If there is none, refuse. Read the header, accept a size from 40 bytes to 2 MiB, and use that many bytes.
+3. **Find the firmware device tree** in the UEFI configuration table. If there is none, read the ACPI static tables instead (see "ACPI without a device tree"). If there is neither a device tree nor an ACPI RSDP, refuse. A firmware device tree is used first when both exist, and ACPI is then not read. Read the header, accept a size from 40 bytes to 2 MiB, and use that many bytes.
 4. **Ask for entropy** from `EFI_RNG_PROTOCOL` if the firmware has it: 32 bytes. Output that is empty or one repeated byte counts as no entropy. The loader prints `k0-loader: entropy from the firmware` or `entropy none from the firmware`.
 5. **Allocate one block** below the address limit that the root cell widths allow, laid out as `[DTB buffer | kernel image | 2 MiB plus one unit]`. The unit is 16 KiB. The tail is room for the kernel's boot window. Because image, DTB and window sit in one block, they lie in one declared memory region by construction. If the planner finds that firmware reservations or devices touch the block, the loader frees it and allocates again lower, at most 4 times. The firmware device tree must not lie in the memory just allocated, or the loader would overwrite what it reads. If it does, refuse.
 6. **Build the kernel's DTB and check it** (`prepare` in `crates/k0-efi/src/prepare.rs`, see "The rewrite" and "The self-check"), then copy the kernel Image into its place and zero the rest of the image area.
@@ -114,7 +114,9 @@ Before boot services end, a refusal prints `k0-loader: refused: <reason>` on the
 | `embedded kernel image differs from the one checked at build time` | Size or granule changed since the build |
 | `embedded kernel image is corrupt (sha-256 mismatch)` | Hash mismatch |
 | `this cpu has no 4K translation granule` (or 16K) | The CPU cannot run the embedded kernel |
-| `the firmware provides no device tree (ACPI-only firmware is not supported, QEMU needs -machine acpi=off)` | No device tree in the configuration table |
+| `the firmware provides neither a device tree nor ACPI tables` | The configuration table has no device tree and no ACPI 2.0 RSDP |
+| `ACPI tables: <reason>` | The RSDP, XSDT, MADT, GTDT or SPCR is damaged, has a bad length or checksum, lies outside memory the map allows, or names a device (other than the console) in RAM or firmware memory |
+| `device tree from ACPI tables: <reason>` | The values read from ACPI do not fit the minimal tree |
 | `the firmware device tree has a bad header` | Bad magic or size |
 | `the firmware device tree lies in memory the firmware gave to the loader` | The firmware's own map is inconsistent |
 | `... failed: <status>` | A firmware call failed |
@@ -127,11 +129,11 @@ The loader has no signature code. Under Secure Boot the firmware verifies the wh
 
 ## How it is tested
 
-- **Host unit tests.** `crates/k0-efi/src/tests.rs` holds 25 tests. The vectors are measured firmware memory maps. They cover the descriptor rules, overlap, the entry limit, the writer, the rewrite and the verifier.
+- **Host unit tests.** `crates/k0-efi/src/tests.rs` holds 32 tests. The vectors are measured firmware memory maps. They cover the descriptor rules, overlap, the entry limit, the writer, the rewrite, the verifier, the ACPI reader and the tree synthesis. A fourth fuzzer, `fuzz_acpi_with_mutated_tables`, mutates table images. Campaigns of 2 to 3 million cases passed on 2026-11-12, and it found one real mismatch earlier (the reader accepted a GIC frame alignment that the kernel's discovery refuses), which is fixed by applying the kernel's placement rules in the reader.
 - **Three deterministic fuzzers in `k0-efi`**: `fuzz_plan_with_random_maps`, `fuzz_rewrite_with_mutated_trees` and `fuzz_prepare_end_to_end`. They use the same variables as the other fuzzers: `K0_FUZZ_ITERS`, `K0_FUZZ_SEED`, `K0_FUZZ_CASE`. The defaults are 20,000, 20,000 and 5,000 cases. The weekly workflow runs all three at 5 million cases. Campaigns of 5 million cases each passed on 2026-11-12. The planner fuzzer found one real bug earlier (a block at physical address 0 was accepted). It is fixed.
-- **`tools/host-test.sh`** now runs 214 tests on an ARM host (`k0-abi` 12, `k0-cap` 41, `k0-boot` 76, `k0-efi` 25, and `k0-mm` 30 for each of the two granules) and 154 on an x86-64 host, where the `k0-mm` tests are skipped.
+- **`tools/host-test.sh`** now runs 221 tests on an ARM host (`k0-abi` 12, `k0-cap` 41, `k0-boot` 76, `k0-efi` 32, and `k0-mm` 30 for each of the two granules) and 161 on an x86-64 host, where the `k0-mm` tests are skipped.
 - **`tools/pe-check.py <loader>.efi`** checks the PE form (four sections, none both writable and executable) and the order of the cache and MMU instructions, and prints `pe-check: ok (...)`.
-- **Boot tests under EDK2.** `tools/qemu-virt-runner.sh` boots a `.efi` argument through EDK2 firmware (default machine `virt,gic-version=3,acpi=off`). `tools/qemu-boot-test.sh` judges a failure from the loader's first line, `k0-loader: start`, so firmware messages do not count. `tools/build-loader.sh <kernel ELF>` embeds an already built kernel and prints the path of the `.efi`, which is `<kernel ELF>.efi`. This way the UEFI rows boot the same kernel binary as the other rows. The usage notes in [USAGE.md](../../USAGE.md) show the commands.
+- **Boot tests under EDK2.** `tools/qemu-virt-runner.sh` boots a `.efi` argument through EDK2 firmware (default machine `virt,gic-version=3,acpi=off`, so the device tree path; the ACPI rows pass `K0_QEMU_MACHINE=virt,gic-version=3` or `virt,gic-version=2`). `tools/qemu-boot-test.sh` judges a failure from the loader's first line, `k0-loader: start`, so firmware messages do not count. `tools/build-loader.sh <kernel ELF>` embeds an already built kernel and prints the path of the `.efi`, which is `<kernel ELF>.efi`. This way the UEFI rows boot the same kernel binary as the other rows. The usage notes in [USAGE.md](../../USAGE.md) show the commands.
 
 ## What has been booted
 
@@ -145,8 +147,10 @@ Only tiers 1 and 2 may be called supported.
   - `uefi-16k`: the 16 KiB kernel.
   - `uefi-rng`: a `virtio-rng-pci` device, so the loader gets entropy from the firmware.
   - `uefi-esp`: boot from a FAT drive at `EFI/BOOT/BOOTAA64.EFI`, not by `-kernel`.
-  - Refusals read from the serial log: `uefi-no-dtb` (ACPI default configuration, "the firmware provides no device tree"), `uefi-16k-on-a72` ("this cpu has no 16K translation granule") and `uefi-corrupt` ("embedded kernel image is corrupt", one flipped byte).
-  - All run on QEMU virt with `acpi=off`, except the no-device-tree refusal.
+  - Refusals read from the serial log: `uefi-16k-on-a72` ("this cpu has no 16K translation granule") and `uefi-corrupt` ("embedded kernel image is corrupt", one flipped byte).
+  - The device tree rows run on QEMU virt with `acpi=off`. The `uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k` and `uefi-acpi-rng` rows run with ACPI on and require the loader line `k0-loader: device tree built from ACPI tables`. `uefi-acpi-rng` also requires `k0: entropy dtb=32B`. The refusal row `uefi-no-dtb` no longer exists, because that firmware now boots.
+  - Tier 2, by hand on 2026-11-12: `uefi-hvf-acpi` (Apple M5 Pro, QEMU 11.1.3 with HVF).
+  - Tier 3, never booted: every real ACPI machine (servers, cloud VMs, laptops), firmware other than EDK2 ArmVirtQemu, GICv4, redistributors described by CPU entries, the SBSA UART and 16550 consoles.
 - **Tier 2, by hand on 2026-11-12.**
   - With `K0_MATRIX_HVF=1`, the rows `uefi-hvf-el1`, `uefi-hvf-el2` and `uefi-hvf-16k` on an Apple M5 Pro, QEMU 11.1.3 with HVF, same firmware.
   - A Secure Boot test of the real loader. Keys were enrolled with the pip package `virt-firmware` in a throwaway container, with one firmware only (Debian 2022.11 AAVMF, QEMU 7.2 TCG). The signed loader boots, from the FAT drive path and with `-kernel`. An unsigned loader, a loader with one flipped byte in the embedded kernel that was not signed again, and a loader signed with a key that is not enrolled are refused by the firmware before any loader code runs. The `-kernel` path is verified by the firmware too, so it is no bypass. Each boot was cut at 60 seconds.
@@ -161,10 +165,32 @@ Only tiers 1 and 2 may be called supported.
 5. **The cache flush and the MMU switch-off cannot be tested by QEMU.** See "The handoff". `tools/pe-check.py` checks presence, not correctness on hardware.
 6. **Pinned mode under UEFI is untested.** The pin line contains the RAM range, and under UEFI that range depends on the firmware build and the RAM size. A mismatch stops the kernel with nothing on the screen. The reason is in the kernel's in-memory boot log, and the loader prints the address needed to read it: `k0-loader: image at 0x..., dtb at 0x...`.
 7. **Boot services memory is never used, but a device that firmware left running can still write to other memory** after `ExitBootServices`. K0 has no IOMMU support.
-8. **The entropy the loader adds stays readable** in the device tree in memory for the whole run. With no `EFI_RNG_PROTOCOL` the kernel gets only what the firmware device tree carried.
+8. **The entropy the loader adds stays readable** in the device tree in memory for the whole run. With no `EFI_RNG_PROTOCOL` the kernel gets only what the firmware device tree carried, and a tree built from ACPI carries no firmware seed, so it gets nothing then.
 9. **The kernel never calls UEFI runtime services.** There is no variable access and no reset or power-off through the firmware, and the runtime regions stay unused.
 10. **Firmware that describes device registers as `EfiReservedMemoryType`** (instead of leaving them out of the map or typing them as MMIO) makes the loader refuse. One malformed descriptor makes it refuse the whole map. Both fail closed.
 11. **The paths that place the block again and that free memory on a refusal could not be exercised under QEMU.**
 12. **The `.efi` is not reproducible bit for bit across build directories.** The embedded kernel hash that the loader prints is.
+13. **The only ACPI machine ever booted is QEMU virt.** Real ACPI machines, other firmware, GICv4 and redistributors described by CPU entries are untested.
+14. **The SBSA UART and the 16550 have no identification check.** A 16550 with wider registers gives no console.
+15. **GICv2 frame sizes are assumed** (4 KiB and 8 KiB, as Linux does), because the tables do not give them.
+16. **The check that a table device does not lie in memory exists only in the loader.** The kernel receives no firmware-owned ranges.
+17. **A table kept in reserved-type memory is not read.**
 
-Also: firmware without a device tree is refused. QEMU with EDK2 hands over a device tree only with `-machine acpi=off`. Reading the ACPI static tables (MADT, GTDT and SPCR, never AML) to build a device tree is planned as the next change and is not in the code.
+Also: firmware that gives a device tree uses it, and ACPI is then not read. Firmware that gives only ACPI boots only through the static tables described above. Anything the tables cannot express means a boot without console, not a refusal. Firmware that gives neither a device tree nor an RSDP is refused.
+
+## ACPI without a device tree
+
+Why: QEMU with EDK2 hands over a device tree only with `-machine acpi=off`, and most real ARM firmware describes the machine with ACPI. The loader reads the static tables and builds a minimal device tree, which then takes exactly the same path as a firmware tree: memory planned from the UEFI memory map, rewrite, self-check with the kernel's own parser, discovery and validation, handoff. The kernel does not change.
+
+What is read: the RSDP (from the ACPI 2.0 GUID in the configuration table), the XSDT, the MADT, the GTDT and the SPCR (`crates/k0-efi/src/acpi.rs`). AML is never interpreted. Memory never comes from ACPI. `crates/k0-efi/src/synth.rs` writes the tree.
+
+The rules:
+- Tables are read only when the whole range lies inside one memory map descriptor that is memory (types 1 to 7, 9 and 10). Address 0 is refused. Lengths and checksums are checked. A table in reserved-type memory is therefore not readable: the boot is refused, or for SPCR it continues without console.
+- GIC from the MADT: one distributor entry. Version 2 is GICv2, 3 or 4 is GICv3, 0 is decided by whether redistributors are described, anything else is refused. GICv2 frame sizes are not in the table, so the loader uses 4 KiB for the distributor and 8 KiB for the CPU interface (the values Linux uses). GICv3 redistributors come from GICR entries (at most 4) or, without those, from the CPU entries, merged when adjacent at the 128 KiB or 256 KiB stride. The boot CPU's entry must be among them. Frames must be aligned, must not overlap each other, and must not lie in RAM or firmware memory according to the memory map, otherwise the loader refuses.
+- Timer from the GTDT: the virtual EL1 timer interrupt must be 16 to 31.
+- Console from the SPCR, optional: PL011 (type 0x03), SBSA UART (0x0D, 0x0E), and a 16550 (0x00, 0x01, 0x12) only with 8-bit registers and byte access, because the SPCR cannot express the register stride.
+- Refused versus booted without console: a bad table, GIC, timer or a device in memory is refused (`ACPI tables: <reason>`). A console the kernel has no driver for, a wrong SPCR, or a console that lies in memory means a boot without console. The loader prints `k0-loader: device tree built from ACPI tables (MADT, GTDT and SPCR)` or `(MADT and GTDT, no usable SPCR console)`.
+- Entropy: a tree built from ACPI has no firmware seed. The kernel gets 32 bytes when the firmware has `EFI_RNG_PROTOCOL` and nothing otherwise (it logs `k0: entropy dtb=0B` and continues).
+- The loader also flushes its work area from the data cache before the jump. `tools/pe-check.py` requires three flush calls (block, work area, trampoline).
+
+Limits: the only ACPI machine ever booted is QEMU virt. The SBSA UART and the 16550 have no identification check. A 16550 with wider registers gives no console. GICv2 frame sizes are assumed. The check that a table device does not lie in memory exists only in the loader, because the kernel receives no firmware-owned ranges; the kernel does check the GIC identification registers and the PL011 identification. A table kept in reserved-type memory is not read. Pinned mode under UEFI remains untested. A tree built from ACPI and a firmware tree for the same machine give the same platform line for GICv3 on QEMU.

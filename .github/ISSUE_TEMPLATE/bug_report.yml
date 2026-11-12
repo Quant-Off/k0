@@ -42,7 +42,7 @@ body:
     id: firmware
     attributes:
       label: Firmware build
-      description: Only for the UEFI loader. Firmware name and version, for example `qemu-efi-aarch64 2022.11` or Homebrew EDK2 `stable202408`, and the QEMU version.
+      description: Only for the UEFI loader. Firmware name and version, for example `qemu-efi-aarch64 2022.11` or Homebrew EDK2 `stable202408`, the QEMU version, and whether the firmware gave a device tree or only ACPI tables (the loader prints `device tree built from ACPI tables` in the second case).
   - type: textarea
     id: what
     attributes:

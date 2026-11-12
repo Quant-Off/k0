@@ -105,6 +105,14 @@ tools/build-loader.sh
 tools/qemu-virt-runner.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.efi
 ```
 
+QEMU's default machine has ACPI on and gives no device tree. The loader reads the ACPI static tables and builds a minimal device tree from them, so that machine boots too. To try it:
+
+```sh
+K0_QEMU_MACHINE=virt,gic-version=3 tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.efi
+```
+
+The loader then prints `k0-loader: device tree built from ACPI tables (MADT, GTDT and SPCR)`. The runner still uses `acpi=off` for a `.efi` file unless you set `K0_QEMU_MACHINE`.
+
 `tools/build-loader.sh` takes an already built kernel and puts it into the loader. Without an argument it uses the debug 4 KiB kernel above. It prints the path of the result, which is the kernel file with `.efi` added. For another kernel, pass its path, for example the 16 KiB build from "16 KiB build". The runner starts QEMU with the EDK2 firmware (a UEFI firmware that QEMU can load) and the machine `virt,gic-version=3,acpi=off`. It looks for the firmware in Homebrew's QEMU and then in `/usr/share/AAVMF/AAVMF_CODE.fd`. To quit QEMU, press `Ctrl-A`, then `X`.
 
 To test it, give the `.efi` file to the boot test:
@@ -151,7 +159,9 @@ Before it leaves the firmware, the loader checks everything it can. If a check f
 
 | Reason | Meaning |
 | --- | --- |
-| `the firmware provides no device tree (ACPI-only firmware is not supported, QEMU needs -machine acpi=off)` | The firmware gave no device tree. K0 does not read ACPI yet. QEMU with EDK2 gives a device tree only with `acpi=off`, and the default QEMU machine has ACPI on, so for example `K0_QEMU_MACHINE=virt,gic-version=3` is refused. Reading ACPI is the next planned step |
+| `the firmware provides neither a device tree nor ACPI tables` | The configuration table has no device tree and no ACPI RSDP. QEMU with EDK2 always gives one of the two |
+| `ACPI tables: <reason>` | An ACPI table is damaged, has a bad checksum or length, lies outside readable memory, or names a device in RAM or firmware memory (see design/en/uefi.md) |
+| `device tree from ACPI tables: <reason>` | The values read from ACPI do not fit the minimal tree |
 | `this cpu has no 16K translation granule` | A 16 KiB kernel on a CPU without 16 KiB pages. Use `K0_QEMU_CPU=max` |
 | `embedded kernel image is corrupt (sha-256 mismatch)` | The kernel inside the file was changed after the build |
 | `the firmware device tree ...` or `device tree for the kernel: ...` | The device tree from the firmware is damaged or has something the kernel refuses (see [design/en/uefi.md](design/en/uefi.md)) |
@@ -160,7 +170,7 @@ Only this loader may start K0 under UEFI. The kernel would also accept the firmw
 
 The loader has no signature check of its own. The SHA-256 of the kernel inside it only catches a damaged file. If you need to know who built the file, use Secure Boot in the firmware, with keys you enrol yourself: the firmware then checks the whole `.efi` file, kernel included.
 
-What was tested: the UEFI rows of `tools/boot-matrix.sh` (see below) run in CI on QEMU with EDK2, and by hand on 2026-11-12 the rows `uefi-hvf-el1`, `uefi-hvf-el2` and `uefi-hvf-16k` on an Apple M5 Pro with HVF, and a signed loader under Secure Boot on one firmware (Debian's EDK2 2022.11 on QEMU 7.2), where an unsigned, a tampered and a wrong-key loader were refused by the firmware. Real boards, other firmware such as U-Boot, KVM, the pinned build under UEFI and the cache flush on real hardware have not been tested.
+What was tested: the UEFI rows of `tools/boot-matrix.sh` (see below) run in CI on QEMU with EDK2, and by hand on 2026-11-12 the rows `uefi-hvf-acpi`, `uefi-hvf-el1`, `uefi-hvf-el2` and `uefi-hvf-16k` on an Apple M5 Pro with HVF, and a signed loader under Secure Boot on one firmware (Debian's EDK2 2022.11 on QEMU 7.2), where an unsigned, a tampered and a wrong-key loader were refused by the firmware. Real ACPI machines, real boards, other firmware such as U-Boot, GICv4, redistributors described by CPU entries, the SBSA UART and 16550 consoles, KVM, the pinned build under UEFI and the cache flush on real hardware have not been tested.
 
 ## Testing automatically
 
@@ -171,9 +181,9 @@ tools/qemu-boot-test.sh               # boot in QEMU and check every self-test
 tools/boot-matrix.sh                  # boot every supported configuration (builds the 16 KiB, pinned and UEFI loader images too)
 ```
 
-- `tools/host-test.sh` runs the 214 host tests (154 on an x86-64 computer): small tests of single parts of the kernel (unit tests) as ordinary programs on your computer. It also does fuzzing: it feeds the device tree parser and the UEFI loader's planning code random, broken input to find crashes. The 214 are 12 (`k0-abi`), 41 (`k0-cap`), 76 (`k0-boot`), 25 (`k0-efi`) and 30 for each of the two page sizes (`k0-mm`). The memory management tests use ARM instructions, so they run only on an ARM computer (an Apple Silicon Mac or Linux arm64), and the x86-64 count leaves out those 60.
+- `tools/host-test.sh` runs the 221 host tests (161 on an x86-64 computer): small tests of single parts of the kernel (unit tests) as ordinary programs on your computer. It also does fuzzing: it feeds the device tree parser and the UEFI loader's planning code random, broken input to find crashes. The 221 are 12 (`k0-abi`), 41 (`k0-cap`), 76 (`k0-boot`), 32 (`k0-efi`) and 30 for each of the two page sizes (`k0-mm`). The memory management tests use ARM instructions, so they run only on an ARM computer (an Apple Silicon Mac or Linux arm64), and the x86-64 count leaves out those 60.
 - `tools/qemu-boot-test.sh` boots the kernel, reads the log line by line in a fixed order, fails on any error line, checks the exact number of intentional fault lines, and stops QEMU when it is done. It prints `boot-test: pass` on success and saves the full log in `target/qemu-boot-test.log`. It takes the machine from the `K0_QEMU_*` variables above and accepts `K0_BOOT_REUSE=skip` for memory layouts that have no untyped region of the right size, where the root task skips its reuse test.
-- `tools/boot-matrix.sh` boots the kernel in each configuration that K0 calls supported and checks the result: QEMU virt with GICv3 and GICv2 at EL1 and EL2, three CPU models, 4 cores, the 16 KiB image, other load addresses, `xlnx-versal-virt`, a pinned image, and a static check that the image does not touch the physical timer. The `uefi-*` rows boot the kernel through the UEFI loader on EDK2: GICv3 and GICv2 at EL1 and EL2, the `max` CPU, 4 cores, the 16 KiB image, a random number source from the firmware and the FAT drive path. A static check (`tools/pe-check.py`) covers the loader file's form and its cache and MMU instruction order, which QEMU cannot test. For configurations that must be refused, it reads the reason from the boot log in memory, or for the loader from the serial log: ACPI on, a 16 KiB kernel on `cortex-a72`, and a kernel with one changed byte. You can name single rows as arguments. CI runs it. On an Apple Silicon Mac, `K0_MATRIX_HVF=1 tools/boot-matrix.sh` adds rows that run the kernel, also through the UEFI loader, on the real CPU cores through QEMU's HVF accelerator.
+- `tools/boot-matrix.sh` boots the kernel in each configuration that K0 calls supported and checks the result: QEMU virt with GICv3 and GICv2 at EL1 and EL2, three CPU models, 4 cores, the 16 KiB image, other load addresses, `xlnx-versal-virt`, a pinned image, and a static check that the image does not touch the physical timer. The `uefi-*` rows boot the kernel through the UEFI loader on EDK2: GICv3 and GICv2 at EL1 and EL2, the `max` CPU, 4 cores, the 16 KiB image, a random number source from the firmware and the FAT drive path, and the `uefi-acpi-*` rows (`uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k`, `uefi-acpi-rng`), which boot QEMU's default machine with ACPI on and no device tree. A static check (`tools/pe-check.py`) covers the loader file's form and its cache and MMU instruction order, which QEMU cannot test. For configurations that must be refused, it reads the reason from the boot log in memory, or for the loader from the serial log: a 16 KiB kernel on `cortex-a72`, and a kernel with one changed byte. You can name single rows as arguments. CI runs it. On an Apple Silicon Mac, `K0_MATRIX_HVF=1 tools/boot-matrix.sh` adds rows that run the kernel, also through the UEFI loader, on the real CPU cores through QEMU's HVF accelerator.
 
 The default QEMU CPU model has no PAC, PAN or RNDR. To test those as well, boot on the `max` model and require the matching log lines:
 
@@ -195,5 +205,4 @@ GitHub also runs these tests automatically on every pull request and every push 
 | A boot stops early and nothing is printed | There may be no supported console. Read the boot log from memory with `tools/boot-log.py` |
 | `runner: no UEFI firmware found, set K0_QEMU_FIRMWARE` | Install the firmware as described under "What you need", or set `K0_QEMU_FIRMWARE` to the path of an EDK2 `aarch64` code image |
 | `build-loader: kernel ELF not found` | Build the kernel first with `cargo build -p k0-kernel --offline` |
-| `k0-loader: refused: the firmware provides no device tree ...` | QEMU has ACPI on. Use a machine with `acpi=off`, which is the default of the runner for a `.efi` file |
 | The screen shows only firmware messages, or the firmware menu | The firmware could not start the loader, or the loader refused and the firmware went on. Look for `k0-loader:` lines. With none, check that the `.efi` file exists and, with `K0_QEMU_ESP`, that the drive is found |

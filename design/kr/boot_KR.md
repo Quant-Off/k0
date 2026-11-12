@@ -18,7 +18,7 @@ K0는 범용 이미지 하나입니다. Linux arm64 Image로 적재됩니다. �
 
 이미지는 그래뉼 격자(4 KiB, 16 KiB 빌드에서는 16 KiB) 위의 어떤 물리 주소에든 적재할 수 있습니다. 링크는 고정된 가상 주소 하나(`0xFFFF_8000_0000_0000`)로 되어 있고, 실행은 실제 적재된 물리 주소에서 시작합니다. 이 노트의 모든 내용은 이 간격에서 비롯됩니다. `boot.S`는 PC 상대 주소만으로 자기 위치를 찾습니다.
 
-결정에 따라 지원하지 않는 것은 다음과 같습니다. EL3 진입, ACPI만 있는 펌웨어(UEFI 로더는 디바이스 트리가 없는 펌웨어를 거부하며, ACPI 테이블을 읽어 디바이스 트리를 만드는 일은 다음 변경으로 계획 중), K0 로더가 아닌 프로그램을 통한 UEFI 진입(범용 UEFI 부트로더는 펌웨어 메모리를 사용자 공간에 넘기는 메모리 설명을 그대로 전달하게 됩니다. [uefi_KR.md](uefi_KR.md) 참고), Apple Silicon 베어메탈, GICv2와 GICv3 외의 인터럽트 컨트롤러, 기밀 VM, 64 KiB 그래뉼, 빅 엔디언, DTB가 타이머 정오표를 선언하는 보드, 2^47을 넘는 RAM.
+결정에 따라 지원하지 않는 것은 다음과 같습니다. EL3 진입, 정적 테이블 MADT, GTDT, SPCR을 넘어서는 ACPI 사용(AML은 읽지 않습니다), K0 로더가 아닌 프로그램을 통한 UEFI 진입(범용 UEFI 부트로더는 펌웨어 메모리를 사용자 공간에 넘기는 메모리 설명을 그대로 전달하게 됩니다. [uefi_KR.md](uefi_KR.md) 참고), Apple Silicon 베어메탈, GICv2와 GICv3 외의 인터럽트 컨트롤러, 기밀 VM, 64 KiB 그래뉼, 빅 엔디언, DTB가 타이머 정오표를 선언하는 보드, 2^47을 넘는 RAM.
 
 ### 그래뉼
 
@@ -96,7 +96,7 @@ K0는 범용 이미지 하나입니다. Linux arm64 Image로 적재됩니다. �
 
 - **1단계, `tools/boot-matrix.sh`가 실행합니다(CI가 QEMU 7.2로 실행하며, 로컬에서는 QEMU 11.1.3으로도 실행). Linux arm64 Image 진입입니다.** GICv3와 GICv2의 QEMU virt를 각각 EL1과 EL2로 진입. CPU 모델 `cortex-a72`, `cortex-a53`, `max`. 두 GIC 버전 모두 `secure=on`. CPU 4개. `max`에서의 16 KiB 이미지와 `cortex-a72`에서의 거부. 하나의 이미지를 다른 세 물리 주소에 적재(헤더의 `text_offset`을 고쳐서)하고, 16 KiB 격자에 맞지 않는 주소는 거부. RAM이 주소 0에 있고 GICv3와 PL011이 다른 곳에 있는 `xlnx-versal-virt`를 EL2로 진입. 고정 이미지가 자기 플랫폼에서는 부팅하고 다른 플랫폼에서는 거부. 이미지가 물리 타이머 레지스터에 접근하지 않음을 확인하는 정적 검사(커널은 하이퍼바이저 게스트에서도 동작하는 EL1 가상 타이머를 씁니다).
 - **2단계, 2026-11-11에 직접 실행, Apple M5 Pro, HVF를 쓰는 QEMU 11.1.3**(`K0_MATRIX_HVF=1 tools/boot-matrix.sh`). 4 KiB 이미지의 EL1 진입, 게스트 EL2 진입, 16 KiB 이미지, CPU 4개.
-- **1단계, 같은 스크립트의 UEFI 행(2026-11-12).** 같은 커널 바이너리를 UEFI 로더에 내장해 `acpi=off`인 QEMU virt에서 EDK2로 부팅합니다. GICv3와 GICv2를 EL1과 EL2에서, `max`, CPU 4개, 16 KiB 이미지, 펌웨어 RNG, FAT 드라이브 부팅, 직렬 로그에서 읽는 거부 셋(디바이스 트리 없음, `cortex-a72`에서의 16 KiB, 내장 커널의 한 바이트 변조). PE 파일의 정적 검사도 있습니다. CI는 이 행들을 Debian의 `qemu-efi-aarch64` 2022.11이 있는 QEMU 7.2.22에서 실행합니다. 행의 목록은 [uefi_KR.md](uefi_KR.md)에 있습니다.
+- **1단계, 같은 스크립트의 UEFI 행(2026-11-12).** 같은 커널 바이너리를 UEFI 로더에 내장해 `acpi=off`인 QEMU virt에서 EDK2로 부팅합니다. GICv3와 GICv2를 EL1과 EL2에서, `max`, CPU 4개, 16 KiB 이미지, 펌웨어 RNG, FAT 드라이브 부팅, 직렬 로그에서 읽는 거부 둘(`cortex-a72`에서의 16 KiB, 내장 커널의 한 바이트 변조). `uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k`, `uefi-acpi-rng` 행은 같은 머신을 ACPI를 켠 채 디바이스 트리 없이 부팅합니다. PE 파일의 정적 검사도 있습니다. CI는 이 행들을 Debian의 `qemu-efi-aarch64` 2022.11이 있는 QEMU 7.2.22에서 실행합니다. 행의 목록은 [uefi_KR.md](uefi_KR.md)에 있습니다.
 - **2단계, UEFI, 2026-11-12에 직접 실행.** Apple M5 Pro의 HVF에서(`K0_MATRIX_HVF=1`) 로더를 거친 4 KiB 이미지의 EL1과 EL2 진입, 16 KiB 이미지, 그리고 실제 로더의 Secure Boot 시험(서명한 로더는 부팅하고, 서명하지 않은 로더, 변조된 로더, 다른 키로 서명한 로더는 펌웨어가 거부).
 - **3단계, 계약상 기대하지만 부팅해 본 적 없음.** 모든 실제 보드, KVM, Firecracker, Cloud Hypervisor, crosvm, 16550 드라이버(실행해 본 적 없음), 하드웨어의 실제 보안 확장이 있는 GIC, `E2H`가 1로 고정된 CPU. UEFI 로더에 대해서는 U-Boot의 EFI 구현, Raspberry Pi UEFI, EDK2 ArmVirtQemu 외의 펌웨어, UEFI에서의 고정 모드, 실제 하드웨어에서의 캐시 비우기도 해당합니다.
 
@@ -110,4 +110,4 @@ K0는 범용 이미지 하나입니다. Linux arm64 Image로 적재됩니다. �
 - 커널은 항상 같은 가상 주소에 놓입니다. 주소 무작위화가 없습니다.
 - 릴리즈 빌드는 패닉 때 아무것도 출력하지 않습니다. 의도한 동작이지만, 릴리즈 빌드에서는 패닉이 나도 진단을 얻을 수 없다는 뜻이기도 합니다.
 - 위의 증거는 QEMU와 HVF뿐입니다. K0가 실제 보드에서 부팅한 적은 없습니다.
-- UEFI에서는 로더의 캐시 비우기와 MMU 끄기를 QEMU로 테스트할 수 없고(캐시가 없습니다), ACPI만 있는 펌웨어는 거부합니다. 로더의 한계 열두 가지는 [uefi_KR.md](uefi_KR.md)에 모두 있습니다.
+- UEFI에서는 로더의 캐시 비우기와 MMU 끄기를 QEMU로 테스트할 수 없고(캐시가 없습니다), ACPI만 있는 펌웨어는 세 정적 테이블만으로 부팅합니다(부팅해 본 것은 QEMU virt뿐입니다). 로더의 한계는 [uefi_KR.md](uefi_KR.md)에 모두 있습니다.

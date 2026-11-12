@@ -68,7 +68,7 @@ cargo build -p k0-kernel --offline
 tools/qemu-boot-test.sh                      # QEMU 부팅과 자가 테스트 확인
 ```
 
-`tools/host-test.sh`는 `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi`의 테스트를 어느 호스트에서나 실행합니다(AArch64 호스트에서 214개, 그 밖에서 154개). `k0-mm` 테스트는 AArch64 인라인 어셈블리를 포함하기 때문에 AArch64 호스트(Apple Silicon 또는 Linux arm64)에서만 실행되며, 스크립트가 4 KiB와 16 KiB 그래뉼 두 구성으로 모두 돌립니다.
+`tools/host-test.sh`는 `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi`의 테스트를 어느 호스트에서나 실행합니다(AArch64 호스트에서 221개, 그 밖에서 161개). `k0-mm` 테스트는 AArch64 인라인 어셈블리를 포함하기 때문에 AArch64 호스트(Apple Silicon 또는 Linux arm64)에서만 실행되며, 스크립트가 4 KiB와 16 KiB 그래뉼 두 구성으로 모두 돌립니다.
 
 `tools/qemu-boot-test.sh`는 디버그 커널을 부팅하고 부팅 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 표식이 하나라도 나오면 실패하고, 루트 태스크가 `root: sched tests pass`를 출력하면 곧바로 QEMU를 종료합니다. 느린 환경에서는 `K0_BOOT_TIMEOUT`(초)을 늘려 주세요.
 
@@ -95,7 +95,7 @@ tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.ef
 | `k0-abi` 상수와 공유 레이아웃 | 있음 | 간접적으로 |
 | `k0-cap` untyped 부트스트랩과 retype | 있음 | 있음 |
 | `k0-boot` DTB 파서, PAC 키 파생, 루트 태스크 이미지 | 있음, 퍼징 포함 | 있음 |
-| `k0-efi` UEFI 메모리 맵에서의 메모리 계획, DTB 재작성, 독립 검증 | 있음, 퍼징 포함 | 있음, 부팅 매트릭스의 `uefi-*` 행으로 |
+| `k0-efi` UEFI 메모리 맵에서의 메모리 계획, DTB 재작성, 독립 검증, ACPI 테이블 읽기와 트리 합성 | 있음, 퍼징 포함 | 있음, 부팅 매트릭스의 `uefi-*` 행으로 |
 | `loader` (UEFI 애플리케이션: 펌웨어 호출, 캐시 비우기, MMU 끄기, 점프) | 없음 | 있음, `uefi-*` 행과 정적 검사 `tools/pe-check.py`로 |
 | `k0-mm` 페이지 테이블과 W^X 속성 | AArch64 호스트에서 있음 | 있음 |
 | `k0-arch`, `k0-task`, `k0-sched`, `k0-ipc` | 없음 | 있음 |

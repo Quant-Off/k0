@@ -68,7 +68,8 @@ Even on `main`, treat running untrusted code as experimental. The isolation is e
 `loader/` is a UEFI application that embeds a built kernel and starts it with the usual boot contract, and `crates/k0-efi` holds its logic. The kernel does not change. What the loader does and why it exists are in [design/en/uefi.md](design/en/uefi.md). The security-relevant facts:
 
 - The loader decides what the kernel will treat as RAM. Only free memory and loader memory count. Everything else never does: boot services memory, runtime memory, unknown types, overlapping descriptors, reservations and devices found in the firmware device tree. It drops the firmware tree's own memory description, because on QEMU with EDK2 that tree declares all 512 MiB as RAM although firmware regions lie inside, and an unmodified kernel would hand about 5.5 MiB of firmware memory to user space. It then checks its own result with a second classifier and with the kernel's own parser and validation before it jumps.
-- A firmware device tree that the kernel's parser would refuse, and firmware with no device tree, are refused by the loader before boot services end. It prints `k0-loader: refused: <reason>`, wipes what it allocated and returns an error to the firmware.
+- A firmware device tree that the kernel's parser would refuse, and firmware that gives neither a device tree nor readable ACPI static tables, are refused by the loader before boot services end. It prints `k0-loader: refused: <reason>`, wipes what it allocated and returns an error to the firmware.
+- When the firmware gives no device tree, the loader reads the ACPI static tables RSDP, XSDT, MADT, GTDT and SPCR and builds a minimal device tree from them. It never reads or runs AML. It reads a table only when the whole table lies inside one memory map descriptor that is memory, and it checks lengths and checksums. A device named by the tables (GIC frames, console) must not lie in RAM or in firmware memory, otherwise the loader refuses. A console it cannot use means a boot without console, not a refusal. The finished tree then takes the same checks as a firmware tree.
 - The SHA-256 of the embedded kernel is a corruption check, not a signature. The loader has no signature code. Authenticity comes only from Secure Boot in the firmware, which verifies the whole loader file with the kernel inside it, using keys the owner enrols. This was tried once with test keys (see "Where it has run" in [INTRODUCTION.md](INTRODUCTION.md)). The Microsoft third-party route (shim) is not prepared.
 
 Limits and residual risks of the loader:
@@ -80,11 +81,16 @@ Limits and residual risks of the loader:
 5. QEMU cannot test the cache flush and MMU-off sequence: TCG has no caches, and HVF did not expose a missing flush either. It rests on the architecture rules, on the sequence Linux used when it entered the kernel with the MMU off, and on `tools/pe-check.py`, which checks that the instructions and both flush calls are present, not that they are right on real hardware.
 6. A pinned build (`K0_PIN`) under UEFI is untested. The pin line includes the RAM range, which under UEFI depends on the firmware build and the RAM size. A mismatch stops the kernel with nothing on the screen. The reason is in the kernel's boot log in memory, and the loader prints the address needed to read it (`k0-loader: image at 0x..., dtb at 0x...`).
 7. Boot services memory is never used, but nothing stops a device that firmware left running from writing to other memory after the firmware services end. K0 has no IOMMU support.
-8. The entropy the loader adds stays readable in the device tree in memory for the whole run. Without `EFI_RNG_PROTOCOL` the kernel gets only what the firmware device tree carried.
+8. The entropy the loader adds stays readable in the device tree in memory for the whole run. Without `EFI_RNG_PROTOCOL` the kernel gets only what the firmware device tree carried, and nothing at all when the tree was built from ACPI tables (the kernel then relies on RNDR if the CPU has it).
 9. The kernel never calls UEFI runtime services: no variable access, no reset or power-off through firmware. Runtime regions stay unused.
 10. Firmware that describes device registers as `EfiReservedMemoryType` (instead of leaving them out of the map or typing them as MMIO) makes the loader refuse, and one malformed descriptor makes it refuse the whole map. Both fail closed.
 11. The paths that move the block to another place and that free memory after a refusal could not be exercised under QEMU.
 12. The loader file is not reproducible bit for bit across build directories. The embedded kernel hash that the loader prints is.
+13. The only ACPI machine ever booted is QEMU virt. Real ACPI machines, firmware other than EDK2 ArmVirtQemu, GICv4 and redistributors described by CPU entries are untested.
+14. The SBSA UART and the 16550 have no identification check, and a 16550 with wider registers gives no console.
+15. GICv2 frame sizes are not in the ACPI tables. The loader assumes 4 KiB and 8 KiB, as Linux does.
+16. The check that a device named by a table does not lie in memory exists only in the loader. The kernel receives no firmware-owned ranges, so it cannot repeat it.
+17. A table kept in memory of the reserved type is not read.
 
 ## Known advisories
 

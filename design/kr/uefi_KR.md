@@ -28,7 +28,7 @@ UEFI 펌웨어는 커널이 기대하는 Linux arm64 부트 프로토콜을 따�
 
 1. **`k0-loader: start ...`를 출력합니다.** 진입 예외 레벨, 내장 커널의 크기와 그래뉼, SHA-256의 앞 4바이트가 들어 있습니다.
 2. **내장 커널을 확인합니다.** 헤더는 임의의 주소에 적재할 수 있는 리틀 엔디언 Linux arm64 Image이고, 페이지 크기가 4 KiB 또는 16 KiB이며, 크기가 64 MiB 이내여야 합니다(`image.rs`). 헤더는 빌드 때 박아 둔 값과 같아야 합니다. Image 전체의 SHA-256도 박아 둔 해시와 같아야 합니다(손상 검사이며, "알려진 공백" 참고). CPU는 커널의 그래뉼을 지원해야 하고, 커널의 `enable_paging`과 같은 판정으로 확인해서 사유가 화면에 남도록 합니다.
-3. **UEFI 구성 테이블에서 펌웨어 디바이스 트리를 찾습니다.** 없으면 거부합니다. 헤더를 읽고 40바이트에서 2 MiB 사이의 크기를 받아들이며, 그 길이만큼을 씁니다.
+3. **UEFI 구성 테이블에서 펌웨어 디바이스 트리를 찾습니다.** 없으면 대신 ACPI 정적 테이블을 읽습니다("디바이스 트리 없는 ACPI" 참고). 디바이스 트리도 ACPI RSDP도 없으면 거부합니다. 둘 다 있으면 펌웨어 디바이스 트리를 먼저 쓰고 ACPI는 읽지 않습니다. 헤더를 읽고 40바이트에서 2 MiB 사이의 크기를 받아들이며, 그 길이만큼을 씁니다.
 4. **엔트로피를 요청합니다.** 펌웨어에 `EFI_RNG_PROTOCOL`이 있으면 32바이트를 받습니다. 비어 있거나 한 바이트 값으로만 채워진 출력은 엔트로피로 치지 않습니다. 로더는 `k0-loader: entropy from the firmware` 또는 `entropy none from the firmware`를 출력합니다.
 5. **블록 하나를 할당합니다.** 루트 셀 폭이 허용하는 주소 한계 아래에서 `[DTB 버퍼 | 커널 이미지 | 2 MiB와 한 단위]` 순서로 배치합니다. 한 단위는 16 KiB이고, 꼬리는 커널의 부트 윈도우 자리입니다. 이미지, DTB, 윈도우가 한 블록에 있으므로 선언된 하나의 메모리 리전 안에 있다는 것이 구성상 보장됩니다. 펌웨어 예약이나 디바이스가 블록에 걸린다고 계획이 판정하면 블록을 풀고 더 낮은 곳에 다시 할당하며, 최대 4번 합니다. 펌웨어 디바이스 트리가 방금 할당한 메모리 안에 있으면 읽는 내용을 로더가 덮어쓰게 되므로 거부합니다.
 6. **커널용 DTB를 만들고 확인합니다**(`crates/k0-efi/src/prepare.rs`의 `prepare`. "재작성"과 "자가 검사" 참고). 그다음 커널 Image를 제자리에 복사하고 이미지 영역의 나머지는 0으로 채웁니다.
@@ -114,7 +114,9 @@ k0-loader: exiting boot services
 | `embedded kernel image differs from the one checked at build time` | 빌드 이후 크기나 그래뉼이 달라짐 |
 | `embedded kernel image is corrupt (sha-256 mismatch)` | 해시 불일치 |
 | `this cpu has no 4K translation granule` (또는 16K) | CPU가 내장 커널을 실행할 수 없음 |
-| `the firmware provides no device tree (ACPI-only firmware is not supported, QEMU needs -machine acpi=off)` | 구성 테이블에 디바이스 트리가 없음 |
+| `the firmware provides neither a device tree nor ACPI tables` | 구성 테이블에 디바이스 트리도 ACPI 2.0 RSDP도 없음 |
+| `ACPI tables: <reason>` | RSDP, XSDT, MADT, GTDT, SPCR 중 하나가 손상되었거나, 길이나 체크섬이 잘못되었거나, 맵이 허용하는 메모리 밖에 있거나, (콘솔을 제외한) 장치가 RAM이나 펌웨어 메모리에 있다고 기술함 |
+| `device tree from ACPI tables: <reason>` | ACPI에서 읽은 값이 최소 트리에 맞지 않음 |
 | `the firmware device tree has a bad header` | 매직이나 크기가 잘못됨 |
 | `the firmware device tree lies in memory the firmware gave to the loader` | 펌웨어 자신의 맵이 모순됨 |
 | `... failed: <status>` | 펌웨어 호출 실패 |
@@ -127,11 +129,11 @@ k0-loader: exiting boot services
 
 ## 테스트 방법
 
-- **호스트 단위 테스트.** `crates/k0-efi/src/tests.rs`에 25개가 있습니다. 벡터는 실제로 측정한 펌웨어 메모리 맵입니다. 디스크립터 규칙, 겹침, 항목 한계, 작성기와 재작성, 검증기를 다룹니다.
+- **호스트 단위 테스트.** `crates/k0-efi/src/tests.rs`에 32개가 있습니다. 벡터는 실제로 측정한 펌웨어 메모리 맵입니다. 디스크립터 규칙, 겹침, 항목 한계, 작성기와 재작성, 검증기, ACPI 리더, 트리 합성을 다룹니다. 네 번째 퍼저 `fuzz_acpi_with_mutated_tables`는 테이블 이미지를 변형합니다. 2026-11-12에 200만에서 300만 케이스의 캠페인이 통과했고, 앞서 실제 불일치 하나를 찾았습니다(리더가 커널의 디스커버리가 거부하는 GIC 프레임 정렬을 받아들였습니다). 커널의 배치 규칙을 리더에 적용해 수정했습니다.
 - **`k0-efi`의 결정적 퍼저 셋**: `fuzz_plan_with_random_maps`, `fuzz_rewrite_with_mutated_trees`, `fuzz_prepare_end_to_end`. 다른 퍼저와 같은 변수 `K0_FUZZ_ITERS`, `K0_FUZZ_SEED`, `K0_FUZZ_CASE`를 씁니다. 기본값은 각각 20,000, 20,000, 5,000개의 케이스입니다. 주간 워크플로가 셋 모두를 500만 케이스로 실행합니다. 2026-11-12에 각각 500만 케이스의 캠페인이 통과했습니다. 계획 퍼저는 앞서 실제 버그 하나를 찾았습니다(물리 주소 0의 블록이 받아들여졌습니다). 수정되었습니다.
-- **`tools/host-test.sh`**는 이제 ARM 호스트에서 214개(`k0-abi` 12, `k0-cap` 41, `k0-boot` 76, `k0-efi` 25, 두 그래뉼 각각에 `k0-mm` 30)를, `k0-mm` 테스트를 건너뛰는 x86-64 호스트에서 154개를 실행합니다.
+- **`tools/host-test.sh`**는 이제 ARM 호스트에서 221개(`k0-abi` 12, `k0-cap` 41, `k0-boot` 76, `k0-efi` 32, 두 그래뉼 각각에 `k0-mm` 30)를, `k0-mm` 테스트를 건너뛰는 x86-64 호스트에서 161개를 실행합니다.
 - **`tools/pe-check.py <loader>.efi`**는 PE 형태(섹션 4개, 쓰기와 실행이 함께 가능한 섹션 없음)와 캐시 및 MMU 명령의 순서를 검사하고 `pe-check: ok (...)`를 출력합니다.
-- **EDK2 부팅 테스트.** `tools/qemu-virt-runner.sh`는 `.efi` 인자를 EDK2 펌웨어로 부팅합니다(기본 머신 `virt,gic-version=3,acpi=off`). `tools/qemu-boot-test.sh`는 로더의 첫 줄 `k0-loader: start`부터 실패를 판정하므로 펌웨어 메시지는 세지 않습니다. `tools/build-loader.sh <커널 ELF>`는 이미 빌드된 커널을 내장하고 `.efi`의 경로(`<커널 ELF>.efi`)를 출력합니다. 그래서 UEFI 행도 다른 행과 같은 커널 바이너리를 부팅합니다. 명령은 [USAGE_KR.md](../../USAGE_KR.md)에 있습니다.
+- **EDK2 부팅 테스트.** `tools/qemu-virt-runner.sh`는 `.efi` 인자를 EDK2 펌웨어로 부팅합니다(기본 머신 `virt,gic-version=3,acpi=off`이므로 디바이스 트리 경로입니다. ACPI 행은 `K0_QEMU_MACHINE=virt,gic-version=3` 또는 `virt,gic-version=2`를 넘깁니다). `tools/qemu-boot-test.sh`는 로더의 첫 줄 `k0-loader: start`부터 실패를 판정하므로 펌웨어 메시지는 세지 않습니다. `tools/build-loader.sh <커널 ELF>`는 이미 빌드된 커널을 내장하고 `.efi`의 경로(`<커널 ELF>.efi`)를 출력합니다. 그래서 UEFI 행도 다른 행과 같은 커널 바이너리를 부팅합니다. 명령은 [USAGE_KR.md](../../USAGE_KR.md)에 있습니다.
 
 ## 부팅해 본 환경
 
@@ -145,8 +147,10 @@ k0-loader: exiting boot services
   - `uefi-16k`: 16 KiB 커널
   - `uefi-rng`: `virtio-rng-pci` 장치. 로더가 펌웨어에서 엔트로피를 받음
   - `uefi-esp`: `-kernel`이 아니라 `EFI/BOOT/BOOTAA64.EFI`에 둔 FAT 드라이브로 부팅
-  - 직렬 로그에서 읽는 거부: `uefi-no-dtb`(ACPI 기본 구성, "the firmware provides no device tree"), `uefi-16k-on-a72`("this cpu has no 16K translation granule"), `uefi-corrupt`("embedded kernel image is corrupt", 한 바이트를 뒤집음)
-  - 디바이스 트리 없음 거부를 빼면 모두 `acpi=off`인 QEMU virt에서 실행합니다.
+  - 직렬 로그에서 읽는 거부: `uefi-16k-on-a72`("this cpu has no 16K translation granule"), `uefi-corrupt`("embedded kernel image is corrupt", 한 바이트를 뒤집음)
+  - 디바이스 트리 행은 `acpi=off`인 QEMU virt에서 실행합니다. `uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k`, `uefi-acpi-rng` 행은 ACPI를 켜고 실행하며 로더 줄 `k0-loader: device tree built from ACPI tables`를 요구합니다. `uefi-acpi-rng`는 `k0: entropy dtb=32B`도 요구합니다. 거부 행 `uefi-no-dtb`는 그 펌웨어가 이제 부팅하므로 더 이상 없습니다.
+  - 2단계, 2026-11-12에 직접 실행: `uefi-hvf-acpi`(Apple M5 Pro, HVF를 쓰는 QEMU 11.1.3).
+  - 3단계, 부팅해 본 적 없음: 실제 ACPI 머신 전부(서버, 클라우드 VM, 노트북), EDK2 ArmVirtQemu 외의 펌웨어, GICv4, CPU 항목으로 기술된 리디스트리뷰터, SBSA UART와 16550 콘솔.
 - **2단계, 2026-11-12에 직접 실행.**
   - `K0_MATRIX_HVF=1`로 `uefi-hvf-el1`, `uefi-hvf-el2`, `uefi-hvf-16k` 행을 Apple M5 Pro, HVF를 쓰는 QEMU 11.1.3, 같은 펌웨어로 실행.
   - 실제 로더의 Secure Boot 시험. 키는 일회용 컨테이너에서 pip 패키지 `virt-firmware`로 등록했고, 펌웨어는 하나뿐입니다(Debian 2022.11 AAVMF, QEMU 7.2 TCG). 서명한 로더는 FAT 드라이브 경로와 `-kernel` 모두에서 부팅합니다. 서명하지 않은 로더, 내장 커널의 한 바이트를 뒤집고 다시 서명하지 않은 로더, 등록되지 않은 키로 서명한 로더는 로더 코드가 실행되기 전에 펌웨어가 거부합니다. `-kernel` 경로도 펌웨어가 검증하므로 우회가 아닙니다. 부팅은 각각 60초에서 끊었습니다.
@@ -161,10 +165,33 @@ k0-loader: exiting boot services
 5. **캐시 비우기와 MMU 끄기는 QEMU로 테스트할 수 없습니다.** "넘기기"를 참고하세요. `tools/pe-check.py`는 존재를 검사할 뿐 하드웨어에서의 정확성을 검사하지 않습니다.
 6. **UEFI에서의 고정 모드는 테스트하지 않았습니다.** 고정 줄에는 RAM 범위가 들어 있고, UEFI에서 이 범위는 펌웨어 빌드와 RAM 크기에 따라 달라집니다. 불일치하면 커널이 화면에 아무것도 남기지 않고 멈춥니다. 사유는 커널의 메모리 내 부트 로그에 있으며, 읽는 데 필요한 주소를 로더가 출력합니다. `k0-loader: image at 0x..., dtb at 0x...`입니다.
 7. **부트 서비스 메모리는 쓰지 않지만, 펌웨어가 켜 둔 디바이스가 `ExitBootServices` 뒤에 다른 메모리에 쓰는 것은 막지 못합니다.** K0에는 IOMMU 지원이 없습니다.
-8. **로더가 더한 엔트로피는 실행 내내 메모리의 디바이스 트리에서 읽을 수 있습니다.** `EFI_RNG_PROTOCOL`이 없으면 커널은 펌웨어 디바이스 트리가 담고 온 것만 받습니다.
+8. **로더가 더한 엔트로피는 실행 내내 메모리의 디바이스 트리에서 읽을 수 있습니다.** `EFI_RNG_PROTOCOL`이 없으면 커널은 펌웨어 디바이스 트리가 담고 온 것만 받는데, ACPI로 만든 트리에는 펌웨어 시드가 없으므로 그때는 아무것도 받지 못합니다.
 9. **커널은 UEFI 런타임 서비스를 호출하지 않습니다.** 변수 접근도, 펌웨어를 통한 리셋이나 전원 끄기도 없고, 런타임 영역은 쓰이지 않은 채 남습니다.
 10. **펌웨어가 디바이스 레지스터를 `EfiReservedMemoryType`으로 기술하면**(맵에서 빼거나 MMIO로 표시하는 대신) 로더가 거부합니다. 형식이 잘못된 디스크립터 하나도 맵 전체의 거부를 부릅니다. 둘 다 닫힌 채로 실패합니다.
 11. **블록을 다시 배치하는 경로와 거부할 때 메모리를 푸는 경로는 QEMU에서 실행해 볼 수 없었습니다.**
 12. **`.efi`는 빌드 디렉터리가 달라지면 비트 단위로 재현되지 않습니다.** 로더가 출력하는 내장 커널의 해시는 재현됩니다.
 
-그 밖에, 디바이스 트리가 없는 펌웨어는 거부합니다. EDK2를 쓰는 QEMU는 `-machine acpi=off`일 때만 디바이스 트리를 넘깁니다. ACPI 정적 테이블(MADT, GTDT, SPCR. AML은 읽지 않습니다)을 읽어 디바이스 트리를 만드는 일은 다음 변경으로 계획되어 있으며 코드에는 없습니다.
+13. **지금까지 부팅한 유일한 ACPI 머신은 QEMU virt입니다.** 실제 ACPI 머신, 다른 펌웨어, GICv4, CPU 항목으로 기술된 리디스트리뷰터는 테스트하지 않았습니다.
+14. **SBSA UART와 16550에는 식별 검사가 없습니다.** 레지스터가 더 넓은 16550은 콘솔을 주지 못합니다.
+15. **GICv2 프레임 크기는 가정한 값입니다**(Linux처럼 4 KiB와 8 KiB). 테이블이 크기를 주지 않기 때문입니다.
+16. **테이블 장치가 메모리에 있지 않은지 보는 검사는 로더에만 있습니다.** 커널은 펌웨어 소유 범위를 받지 않습니다.
+17. **예약 타입 메모리에 있는 테이블은 읽지 않습니다.**
+
+그 밖에, 디바이스 트리를 주는 펌웨어는 그것을 쓰며 ACPI는 읽지 않습니다. ACPI만 주는 펌웨어는 위에서 설명한 정적 테이블로만 부팅합니다. 테이블로 표현할 수 없는 것이 있으면 거부하지 않고 콘솔 없이 부팅합니다. 디바이스 트리도 RSDP도 주지 않는 펌웨어는 거부합니다.
+
+## 디바이스 트리 없는 ACPI
+
+이유: EDK2를 쓰는 QEMU는 `-machine acpi=off`일 때만 디바이스 트리를 넘기고, 실제 ARM 펌웨어 대부분은 머신을 ACPI로 기술합니다. 로더는 정적 테이블을 읽어 최소 디바이스 트리를 만들고, 이 트리는 펌웨어 트리와 완전히 같은 경로를 탑니다. UEFI 메모리 맵으로 메모리 계획, 재작성, 커널 자신의 파서로 하는 자가 검사, 디스커버리와 검증, 넘기기입니다. 커널은 바뀌지 않습니다.
+
+읽는 것: RSDP(구성 테이블의 ACPI 2.0 GUID에서), XSDT, MADT, GTDT, SPCR입니다(`crates/k0-efi/src/acpi.rs`). AML은 해석하지 않습니다. 메모리는 ACPI에서 오지 않습니다. 트리는 `crates/k0-efi/src/synth.rs`가 씁니다.
+
+규칙:
+- 테이블은 전체 범위가 메모리인 메모리 맵 디스크립터 하나(타입 1부터 7, 9, 10) 안에 있을 때만 읽습니다. 주소 0은 거부합니다. 길이와 체크섬을 검사합니다. 따라서 예약 타입 메모리에 있는 테이블은 읽을 수 없습니다. 부팅을 거부하며, SPCR이면 콘솔 없이 계속합니다.
+- MADT의 GIC: 분배기 항목 하나. 버전 2는 GICv2, 3과 4는 GICv3, 0은 리디스트리뷰터가 기술되었는지로 정하고, 그 밖의 값은 거부합니다. GICv2 프레임 크기는 테이블에 없으므로 로더는 분배기에 4 KiB, CPU 인터페이스에 8 KiB를 씁니다(Linux가 쓰는 값). GICv3 리디스트리뷰터는 GICR 항목(최대 4개)에서 오고, 없으면 CPU 항목에서 오며, 인접하면 128 KiB 또는 256 KiB 간격으로 병합합니다. 부트 CPU의 항목이 그 안에 있어야 합니다. 프레임은 정렬되어 있어야 하고, 서로 겹치지 않아야 하며, 메모리 맵 기준으로 RAM이나 펌웨어 메모리에 있으면 안 됩니다. 그렇지 않으면 로더가 거부합니다.
+- GTDT의 타이머: 가상 EL1 타이머 인터럽트는 16에서 31이어야 합니다.
+- SPCR의 콘솔(선택): PL011(타입 0x03), SBSA UART(0x0D, 0x0E), 그리고 16550(0x00, 0x01, 0x12)은 8비트 레지스터와 바이트 접근일 때만 받습니다. SPCR이 레지스터 간격을 표현할 수 없기 때문입니다.
+- 거부와 콘솔 없는 부팅의 구분: 잘못된 테이블, GIC, 타이머, 메모리에 있는 장치는 거부합니다(`ACPI tables: <reason>`). 커널에 드라이버가 없는 콘솔, 잘못된 SPCR, 메모리에 있는 콘솔은 콘솔 없는 부팅이 됩니다. 로더는 `k0-loader: device tree built from ACPI tables (MADT, GTDT and SPCR)` 또는 `(MADT and GTDT, no usable SPCR console)`을 출력합니다.
+- 엔트로피: ACPI로 만든 트리에는 펌웨어 시드가 없습니다. 펌웨어에 `EFI_RNG_PROTOCOL`이 있으면 커널이 32바이트를 받고, 없으면 아무것도 받지 못합니다(`k0: entropy dtb=0B`를 로그에 남기고 계속합니다).
+- 로더는 점프 전에 작업 영역도 데이터 캐시에서 비웁니다. `tools/pe-check.py`는 비우기 호출 셋(블록, 작업 영역, 트램폴린)을 요구합니다.
+
+한계: 지금까지 부팅한 유일한 ACPI 머신은 QEMU virt입니다. SBSA UART와 16550에는 식별 검사가 없습니다. 레지스터가 더 넓은 16550은 콘솔을 주지 못합니다. GICv2 프레임 크기는 가정한 값입니다. 테이블 장치가 메모리에 있지 않은지 보는 검사는 커널이 펌웨어 소유 범위를 받지 않으므로 로더에만 있습니다. 커널은 GIC 식별 레지스터와 PL011 식별을 검사합니다. 예약 타입 메모리에 있는 테이블은 읽지 않습니다. UEFI에서의 고정 모드는 여전히 테스트하지 않았습니다. 같은 머신에서 ACPI로 만든 트리와 펌웨어 트리는 QEMU의 GICv3에서 같은 플랫폼 줄을 줍니다.
