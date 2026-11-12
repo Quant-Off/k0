@@ -21,6 +21,18 @@ granule-16k = [
     "k0-sched/granule-16k",
 ]
 
+# 입출력 선택: 기본 빌드에는 입출력 feature가 하나도 없음
+# 고르지 않으면 커널은 UART를 매핑하지도 건드리지도 않고, 모든 출력은 메모리의
+# 부트 로그에만 남음. feature는 더하는 방향으로만 정의하고, `default`에는 넣지
+# 않음(`--no-default-features`로 빌드하는 16K 이미지에서 조용히 빠지지 않게
+# 스크립트와 CI가 항상 명시함). 새 입출력 경로는 처음부터 feature 뒤에 둠
+#   console-pl011  PL011과 SBSA UART 송신 드라이버
+#   console-16550  16550 계열 송신 드라이버(식별 레지스터가 없어 확인 불가)
+#   console        위 둘 다
+console-pl011 = ["k0-arch/console-pl011"]
+console-16550 = ["k0-arch/console-16550"]
+console = ["console-pl011", "console-16550"]
+
 # 커널 크레이트는 외부(third-party) 의존성 0, 워크스페이스 크레이트만 허용
 # 외부가 필요해진 경우: vendored + 해시 고정
 [dependencies]

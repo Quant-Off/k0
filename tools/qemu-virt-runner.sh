@@ -63,6 +63,12 @@ case "$elf" in
 
     "$objcopy" -O binary "$elf" "$img"
 
+    # 콘솔 드라이버 없이 빌드한 커널은 직렬 포트에 아무것도 쓰지 않음. 빈 화면을
+    # 고장으로 오해하지 않게 한 줄 알림(이미지에 들어 있는 줄을 그대로 읽음)
+    if grep -aqF 'k0: console drivers [none]' "$img"; then
+        echo "runner: this kernel has no console driver and prints nothing here (build with --features console to see output)" >&2
+    fi
+
     if [ -n "${K0_IMAGE_TEXT_OFFSET:-}" ]; then
         patched="${elf}.${K0_IMAGE_TEXT_OFFSET}.bin"
         python3 - "$img" "$patched" "$K0_IMAGE_TEXT_OFFSET" <<'PATCH'

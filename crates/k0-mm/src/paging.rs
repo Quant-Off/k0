@@ -599,6 +599,23 @@ pub fn map_device(pa: u64) -> Result<u64, MmuError> {
     Ok(va + (pa - page))
 }
 
+/// 디바이스 창에 매핑돼 있는 물리 페이지를 매핑한 순서대로 알려 주는 함수입니다.
+///
+/// 커널이 디바이스 레지스터를 계속 매핑해 두는 길은 [map_device] 하나뿐이므로,
+/// 여기에 없는 디바이스 페이지는 커널 주소 공간에 남아 있지 않습니다(프로브
+/// 칸은 들여다보는 동안만 살아 있고 [probe_clear]가 지움). 부팅 때 한 줄로
+/// 출력해, 이미지가 어떤 장치에 닿을 수 있는지 로그로 확인할 수 있게 합니다.
+///
+/// # Arguments
+/// `f` - 매핑된 페이지의 물리 주소마다 한 번씩 불림
+pub fn device_pages(mut f: impl FnMut(u64)) {
+    // SAFETY: 부트 코어의 초기화 시퀀스에서만 호출되어 다른 참조가 없고, 읽기만 함
+    let pool = unsafe { &*POOL.0.get() };
+    for &page in &pool.dev_pages[..pool.dev_used] {
+        f(page);
+    }
+}
+
 /// 프로브 칸을 `pa`가 속한 페이지로 돌려 놓는 함수입니다.
 ///
 /// 크기를 모르는 디바이스 구간(GICv3 리디스트리뷰터)을 통째로 매핑하지 않고

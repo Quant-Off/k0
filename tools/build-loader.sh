@@ -14,7 +14,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 elf="${1:-$root/target/aarch64-unknown-none-softfloat/debug/k0-kernel}"
 if [ ! -f "$elf" ]; then
     echo "build-loader: kernel ELF not found: $elf" >&2
-    echo "build-loader: build it first with: cargo build -p k0-kernel --offline" >&2
+    echo "build-loader: build it first with: cargo build -p k0-kernel --features console --offline" >&2
     exit 2
 fi
 elf="$(cd "$(dirname "$elf")" && pwd)/$(basename "$elf")"
@@ -23,6 +23,12 @@ host="$(rustc -vV | sed -n 's/^host: //p')"
 objcopy="$(rustc --print sysroot)/lib/rustlib/${host}/bin/llvm-objcopy"
 img="${elf}.bin"
 "$objcopy" -O binary "$elf" "$img"
+
+# 내장하는 커널이 어떤 입출력으로 빌드됐는지 알림. 콘솔 드라이버가 없는 커널을
+# 내장한 로더는 펌웨어 콘솔에 자기 줄만 내고 그 뒤로 조용하므로, 모르고 만들지
+# 않게 함. 이미지에 들어 있는 줄을 그대로 읽음
+drivers="$(grep -aoE 'k0: console drivers \[[a-z0-9 ]*\]' "$img" | sort -u | tr '\n' ' ')"
+echo "build-loader: embedding a kernel with: ${drivers:-no console driver line (older kernel?)}" >&2
 
 cd "$root"
 set -- build -p k0-loader --offline --target aarch64-unknown-uefi --target-dir target/loader

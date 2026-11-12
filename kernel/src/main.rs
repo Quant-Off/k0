@@ -444,6 +444,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
 
     check_user_wx(&mut con, segs, &hard);
 
+    print_device_pages(&mut con);
     let _ = writeln!(con, "k0: entering root task (el0)");
     // SAFETY: 주소 공간 설치와 컨텍스트 준비가 끝난 발산 지점에서의 이양이고,
     //         tcb_ptr은 부트 윈도우의 루트 TCB 프레임으로 이후 해제되지 않음
@@ -643,35 +644,81 @@ impl core::fmt::Write for Line {
 
 /// 발견한 콘솔을 매핑하고 연결하는 함수입니다.
 ///
-/// 식별 레지스터가 있는 PL011은 쓰기 전에 그 값을 확인합니다. 확인에
-/// 실패하면 콘솔 없이 계속합니다(로그에만 남음).
+/// 이 빌드에 드라이버가 없는 종류는 장치 페이지를 매핑하기 전에 걸러 냅니다.
+/// 식별 레지스터가 있는 PL011은 계속 쓸 매핑을 만들기 전에 프로브 칸으로 그
+/// 값을 확인하므로, 검사에 떨어진 장치는 매핑된 채 남지 않습니다. 어느 쪽이든
+/// 연결하지 못하면 콘솔 없이 계속합니다(로그에만 남음).
+#[cfg(any(feature = "console-pl011", feature = "console-16550"))]
 fn attach_console(con: &mut EarlyCon, c: &k0_boot::Console, counter_hz: u64) {
     use k0_arch::earlycon::Uart;
-    let Ok(va) = k0_mm::map_device(c.base) else {
-        let _ = writeln!(con, "k0: console not mapped");
-        return;
-    };
     let uart = match c.kind {
-        k0_boot::ConsoleKind::Pl011 => {
-            // 식별 레지스터는 4KiB 프레임의 끝에 있음. 선언된 구간이 프레임
-            // 전체일 때만 읽음
-            let framed = c.base % 0x1000 == 0 && c.reg.size >= 0x1000;
-            // SAFETY: 방금 Device로 매핑한 PL011 프레임의 시작 주소
-            if framed && !unsafe { k0_arch::earlycon::pl011_identity_ok(va as usize) } {
-                let _ = writeln!(con, "k0: console is not a pl011, ignored");
-                return;
-            }
-            Uart::Pl011
-        }
-        k0_boot::ConsoleKind::SbsaUart => Uart::Pl011,
+        #[cfg(feature = "console-pl011")]
+        k0_boot::ConsoleKind::Pl011 | k0_boot::ConsoleKind::SbsaUart => Uart::Pl011,
+        #[cfg(feature = "console-16550")]
         k0_boot::ConsoleKind::Ns16550 { reg_shift, io_width } => Uart::Ns16550 {
             shift: reg_shift,
             width: io_width,
         },
+        // 두 드라이버가 다 있는 빌드에서는 닿지 않는 갈래
+        #[allow(unreachable_patterns)]
+        _ => {
+            let _ = writeln!(con, "k0: no console (driver not built in)");
+            return;
+        }
+    };
+    #[cfg(feature = "console-pl011")]
+    if c.kind == k0_boot::ConsoleKind::Pl011 {
+        // 식별 레지스터는 4KiB 프레임의 끝에 있음. 선언된 구간이 프레임
+        // 전체일 때만 읽음
+        let framed = c.base % 0x1000 == 0 && c.reg.size >= 0x1000;
+        if framed {
+            // 프로브 칸으로 들여다보고 곧바로 지움. 검사에 떨어진 장치의 페이지가
+            // 커널 주소 공간에 남지 않게 함
+            let Ok(probe) = k0_mm::probe_map(c.base) else {
+                let _ = writeln!(con, "k0: console not mapped");
+                return;
+            };
+            // SAFETY: 방금 Device로 매핑한 PL011 프레임의 시작 주소
+            let ok = unsafe { k0_arch::earlycon::pl011_identity_ok(probe as usize) };
+            k0_mm::probe_clear();
+            if !ok {
+                let _ = writeln!(con, "k0: console is not a pl011, ignored");
+                return;
+            }
+        }
+    }
+    let Ok(va) = k0_mm::map_device(c.base) else {
+        let _ = writeln!(con, "k0: console not mapped");
+        return;
     };
     // SAFETY: 드라이버가 건드리는 범위가 한 그래뉼 안임을 검증했고(validate),
     //         그 그래뉼을 방금 Device로 매핑함
     unsafe { k0_arch::earlycon::attach(uart, va as usize, counter_hz) };
+}
+
+/// 콘솔 드라이버가 없는 빌드의 연결 함수입니다.
+///
+/// 콘솔을 찾았더라도 장치 페이지를 매핑하지 않고 UART에 접근하지 않습니다.
+/// 출력은 메모리의 부트 로그에만 남습니다.
+#[cfg(not(any(feature = "console-pl011", feature = "console-16550")))]
+fn attach_console(con: &mut EarlyCon, _c: &k0_boot::Console, _counter_hz: u64) {
+    let _ = writeln!(con, "k0: no console (driver not built in)");
+}
+
+/// 커널이 매핑해 둔 디바이스 페이지를 한 줄로 출력하는 함수입니다.
+///
+/// 사용자 공간으로 넘어가기 직전에 부릅니다. 이 뒤로 커널은 디바이스를 더
+/// 매핑하지 않으므로 목록이 곧 이 커널이 닿을 수 있는 장치의 전부입니다.
+/// 콘솔 드라이버가 없는 이미지에서 콘솔 페이지가 여기에 없다는 것을 부팅
+/// 매트릭스가 확인합니다.
+fn print_device_pages(con: &mut EarlyCon) {
+    let _ = write!(con, "k0: device pages [");
+    let mut first = true;
+    k0_mm::device_pages(|page| {
+        let _ = write!(con, "{}{page:#x}", if first { "" } else { " " });
+        first = false;
+    });
+    let _ = writeln!(con, "] of {:#x} bytes", k0_mm::GRANULE);
 }
 
 /// DTB에서 플랫폼을 발견해 검증하고 콘솔을 연결하는 함수입니다.
@@ -690,6 +737,8 @@ fn bring_up_platform(
     bootinfo: &k0_boot::BootInfo,
     image: &Range<u64>,
 ) -> (k0_boot::Platform, u64) {
+    // 거부로 끝나는 부팅에서도 어떤 이미지인지 로그에 남도록 맨 먼저 출력함
+    let _ = writeln!(con, "{}", k0_arch::earlycon::DRIVERS_LINE);
     let off = k0_mm::KERNEL_VA_OFFSET as usize;
     let layout = k0_boot::Layout {
         memory: bootinfo.memory(),

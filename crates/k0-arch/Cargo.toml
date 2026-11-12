@@ -5,5 +5,14 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# 콘솔 UART 송신 드라이버. 기본 빌드에는 어느 것도 없고, 하나도 고르지 않은
+# 커널은 UART를 건드리지 않음(출력은 메모리의 부트 로그에만 남음)
+# feature는 더하는 방향으로만 정의함. 입출력을 끄는 feature는 만들지 않음
+[features]
+# PL011과, 같은 레지스터 배치를 쓰는 SBSA UART
+console-pl011 = []
+# 16550 계열. 읽기만으로 확인할 식별 레지스터가 없음
+console-16550 = []
+
 [dependencies]
 k0-abi = { path = "../k0-abi" }

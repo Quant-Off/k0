@@ -15,8 +15,10 @@ runner = "tools/qemu-virt-runner.sh"
 
 # 빌드 진입점
 # cargo virt -> QEMU virt 빌드 + 부팅
+# 입출력은 선택 기능이므로 콘솔 feature를 붙여야 직렬 포트에 출력이 나옵니다
+# (붙이지 않으면 UART 코드가 없는 조용한 커널이 부팅됨)
 [alias]
-virt = "run -p k0-kernel"
+virt = "run -p k0-kernel --features console"
 
 # vendor 디렉토리에서만 의존성을 해석
 [source.crates-io]

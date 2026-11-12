@@ -20,7 +20,9 @@ use core::arch::asm;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
-use crate::earlycon::{ConsoleOnly, EarlyCon};
+#[cfg(any(feature = "console-pl011", feature = "console-16550"))]
+use crate::earlycon::ConsoleOnly;
+use crate::earlycon::EarlyCon;
 use crate::vectors::Vectors;
 
 /// 인터럽트 경로가 열렸음을 증명하는 typestate 토큰 구조체입니다.
@@ -519,6 +521,8 @@ fn timer_tick() {
     if n <= LOGGED_TICKS {
         let _ = writeln!(EarlyCon, "k0: tick {n}");
     } else {
+        // 콘솔 드라이버가 없는 빌드에는 쓸 곳이 없으므로 서식 작업도 하지 않음
+        #[cfg(any(feature = "console-pl011", feature = "console-16550"))]
         let _ = writeln!(ConsoleOnly, "k0: tick {n}");
     }
     // 1초 주기 재장전 (레벨 인터럽트의 원인 제거도 겸함)
