@@ -52,7 +52,7 @@ $ cargo virt
 | [INTRODUCTION_KR.md](INTRODUCTION_KR.md) | K0가 무엇인지, 지금 동작하는 것과 아직 없는 것, 코드가 있는 곳 |
 | [USAGE_KR.md](USAGE_KR.md) | 준비, 빌드, 실행, 테스트 |
 | [SECURITY_KR.md](SECURITY_KR.md) | 격리 모델, 알려진 어드바이저리, 취약점 신고 |
-| [설계 문서](design/kr/README_KR.md) | 커널의 각 부분이 어떻게 동작하고 왜 그렇게 만들었는지 |
+| [설계 문서](design/kr/README.md) | 커널의 각 부분이 어떻게 동작하고 왜 그렇게 만들었는지 |
 | [CONTRIBUTING_KR.md](CONTRIBUTING_KR.md) | 기여 방법 |
 
 ## 기여

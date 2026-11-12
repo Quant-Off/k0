@@ -2,7 +2,7 @@
 
 <div align="center">
 
-English | [한국어](../kr/README_KR.md)
+English | [한국어](../kr/README.md)
 
 </div>
 

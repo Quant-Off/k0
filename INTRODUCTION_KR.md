@@ -6,7 +6,7 @@
 
 </div>
 
-이 문서는 K0가 무엇인지, 지금 할 수 있는 것과 아직 못 하는 것을 쉬운 말로 설명합니다. 전문 용어는 처음 나올 때 괄호 안에 한 번 적어 두었으니 [SECURITY_KR.md](SECURITY_KR.md)와 [설계 문서](design/kr/README_KR.md)에서 찾아볼 수 있습니다.
+이 문서는 K0가 무엇인지, 지금 할 수 있는 것과 아직 못 하는 것을 쉬운 말로 설명합니다. 전문 용어는 처음 나올 때 괄호 안에 한 번 적어 두었으니 [SECURITY_KR.md](SECURITY_KR.md)와 [설계 문서](design/kr/README.md)에서 찾아볼 수 있습니다.
 
 ## K0는 무엇인가
 
