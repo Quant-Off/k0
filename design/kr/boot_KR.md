@@ -6,7 +6,9 @@
 
 다음 그림은 진입부터 루트 태스크까지의 단계를 순서대로 보여 줍니다.
 
-![진입 규약, 페이즈 0 boot.S, kernel_init, kernel_main, 이양을 거쳐 루트 태스크가 EL0에서 실행되기까지의 단계](../../assets/boot-stages_KR.svg)
+<p align="center">
+  <img src="../../assets/boot-stages_KR.svg" alt="진입 규약, 페이즈 0 boot.S, kernel_init, kernel_main, 이양을 거쳐 루트 태스크가 EL0에서 실행되기까지의 단계">
+</p>
 
 ## 진입 규약
 
@@ -141,7 +143,9 @@ K0에서 입력 및 출력은 선택 사항입니다. 커널 크레이트(`k0-ke
 
 콘솔 출력은 콘솔 feature를 포함해 빌드한 이미지에만 있습니다(옵트인). 입력은 어떤 이미지에도 없습니다. 다음 그림은 빌드에 포함한 feature에 따라 출력이 닿는 곳을 보여 줍니다.
 
-![콘솔 feature 없이 빌드한 이미지는 메모리의 부트 로그에만 출력하고, 콘솔 feature로 빌드한 이미지는 해당 UART에도 출력합니다](../../assets/console-features_KR.svg)
+<p align="center">
+  <img src="../../assets/console-features_KR.svg" alt="콘솔 feature 없이 빌드한 이미지는 메모리의 부트 로그에만 출력하고, 콘솔 feature로 빌드한 이미지는 해당 UART에도 출력합니다">
+</p>
 
 다음 표는 `k0-kernel`의 콘솔 feature와 각 feature가 추가하는 것을 정리한 것입니다.
 

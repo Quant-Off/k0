@@ -37,7 +37,9 @@ K0에서 입력 및 출력은 선택 사항입니다. 커널 크레이트의 Car
 
 콘솔 출력은 콘솔 feature를 포함해 빌드한 이미지에만 있습니다. 입력은 어떤 이미지에도 없습니다. `cargo virt`는 `cargo run -p k0-kernel --features console`의 별칭이므로 항상 콘솔을 포함합니다. 다음 그림은 빌드에 포함한 feature에 따라 출력이 어디에 닿는지 보여 줍니다.
 
-![빌드에 포함한 feature에 따른 출력 경로. feature 없이 빌드한 이미지는 메모리의 부트 로그에만 출력하고, 콘솔 feature로 빌드한 이미지는 해당 UART에도 출력합니다.](assets/console-features_KR.svg)
+<p align="center">
+  <img src="assets/console-features_KR.svg" alt="빌드에 포함한 feature에 따른 출력 경로. feature 없이 빌드한 이미지는 메모리의 부트 로그에만 출력하고, 콘솔 feature로 빌드한 이미지는 해당 UART에도 출력합니다.">
+</p>
 
 다음 표는 feature와 각 feature가 더하는 것입니다.
 
@@ -155,7 +157,9 @@ $ tools/boot-log.py <커널 ELF> <적재 주소> <QEMU 모니터 소켓>
 
 UEFI는 많은 컴퓨터에서 펌웨어가 프로그램을 시작하는 표준 방식입니다. 펌웨어가 디스크에서 확장자가 `.efi`인 프로그램 파일을 읽어 실행하고, 그 프로그램에 기계의 구성을 알려 줍니다. 로더는 기계를 준비한 다음 다른 프로그램을 시작하는 일 하나만 하는 작은 프로그램입니다. K0에는 자체 UEFI 로더(`crates/k0-efi`와 `loader/`)가 있습니다. 로더가 커널을 안에 품고 있으므로, 펌웨어에는 `.efi` 파일 하나만 있으면 됩니다. 커널은 바뀌지 않으며 UEFI 없이 부팅할 때와 똑같이 시작합니다. 다음 그림은 UEFI 부팅의 경로를 보여 줍니다.
 
-![UEFI 부팅의 경로. 커널을 빌드하고, tools/build-loader.sh가 커널을 로더 .efi 파일에 포함하고, 펌웨어가 로더를 시작하고, 로더가 커널을 시작합니다.](assets/usage-uefi-path_KR.svg)
+<p align="center">
+  <img src="assets/usage-uefi-path_KR.svg" alt="UEFI 부팅의 경로. 커널을 빌드하고, tools/build-loader.sh가 커널을 로더 .efi 파일에 포함하고, 펌웨어가 로더를 시작하고, 로더가 커널을 시작합니다.">
+</p>
 
 다음과 같이 입력하면 커널과 로더를 빌드하고 QEMU에서 실행할 수 있습니다.
 
@@ -247,7 +251,9 @@ $ K0_QEMU_ESP=1 tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/de
 
 자동 테스트에는 도구 세 가지가 있습니다. 다음 그림은 도구가 서로 어떻게 이어지는지 보여 줍니다.
 
-![테스트 도구의 관계. tools/host-test.sh는 내 컴퓨터에서 단위 테스트와 퍼징을 실행합니다. tools/qemu-boot-test.sh는 한 구성을 부팅하고 직렬 포트 또는 게스트 메모리의 부트 로그에서 판정합니다. tools/boot-matrix.sh는 지원하는 구성을 전부 부팅합니다.](assets/usage-test-flow_KR.svg)
+<p align="center">
+  <img src="assets/usage-test-flow_KR.svg" alt="테스트 도구의 관계. tools/host-test.sh는 내 컴퓨터에서 단위 테스트와 퍼징을 실행합니다. tools/qemu-boot-test.sh는 한 구성을 부팅하고 직렬 포트 또는 게스트 메모리의 부트 로그에서 판정합니다. tools/boot-matrix.sh는 지원하는 구성을 전부 부팅합니다.">
+</p>
 
 다음과 같이 차례로 실행할 수 있습니다.
 

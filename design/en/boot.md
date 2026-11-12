@@ -10,7 +10,9 @@ This note follows K0 from the first instruction to the moment the root task runs
 
 The following figure shows the stages from the entry to the root task, in order.
 
-![The stages from the entry contract through phase 0 boot.S, kernel_init, kernel_main and the handoff to the root task running at EL0](../../assets/boot-stages.svg)
+<p align="center">
+  <img src="../../assets/boot-stages.svg" alt="The stages from the entry contract through phase 0 boot.S, kernel_init, kernel_main and the handoff to the root task running at EL0">
+</p>
 
 ## The entry contract
 
@@ -147,7 +149,9 @@ Input and output are optional in K0. You can select them with Cargo features of 
 
 Console output exists only in an image built with a console feature (opt-in). No image has input. The following figure shows where the output goes, depending on the features in the build.
 
-![An image built without a console feature writes only to the boot log in memory, and an image built with a console feature also writes to the matching UART](../../assets/console-features.svg)
+<p align="center">
+  <img src="../../assets/console-features.svg" alt="An image built without a console feature writes only to the boot log in memory, and an image built with a console feature also writes to the matching UART">
+</p>
 
 The following table lists the console features of `k0-kernel` and what each one adds.
 

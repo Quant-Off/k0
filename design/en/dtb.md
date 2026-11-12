@@ -20,7 +20,9 @@ Under UEFI, the DTB is not the firmware's own: the UEFI loader writes it from th
 
 The following figure shows how the DTB becomes a validated platform.
 
-![A DTB blob passes dtb_span, parse, discover, the memory map check and the hardware identity checks to become a validated platform, or is refused](../../assets/dtb-discovery.svg)
+<p align="center">
+  <img src="../../assets/dtb-discovery.svg" alt="A DTB blob passes dtb_span, parse, discover, the memory map check and the hardware identity checks to become a validated platform, or is refused">
+</p>
 
 ## Why the DTB is not trusted
 

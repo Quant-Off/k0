@@ -55,7 +55,9 @@ A sender that has to wait in the queue keeps the badge of its send in its TCB (`
 
 All four take an `Endpoint` capability in `x0` and flags in `x1`. The only flag is `NONBLOCK`: if the other side is not ready, the call returns `WOULD_BLOCK` instead of waiting. There are no timeouts, so `NONBLOCK` is the only way not to wait. The following figure shows the order of `CALL` and `REPLY_RECV` in the case where the server waits in `RECV` first.
 
-![When the server is already waiting in RECV, the CALL of the client delivers the message and the badge to the server and blocks the client in BlockedReply, and REPLY_RECV of the server wakes the client with the one-time reply right](../../assets/ipc-call-sequence.svg)
+<p align="center">
+  <img src="../../assets/ipc-call-sequence.svg" alt="When the server is already waiting in RECV, the CALL of the client delivers the message and the badge to the server and blocks the client in BlockedReply, and REPLY_RECV of the server wakes the client with the one-time reply right">
+</p>
 
 The four calls work as follows.
 

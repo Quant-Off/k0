@@ -37,7 +37,9 @@ Input and output are optional in K0. You can select them with Cargo features of 
 
 Console output exists only in an image built with a console feature. No image has input. `cargo virt` is an alias for `cargo run -p k0-kernel --features console`, so it always includes the console. The following picture shows where the output goes, depending on the features in the build.
 
-![Output path by console feature. An image built without a feature writes only to the boot log in memory, and an image built with a console feature also writes to the matching UART.](assets/console-features.svg)
+<p align="center">
+  <img src="assets/console-features.svg" alt="Output path by console feature. An image built without a feature writes only to the boot log in memory, and an image built with a console feature also writes to the matching UART.">
+</p>
 
 The following table lists the features and what each one adds.
 
@@ -155,7 +157,9 @@ The load address is the physical address where the image was loaded. On QEMU `vi
 
 UEFI is the standard way for firmware to start a program on many computers. The firmware loads a program file with the ending `.efi` from a disk, runs it, and describes the machine to it. A loader is a small program that does this one job: it prepares the machine and then starts another program. K0 has its own UEFI loader, `crates/k0-efi` and `loader/`. It carries the kernel inside itself, so the one `.efi` file is all the firmware needs. The kernel does not change and boots the same way as without UEFI. The following picture shows the path of a UEFI boot.
 
-![Path of a UEFI boot. The kernel is built, tools/build-loader.sh embeds it into a loader .efi file, the firmware starts the loader, and the loader starts the kernel.](assets/usage-uefi-path.svg)
+<p align="center">
+  <img src="assets/usage-uefi-path.svg" alt="Path of a UEFI boot. The kernel is built, tools/build-loader.sh embeds it into a loader .efi file, the firmware starts the loader, and the loader starts the kernel.">
+</p>
 
 You can build the kernel and the loader and run them in QEMU as follows:
 
@@ -247,7 +251,9 @@ What was tested:
 
 Automatic testing has three tools. The following picture shows how they relate.
 
-![How the test tools relate. tools/host-test.sh runs unit tests and fuzzing on your computer. tools/qemu-boot-test.sh boots one configuration and judges it from the serial port or from the boot log in guest memory. tools/boot-matrix.sh boots every supported configuration.](assets/usage-test-flow.svg)
+<p align="center">
+  <img src="assets/usage-test-flow.svg" alt="How the test tools relate. tools/host-test.sh runs unit tests and fuzzing on your computer. tools/qemu-boot-test.sh boots one configuration and judges it from the serial port or from the boot log in guest memory. tools/boot-matrix.sh boots every supported configuration.">
+</p>
 
 You can run them one after the other as follows:
 

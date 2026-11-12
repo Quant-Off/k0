@@ -187,7 +187,9 @@ untyped에서 파생된 것이 모두 사라지면 메모리가 그 untyped로 �
 
 모든 케이퍼빌리티는 전위 순서의 이중 연결 리스트 하나에 엮이고, 슬롯마다 깊이를 저장합니다. 슬롯의 자손은 바로 뒤에 이어지면서 더 깊은 슬롯들이므로, 트리나 할당 없이 찾을 수 있습니다. 다음 그림은 부팅 케이퍼빌리티에서 시작해 `RETYPE`과 `CAP_COPY`로 리스트가 자라는 모습과, `CAP_REVOKE` 및 `CAP_DELETE`의 역할을 보여 줍니다.
 
-![부팅 시 만들어진 Untyped에서 RETYPE으로 오브젝트가 생기고, CAP_COPY로 같거나 적은 권한의 복사본이 파생 리스트에 자식으로 들어가며, CAP_REVOKE와 CAP_DELETE가 자손을 제거하는 모습](../../assets/capability-derivation_KR.svg)
+<p align="center">
+  <img src="../../assets/capability-derivation_KR.svg" alt="부팅 시 만들어진 Untyped에서 RETYPE으로 오브젝트가 생기고, CAP_COPY로 같거나 적은 권한의 복사본이 파생 리스트에 자식으로 들어가며, CAP_REVOKE와 CAP_DELETE가 자손을 제거하는 모습">
+</p>
 
 각 연산은 리스트를 다음과 같이 바꿉니다.
 

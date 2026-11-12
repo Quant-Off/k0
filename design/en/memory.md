@@ -12,7 +12,9 @@ This note describes how the kernel maps itself: the translation setup, the stati
 
 AArch64 splits the virtual address space between two table roots. The following figure shows the two halves and the permissions of each region.
 
-![The kernel's view of memory: the identity map in TTBR0_EL1, and the RAM alias, the kernel image and the device window in TTBR1_EL1, with the permissions of each region](../../assets/kernel-address-space.svg)
+<p align="center">
+  <img src="../../assets/kernel-address-space.svg" alt="The kernel&#x27;s view of memory: the identity map in TTBR0_EL1, and the RAM alias, the kernel image and the device window in TTBR1_EL1, with the permissions of each region">
+</p>
 
 - `TTBR0_EL1` covers the **lower half**. During boot it holds an identity map, where each virtual address equals its physical address. The kernel needs it to keep running at the moment the MMU turns on. Later, `TTBR0_EL1` is switched to the root task's tables and the identity map disappears.
 - `TTBR1_EL1` covers the **upper half**. This half consists of the following three regions.

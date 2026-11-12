@@ -79,7 +79,9 @@ Run **all three** before you open a pull request. If you change the boot path, a
 
 The following picture shows the path of a change from the build to the review.
 
-![The path of a change: build, host tests, QEMU boot test and boot matrix come first, then the pull request, CI and the CLA check, and finally review by a maintainer](assets/contribution-flow.svg)
+<p align="center">
+  <img src="assets/contribution-flow.svg" alt="The path of a change: build, host tests, QEMU boot test and boot matrix come first, then the pull request, CI and the CLA check, and finally review by a maintainer">
+</p>
 
 You can run the three as follows:
 

@@ -41,7 +41,9 @@ UEFI 펌웨어는 커널이 기대하는 Linux arm64 부트 프로토콜을 따�
 
 `loader/src/load.rs`의 `efi_main`이 다음 단계를 실행합니다. `ExitBootServices` 전의 실패는 거부입니다("거부" 참고). 다음 그림은 단계의 순서를 보여 줍니다.
 
-![UEFI 로더가 내장 커널 확인부터 커널로 점프하기까지 실행하는 순서](../../assets/uefi-loader-flow_KR.svg)
+<p align="center">
+  <img src="../../assets/uefi-loader-flow_KR.svg" alt="UEFI 로더가 내장 커널 확인부터 커널로 점프하기까지 실행하는 순서">
+</p>
 
 각 단계는 다음과 같습니다.
 
@@ -57,7 +59,9 @@ UEFI 펌웨어는 커널이 기대하는 Linux arm64 부트 프로토콜을 따�
 
 5단계에서 할당하는 블록은 다음과 같이 배치됩니다.
 
-![로더가 할당하는 블록 하나에 DTB 버퍼, 커널 이미지, 부트 윈도우 자리가 차례로 놓인 배치](../../assets/uefi-block-layout_KR.svg)
+<p align="center">
+  <img src="../../assets/uefi-block-layout_KR.svg" alt="로더가 할당하는 블록 하나에 DTB 버퍼, 커널 이미지, 부트 윈도우 자리가 차례로 놓인 배치">
+</p>
 
 Homebrew EDK2를 사용하는 QEMU 11.1.3에서 한 번 실행하면 다음 순서로 출력됩니다.
 

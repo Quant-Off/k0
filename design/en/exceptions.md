@@ -10,7 +10,9 @@ After the handoff, **kernel code runs only in response to an exception**. This n
 
 The following figure shows the path that the kernel follows for each kind of exception.
 
-![The handling paths of a system call from EL0, a fault at EL0, an interrupt and an exception in the kernel](../../assets/exception-paths.svg)
+<p align="center">
+  <img src="../../assets/exception-paths.svg" alt="The handling paths of a system call from EL0, a fault at EL0, an interrupt and an exception in the kernel">
+</p>
 
 ## Mechanism and policy
 

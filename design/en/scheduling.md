@@ -43,7 +43,9 @@ The kernel reaches a TCB only through its own alias, and it is never mapped at E
 
 The following figure shows the task states and the transitions between them. The meaning of each state is in the table after it.
 
-![Inactive becomes Stopped through TCB_CONFIGURE and Ready through TCB_RESUME, round robin moves a task between Running and Ready, a task blocks in IPC and becomes Ready when released, and teardown makes it Dead from any state](../../assets/scheduling-states.svg)
+<p align="center">
+  <img src="../../assets/scheduling-states.svg" alt="Inactive becomes Stopped through TCB_CONFIGURE and Ready through TCB_RESUME, round robin moves a task between Running and Ready, a task blocks in IPC and becomes Ready when released, and teardown makes it Dead from any state">
+</p>
 
 | State | Meaning |
 | --- | --- |

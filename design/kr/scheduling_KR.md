@@ -43,7 +43,9 @@
 
 다음 그림은 태스크 상태와 전환을 보여 줍니다. 각 상태의 의미는 그다음 표에 있습니다.
 
-![Inactive에서 TCB_CONFIGURE로 Stopped, TCB_RESUME으로 Ready가 되고, 라운드 로빈으로 Running과 Ready를 오가며, IPC에서 블록되었다가 해제되면 Ready가 되고, 어느 상태에서든 정리되면 Dead가 되는 모습](../../assets/scheduling-states_KR.svg)
+<p align="center">
+  <img src="../../assets/scheduling-states_KR.svg" alt="Inactive에서 TCB_CONFIGURE로 Stopped, TCB_RESUME으로 Ready가 되고, 라운드 로빈으로 Running과 Ready를 오가며, IPC에서 블록되었다가 해제되면 Ready가 되고, 어느 상태에서든 정리되면 Dead가 되는 모습">
+</p>
 
 | 상태 | 의미 |
 | --- | --- |

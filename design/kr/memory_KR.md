@@ -12,7 +12,9 @@
 
 AArch64는 가상 주소 공간을 두 개의 테이블 루트로 나눕니다. 다음 그림은 두 절반과 각 영역의 권한을 나타냅니다.
 
-![커널이 보는 메모리: TTBR0_EL1의 identity 매핑, TTBR1_EL1의 RAM 별칭, 커널 이미지, 디바이스 창과 각 영역의 권한](../../assets/kernel-address-space_KR.svg)
+<p align="center">
+  <img src="../../assets/kernel-address-space_KR.svg" alt="커널이 보는 메모리: TTBR0_EL1의 identity 매핑, TTBR1_EL1의 RAM 별칭, 커널 이미지, 디바이스 창과 각 영역의 권한">
+</p>
 
 - `TTBR0_EL1`은 **아래쪽 절반**을 담당합니다. 부팅 중에는 각 가상 주소가 물리 주소와 같은 identity 매핑을 담고 있습니다. MMU가 켜지는 순간 커널이 계속 실행되려면 이 매핑이 필요합니다. 이후 `TTBR0_EL1`은 루트 태스크의 테이블로 전환되고 identity 매핑은 사라집니다.
 - `TTBR1_EL1`은 **위쪽 절반**을 담당합니다. 이 절반은 다음 세 영역으로 이루어집니다.

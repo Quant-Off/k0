@@ -10,7 +10,9 @@
 
 다음 그림은 이 문서가 다루는 보호를 문서의 절 구분대로 묶어서 나타냅니다.
 
-![부트 하드닝의 구성: PAC 키 파생, PAC, BTI, PAN, EL0 노출 차단, 루트 태스크 무결성, 패닉과 fatal. 현재 동작하는 것, 기반 작업인 것, 켜지 않은 것으로 구분](../../assets/hardening-layers_KR.svg)
+<p align="center">
+  <img src="../../assets/hardening-layers_KR.svg" alt="부트 하드닝의 구성: PAC 키 파생, PAC, BTI, PAN, EL0 노출 차단, 루트 태스크 무결성, 패닉과 fatal. 현재 동작하는 것, 기반 작업인 것, 켜지 않은 것으로 구분">
+</p>
 
 > [!NOTE]
 > 이 기능 중 일부는 아직 실제 보호가 아니라 기반 작업입니다. 각 절에서 어느 쪽인지 밝힙니다.

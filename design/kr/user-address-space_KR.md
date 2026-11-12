@@ -18,7 +18,9 @@
 
 다음 그림은 태스크의 사용자 주소 공간을 나타냅니다. 매핑할 수 있는 프레임과 권한, 부트 때의 배치, EL0가 닿을 수 없는 영역, 프레임 단위 W^X를 담고 있습니다.
 
-![태스크의 사용자 주소 공간: 매핑할 수 있는 프레임과 권한, 부트 시 배치, EL0가 닿을 수 없는 영역, 프레임 단위 W^X](../../assets/user-address-space_KR.svg)
+<p align="center">
+  <img src="../../assets/user-address-space_KR.svg" alt="태스크의 사용자 주소 공간: 매핑할 수 있는 프레임과 권한, 부트 시 배치, EL0가 닿을 수 없는 영역, 프레임 단위 W^X">
+</p>
 
 `spawn_root`는 무결성 검사를 이미 통과한 루트 태스크 이미지([hardening_KR.md](hardening_KR.md) 참고)를 받아 다음을 수행합니다.
 

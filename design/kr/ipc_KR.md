@@ -55,7 +55,9 @@ K0의 IPC는 seL4 방식의 **동기 랑데부**입니다. 메시지는 레지�
 
 네 호출 모두 `x0`에 `Endpoint` 케이퍼빌리티를, `x1`에 플래그를 받습니다. 플래그는 `NONBLOCK` 하나뿐이며, 상대방이 준비되지 않았을 때 기다리지 않고 `WOULD_BLOCK`을 반환합니다. 타임아웃이 없으므로 `NONBLOCK`이 기다리지 않는 유일한 방법입니다. 다음 그림은 서버가 먼저 `RECV`로 기다리는 경우에 `CALL`과 `REPLY_RECV`가 오가는 순서를 보여 줍니다.
 
-![서버가 RECV로 기다리는 경우, 클라이언트의 CALL은 메시지와 배지를 서버에 전달하고 클라이언트를 BlockedReply로 블록하며, 서버의 REPLY_RECV는 1회성 응답 자격으로 클라이언트를 깨우는 순서](../../assets/ipc-call-sequence_KR.svg)
+<p align="center">
+  <img src="../../assets/ipc-call-sequence_KR.svg" alt="서버가 RECV로 기다리는 경우, 클라이언트의 CALL은 메시지와 배지를 서버에 전달하고 클라이언트를 BlockedReply로 블록하며, 서버의 REPLY_RECV는 1회성 응답 자격으로 클라이언트를 깨우는 순서">
+</p>
 
 네 호출은 각각 다음과 같이 동작합니다.
 

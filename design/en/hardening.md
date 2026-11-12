@@ -10,7 +10,9 @@ This note covers the CPU security features K0 turns on at boot, what each one pr
 
 The following figure groups the protections the way the sections of this note do.
 
-![The parts of boot hardening: PAC key derivation, PAC, BTI, PAN, closing EL0 exposure, root task integrity, and panics with fatal stops, marked as working today, groundwork, or not enabled](../../assets/hardening-layers.svg)
+<p align="center">
+  <img src="../../assets/hardening-layers.svg" alt="The parts of boot hardening: PAC key derivation, PAC, BTI, PAN, closing EL0 exposure, root task integrity, and panics with fatal stops, marked as working today, groundwork, or not enabled">
+</p>
 
 > [!NOTE]
 > Some of these features are groundwork, not working protection yet. Each section says which is which.

@@ -198,7 +198,9 @@ Isolation gaps in `v0.1.0` and earlier commits, and the availability and resourc
 
 The following picture shows how this document divides what is in scope, what is out of scope and what is not trusted.
 
-![The scope and trust boundaries of K0: the boot chain before the kernel entry point is out of scope, the loader, the kernel and the root task are in scope, and the device tree, confined tasks and k0: lines printed by tasks are not trusted](assets/security-boundaries.svg)
+<p align="center">
+  <img src="assets/security-boundaries.svg" alt="The scope and trust boundaries of K0: the boot chain before the kernel entry point is out of scope, the loader, the kernel and the root task are in scope, and the device tree, confined tasks and k0: lines printed by tasks are not trusted">
+</p>
 
 **In scope**: everything under `kernel/`, `crates/` (including `crates/k0-efi`), `loader/` and `userspace/root-task/`. The UEFI loader is part of the boot chain, but it is code of this repository, so its handling of the memory map, the device tree and the kernel image is in scope.
 

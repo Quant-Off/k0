@@ -41,7 +41,9 @@ The loader embeds the kernel Image in its own PE file. It does not load a kernel
 
 `efi_main` in `loader/src/load.rs` runs the following steps. Before `ExitBootServices` a failure is a refusal (see "Refusals"). The following figure shows the order of the steps.
 
-![The order of the UEFI loader's steps, from checking the embedded kernel to the jump into the kernel](../../assets/uefi-loader-flow.svg)
+<p align="center">
+  <img src="../../assets/uefi-loader-flow.svg" alt="The order of the UEFI loader&#x27;s steps, from checking the embedded kernel to the jump into the kernel">
+</p>
 
 The steps are as follows.
 
@@ -57,7 +59,9 @@ The steps are as follows.
 
 The block that step 5 allocates is laid out as follows.
 
-![The layout of the one block the loader allocates: DTB buffer, kernel image and room for the boot window](../../assets/uefi-block-layout.svg)
+<p align="center">
+  <img src="../../assets/uefi-block-layout.svg" alt="The layout of the one block the loader allocates: DTB buffer, kernel image and room for the boot window">
+</p>
 
 A run on QEMU 11.1.3 with EDK2 prints, in order:
 

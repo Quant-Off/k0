@@ -18,7 +18,9 @@ The window is listed as **reserved** when the root CNode is filled, so none of i
 
 The following figure shows the user address space of a task. It covers the frames a task can map and with which rights, the layout at boot, what EL0 can never reach, and W^X per frame.
 
-![The user address space of a task: the frames it can map and with which rights, the layout at boot, what EL0 can never reach, and W^X per frame](../../assets/user-address-space.svg)
+<p align="center">
+  <img src="../../assets/user-address-space.svg" alt="The user address space of a task: the frames it can map and with which rights, the layout at boot, what EL0 can never reach, and W^X per frame">
+</p>
 
 `spawn_root` takes the root task image that has already passed its integrity check (see [hardening.md](hardening.md)) and does the following.
 

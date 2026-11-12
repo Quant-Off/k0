@@ -20,7 +20,9 @@ UEFI에서는 DTB가 펌웨어가 준 그대로가 아닙니다. UEFI 로더가 
 
 다음 그림은 DTB가 검증된 플랫폼이 되기까지의 흐름을 보여 줍니다.
 
-![DTB 블롭이 dtb_span, parse, discover, 메모리 맵 대조, 하드웨어 식별 확인을 거쳐 검증된 플랫폼이 되거나 거부되는 과정](../../assets/dtb-discovery_KR.svg)
+<p align="center">
+  <img src="../../assets/dtb-discovery_KR.svg" alt="DTB 블롭이 dtb_span, parse, discover, 메모리 맵 대조, 하드웨어 식별 확인을 거쳐 검증된 플랫폼이 되거나 거부되는 과정">
+</p>
 
 ## DTB를 신뢰하지 않는 이유
 

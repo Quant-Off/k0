@@ -10,7 +10,9 @@
 
 다음 그림은 예외 종류별로 커널이 어떤 경로를 따르는지 보여 줍니다.
 
-![EL0의 시스템 콜, EL0의 폴트, 인터럽트, 커널 안의 예외가 각각 따르는 처리 경로](../../assets/exception-paths_KR.svg)
+<p align="center">
+  <img src="../../assets/exception-paths_KR.svg" alt="EL0의 시스템 콜, EL0의 폴트, 인터럽트, 커널 안의 예외가 각각 따르는 처리 경로">
+</p>
 
 ## 메커니즘과 정책
 

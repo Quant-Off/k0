@@ -16,7 +16,9 @@ The most important of those jobs is keeping programs apart. Think of a dormitory
 
 The following picture shows how K0 is started and which parts it consists of.
 
-![How K0 fits together. A boot loader or the UEFI loader starts the kernel at EL1. Above it at EL0, the root task and other tasks make requests to the kernel through system calls.](assets/architecture.svg)
+<p align="center">
+  <img src="assets/architecture.svg" alt="How K0 fits together. A boot loader or the UEFI loader starts the kernel at EL1. Above it at EL0, the root task and other tasks make requests to the kernel through system calls.">
+</p>
 
 ## Words used here
 
@@ -146,7 +148,9 @@ The root task tests every item above with self-tests on every boot.
 
 The following picture summarizes what each evidence tier means.
 
-![Evidence tiers. Tier 1 is checked automatically by CI and tier 2 was run by hand, and only these two may be called supported. Tier 3 is expected by the contract but has never been booted.](assets/evidence-tiers.svg)
+<p align="center">
+  <img src="assets/evidence-tiers.svg" alt="Evidence tiers. Tier 1 is checked automatically by CI and tier 2 was run by hand, and only these two may be called supported. Tier 3 is expected by the contract but has never been booted.">
+</p>
 
 > [!NOTE]
 > Only the first two tiers may be called supported.

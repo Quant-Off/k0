@@ -187,7 +187,9 @@ Memory goes back to its untyped capability when everything derived from it is go
 
 All capabilities are linked into one doubly linked list in preorder, and every slot stores its depth. The descendants of a slot are the slots that follow it directly with a greater depth, so finding them needs no tree and no allocation. The following figure shows how the list grows from a boot capability through `RETYPE` and `CAP_COPY`, and what `CAP_REVOKE` and `CAP_DELETE` do.
 
-![An Untyped capability made at boot yields objects through RETYPE, CAP_COPY adds copies with the same or fewer rights as children in the derivation list, and CAP_REVOKE and CAP_DELETE remove descendants](../../assets/capability-derivation.svg)
+<p align="center">
+  <img src="../../assets/capability-derivation.svg" alt="An Untyped capability made at boot yields objects through RETYPE, CAP_COPY adds copies with the same or fewer rights as children in the derivation list, and CAP_REVOKE and CAP_DELETE remove descendants">
+</p>
 
 Each operation changes the list as follows:
 
