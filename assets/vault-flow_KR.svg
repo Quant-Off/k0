@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" width="960" height="470" role="img" aria-labelledby="title desc">
+  <title id="title">볼트, 클라이언트, 루트 태스크</title>
+  <desc id="desc">루트 태스크가 볼트, 클라이언트, 엔드포인트, 프레임 두 개를 만듭니다. 클라이언트는 송신 전용 배지 엔드포인트 케이퍼빌리티만 가집니다. 요청 프레임은 클라이언트가 읽기·쓰기, 볼트가 읽기 전용입니다. 응답 프레임은 볼트가 읽기·쓰기, 클라이언트가 읽기 전용입니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="469" rx="10"/>
+
+  <rect class="ext" x="310" y="24" width="300" height="60" rx="8"/>
+  <text class="t h" x="480" y="50" text-anchor="middle">루트 태스크</text>
+  <text class="t s" x="480" y="71" text-anchor="middle">모두 만듦, 격리의 바깥</text>
+  <line class="off" x1="380" y1="86" x2="130" y2="168" marker-end="url(#arrow)"/>
+  <line class="off" x1="580" y1="86" x2="810" y2="168" marker-end="url(#arrow)"/>
+  <text class="t s" x="215" y="118" text-anchor="middle">만들고 케이퍼빌리티 전달</text>
+  <text class="t s" x="735" y="118" text-anchor="middle">만들고 케이퍼빌리티 전달</text>
+
+  <rect class="user" x="30" y="170" width="200" height="270" rx="8"/>
+  <text class="t h" x="130" y="198" text-anchor="middle">볼트 태스크</text>
+  <text class="t s" x="130" y="220" text-anchor="middle">키를 가짐</text>
+  <rect class="user" x="690" y="170" width="240" height="270" rx="8"/>
+  <text class="t h" x="810" y="198" text-anchor="middle">클라이언트 태스크</text>
+  <text class="t s" x="810" y="220" text-anchor="middle">송신 전용 배지 엔드포인트 케이퍼빌리티</text>
+
+  <rect class="kernel" x="390" y="170" width="180" height="44" rx="8"/>
+  <text class="t h" x="480" y="198" text-anchor="middle">엔드포인트</text>
+  <line class="line" x1="688" y1="192" x2="572" y2="192" marker-end="url(#arrow)"/>
+  <text class="t s" x="630" y="184" text-anchor="middle">CALL</text>
+  <line class="line" x1="388" y1="192" x2="232" y2="192" marker-end="url(#arrow)"/>
+  <text class="t s" x="310" y="184" text-anchor="middle">RECV, REPLY_RECV</text>
+  <text class="t s" x="480" y="238" text-anchor="middle">MR0..MR3, 배지는 커널이 전달</text>
+
+  <rect class="box" x="390" y="290" width="180" height="44" rx="8"/>
+  <text class="t h" x="480" y="318" text-anchor="middle">요청 프레임</text>
+  <line class="line" x1="688" y1="312" x2="572" y2="312" marker-end="url(#arrow)"/>
+  <text class="t s" x="630" y="304" text-anchor="middle">읽기·쓰기</text>
+  <line class="line" x1="388" y1="312" x2="232" y2="312" marker-end="url(#arrow)"/>
+  <text class="t s" x="310" y="304" text-anchor="middle">읽기 전용</text>
+
+  <rect class="box" x="390" y="370" width="180" height="44" rx="8"/>
+  <text class="t h" x="480" y="398" text-anchor="middle">응답 프레임</text>
+  <line class="line" x1="232" y1="392" x2="388" y2="392" marker-end="url(#arrow)"/>
+  <text class="t s" x="310" y="384" text-anchor="middle">읽기·쓰기</text>
+  <line class="line" x1="572" y1="392" x2="688" y2="392" marker-end="url(#arrow)"/>
+  <text class="t s" x="630" y="384" text-anchor="middle">읽기 전용</text>
+</svg>

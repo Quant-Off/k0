@@ -13,7 +13,7 @@ K0 is a small operating system kernel for 64-bit ARM (AArch64) computers. It is 
 >
 > So far it has been booted on several QEMU machines, directly and through UEFI firmware (EDK2, also under UEFI Secure Boot). It has also been booted on real Apple cores as a hypervisor guest. It has not been booted on any real board or on any firmware other than EDK2.
 >
-> Today K0 is a research platform for the isolation core of high-security systems. It boots and checks its own security properties, but it does no useful work of its own yet.
+> Today K0 is a research platform for the isolation core of high-security systems. It boots and checks its own security properties, but by default it does no useful work of its own yet.
 
 ## Security status
 
@@ -33,6 +33,7 @@ K0 is a small operating system kernel for 64-bit ARM (AArch64) computers. It is 
 - **Wiped before reuse**: memory is filled with zeros every time it is handed out again.
 - **Write or run, never both**: no memory is writable and executable at the same time. The flip side is that no new code can become executable after boot, so programs cannot load new code.
 - **Distrust of boot input**: the hardware description handed over at boot is checked as if an attacker wrote it.
+- **Optional signing oracle**: a build option adds a task that signs messages for other tasks and never gives out its key. It is off by default, the Ed25519 implementation is unvalidated, and it keeps one key in memory only. See [INTRODUCTION.md](INTRODUCTION.md).
 
 The first program checks these properties with self-tests on every boot.
 

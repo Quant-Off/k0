@@ -183,6 +183,7 @@ When the CPU has FEAT_PAN, the kernel runs with PAN set, so any EL1 access throu
 ## Known gaps
 
 - **Availability**: isolation does not cover availability. The kernel no longer halts when every task is blocked, and the registry and the kernel page tables can no longer be used up by a task (see [memory.md](memory.md) and [SECURITY.md](../../SECURITY.md)). A task that waits without a timeout can still wait forever, and there is no priority and no CPU budget. A task that holds untyped memory can create many address spaces and tasks and dilute the share of the others.
+- **No data segment in confined tasks**: a confined task maps only the image text and read-only data, so it has no writable static data. The key vault relies on this rule: the vault runs in an address space of its own, and its key lives on its own stack and in frames it was given (see [vault.md](vault.md)).
 - **New executable code**: no new executable code can be loaded after boot, by design (per-frame W^X). A confined task can only run code from the root task image.
 - **Hardware ASIDs**: there are no hardware ASIDs, so every `TTBR0` switch and every unmap flushes the whole TLB. This costs performance, not safety.
 - **Kernel alias**: every frame mapped into user space is also mapped read-write in the kernel alias, because the kernel zeroed it there during retype.

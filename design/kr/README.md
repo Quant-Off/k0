@@ -25,5 +25,6 @@
 | [exceptions_KR.md](exceptions_KR.md) | 벡터 테이블, 사용자 상태 저장, 시스템 콜 디스패치, 폴트 격리 |
 | [scheduling_KR.md](scheduling_KR.md) | TCB와 거기에 묶인 CNode, 주소 공간, 태스크 생성과 정리, 라운드 로빈 스케줄러, 타이머 선점 |
 | [ipc_KR.md](ipc_KR.md) | 엔드포인트와 배지, `SEND`, `RECV`, `CALL`, `REPLY_RECV`, 1회성 응답 자격, 엔드포인트가 삭제될 때 대기 중인 태스크의 처리 |
+| [vault_KR.md](vault_KR.md) | 서명 오라클: 볼트 태스크와 프레임, `CALL` 프로토콜과 nonce, 고정된 배지 정책, 프로바이더 경계, 부팅 시드와 지우기, feature, 테스트, 알려진 공백 |
 
 모든 노트는 "**알려진 공백**" 절로 끝납니다. 열려 있는 보안 어드바이저리는 [SECURITY_KR.md](../../SECURITY_KR.md)에 정리되어 있습니다.

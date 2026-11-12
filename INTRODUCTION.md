@@ -46,7 +46,7 @@ K0 is meant to become the isolation core of high-security systems. The targets a
 - **Research base**: formal verification and certification research
 
 > [!NOTE]
-> None of these works yet. Today K0 is a research platform: it boots and checks its own security properties, but it does no useful work of its own yet.
+> Only a first small step exists: the optional signing oracle described under "What works today". The rest does not work yet. Today K0 is a research platform: it boots and checks its own security properties, but by default it does no useful work of its own yet.
 
 ## What works today
 
@@ -144,8 +144,14 @@ These features only add and are not in `default`, so **every build command must 
 
   No memory is ever writable in one place and executable in another.
 - **Checking the first program**: the root task is built into the kernel image, and at every boot its fingerprint (a SHA-256 hash) is checked again. This catches corruption, but it does not prove who made the image the way a signature would. [SECURITY.md](SECURITY.md) explains why under "Scope".
+- **Signing oracle (optional)**: this is the first service that does a job for other programs. A digital signature is a short value that proves a message was approved by whoever holds a secret key, and anyone with the matching public key can check it. A signing oracle is a program that signs messages for others and never shows its secret key. In K0 a vault task holds one key. Client tasks send it messages through a mailbox (IPC) and get back a signature or the public key, but never the key. The vault runs in its own address space, so no task other than the root task can map its memory.
+  - **Off by default**: two Cargo features of the kernel crate add it. `vault` adds the service, with no signing algorithm: every signing request answers "unsupported". `vault-ed25519` adds the algorithm. For example: `cargo build -p k0-kernel --features console,vault-ed25519`. The vault's code is part of the root task image, which is checked at boot like before, and nothing is loaded after boot. The default image has no vault code and no crypto code.
+  - **Algorithm**: Ed25519 (PureEdDSA with SHA-512, as in FIPS 186-5 and RFC 8032). The implementation is the vendored crate `ed25519-dalek` 2.2.0 and has no validation of any kind. The key does not come from an approved random bit generator.
+  - **Who may do what**: the rules are fixed at build time and depend on the tag (badge) that the kernel puts on each message, so a client cannot forge it. The root task is the admin: it can ask for the status, create the key once (INIT) and wipe it (ZEROIZE), but it cannot sign. A signer can ask for the status and the public key and can sign. A reader can ask for the status and the public key only. A call without a known tag is refused. All signers share the one key, so a signature does not tell which client asked.
+  - **The key**: the vault makes the key only if the boot seed holds enough randomness (at least 32 bytes from the device tree `rng-seed` or 256 bits from the processor's random number instruction RNDR). Otherwise it refuses. Before the kernel starts the root task, it zeroes the seed bytes in the device tree it received, and the boot log says `k0: dtb seeds wiped <n>B`. The seed is as good as its inputs and no better. Copies that the firmware or the UEFI loader keep are not wiped.
+  - **Self-test**: every image built with `vault` runs a test in the root task, which plays the admin and several clients. It shows that an unbadged call is refused, that the key is made once, that the admin cannot sign, that a signer gets a signature that checks and fails for a changed message, that a reader cannot sign, that a client that writes its read-only reply memory or reads another client's request is stopped by a fault, and that signing is refused after ZEROIZE. It ends with `root: oracle tests pass`. The test clients run one after another in one address space, so it shows the isolation between the vault and a client, not between clients.
 
-The root task tests every item above with self-tests on every boot.
+The root task tests every item above with self-tests on every boot. The signing oracle is tested in the images built with it.
 
 ## Where it has run
 
@@ -179,6 +185,7 @@ The following picture summarizes what each evidence tier means.
     - Starting from a FAT drive instead of `-kernel`
     - A static check of the loader's PE file form and of the order of its cache and MMU instructions (`tools/pe-check.py`)
   - **ACPI rows**: the rows `uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k` and `uefi-acpi-rng` boot the default QEMU machine with ACPI on, without a device tree, through the tables.
+  - **Signing oracle rows**: `vault`, `vault-max` (with RNDR), `vault-el2`, `vault-16k`, `vault-no-alg` (no signing algorithm) and `hvf-vault` (only on a Mac with HVF) boot images with the oracle and judge its self-test. The static row `vault-symbols` checks that the default image has no vault or crypto code.
   - **Refusal checks**: two refusals are read from the serial log.
     - The 16 KiB image on a CPU without 16 KiB pages
     - A loader whose embedded kernel has one flipped byte
@@ -245,8 +252,10 @@ What it does not stop:
   - The kernel cannot be interrupted while it handles a system call. A long call, such as taking back a key to a large block of memory, delays every other task and every timeout.
   - A fatal error inside the kernel, or an error from the hardware that the kernel cannot attribute to one task, still stops the whole machine.
   - The kernel part of the boot log can be filled up by crash and exit lines.
+  - The signing oracle is no exception: clients share one mailbox to the vault and must give a timeout on every call, or a stuck vault holds them up.
 - **Tasks that share a key ring and an address space**: such tasks are not isolated from each other. They behave like threads, parts of one program that share everything.
 - **Control of a task**: whoever holds the key to a task, to its key ring or to its address space controls that task.
+- **The root task**: it builds every task, key ring and address space, so it is trusted and is outside the isolation. It could read the memory of the signing oracle and with it the key. "No task other than the root task can map the vault's memory" is all that holds.
 
 ## Not there yet
 
@@ -263,7 +272,14 @@ Missing features:
 - **Device access**: programs cannot access hardware devices (device memory and interrupts).
 - **Loading new executable code after boot**: this is the flip side of the write-or-run rule. Executable memory exists only for the root task image, so a confined task runs code from that image.
 - **Multi-level key lookup and ASIDs**: multi-level key lookup and hardware address space tags (ASIDs) do not exist. Today every switch to another address space empties the processor's cache of memory map lookups (the TLB).
-- **Signature checking**: checking a digital signature (Ed25519) once the root task ships separately from the kernel.
+- **More for the signing oracle**: the oracle has the following limits today.
+  - No persistence: the key lives only in memory and is gone after a reboot or ZEROIZE.
+  - One key only, and no way to import or export a key.
+  - No post-quantum (PQC) algorithm yet.
+  - No operator input: nobody can type a command to it, because no input of any kind exists.
+  - No validation of the implementation, no analysis of timing or cache side channels of the crypto crate on this kernel, and no random bit generator beyond the boot seed.
+  - It has been run only in QEMU (TCG and HVF).
+- **Signature checking**: checking a digital signature (Ed25519) once the root task ships separately from the kernel. The signing oracle makes signatures but does not use them to check the root task.
 - **Real boards and other virtualization**: K0 has not been booted on real boards, or on KVM, Firecracker, Cloud Hypervisor or crosvm (tier 3 above).
 - **Entry from EL3 and ACPI beyond the static tables**: these two are missing.
   - UEFI with a firmware device tree, and UEFI with ACPI static tables only (the loader builds a minimal device tree), exist (see above).
@@ -308,7 +324,8 @@ In the following table, you can find the contents of each path in the repository
 | `crates/k0-sched` | Round-robin scheduler |
 | `crates/k0-ipc` | Synchronous messages |
 | `loader/` | The UEFI application (`k0-loader`, target `aarch64-unknown-uefi`) that embeds a built kernel image and starts it: UEFI calls, the flow, and the final cache flush, MMU off and jump |
-| `userspace/root-task` | The first program and its self-tests |
+| `userspace/root-task` | The first program and its self-tests, and the wiring and self-test of the signing oracle (`oracle.rs`) |
+| `userspace/k0-vault` | The signing oracle service: protocol and fixed policy, the request handling, and the boundary around the crypto crate |
 | `tools/` | QEMU runner (also for `.efi` files), boot test, boot matrix, boot log reader, host test, loader build (`build-loader.sh`), PE and instruction order check (`pe-check.py`) |
 | `ci/` | The CI build and test image (`Dockerfile`) and the threat model (`threat_model.md`) |
-| `vendor/` | Third-party crates kept in the repository (`sha2` and its dependencies) |
+| `vendor/` | Third-party crates kept in the repository (`sha2`, `ed25519-dalek` and their dependencies) |

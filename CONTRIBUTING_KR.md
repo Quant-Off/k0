@@ -61,6 +61,7 @@ $ cargo virt   # 콘솔이 있는 범용 이미지를 빌드해 QEMU virt에서 
 $ cargo build -p k0-kernel --features console --offline   # 콘솔이 있는 범용 4 KiB 이미지만 빌드
 $ cargo build -p k0-kernel --offline --no-default-features --features granule-16k,console --target-dir target/g16   # 콘솔이 있는 16 KiB 이미지
 $ cargo build -p k0-kernel --offline --target-dir target/quiet   # 콘솔 없는 이미지
+$ cargo build -p k0-kernel --features console,vault-ed25519 --offline --target-dir target/vault   # 서명 오라클이 있는 이미지
 $ tools/build-loader.sh   # 빌드한 커널을 UEFI 로더에 포함하고 .efi 경로를 출력
 ```
 
@@ -93,9 +94,11 @@ $ cargo build -p k0-kernel --features console --offline
 $ tools/qemu-boot-test.sh   # QEMU 부팅과 자가 테스트 확인
 ```
 
-`tools/host-test.sh`는 `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi`의 테스트를 어느 호스트에서나 실행합니다(AArch64 호스트에서 250개, 그 밖에서 164개). `k0-mm` 테스트는 AArch64 인라인 어셈블리를 포함하기 때문에 AArch64 호스트(Apple Silicon 또는 Linux arm64)에서만 실행되며, 스크립트가 4 KiB와 16 KiB 그래뉼 두 구성으로 모두 돌립니다.
+`tools/host-test.sh`는 `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi`, `k0-vault`의 테스트를 어느 호스트에서나 실행합니다(AArch64 호스트에서 276개, 그 밖에서 190개). `k0-vault`는 알고리즘 feature `vault-ed25519`를 포함한 경우와 포함하지 않은 경우로 두 번 실행하며, 각각 13개와 7개입니다. `k0-mm` 테스트는 AArch64 인라인 어셈블리를 포함하기 때문에 AArch64 호스트(Apple Silicon 또는 Linux arm64)에서만 실행되며, 스크립트가 4 KiB와 16 KiB 그래뉼 두 구성으로 모두 돌립니다.
 
 `tools/qemu-boot-test.sh`는 디버그 커널을 부팅하고 부팅 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 표식이 하나라도 나오면 실패하고, 루트 태스크가 `root: sched tests pass`를 출력하면 곧바로 QEMU를 종료합니다. 통과 줄 외에도 `k0: untyped ` 줄보다 앞의 `k0: kernel reserve `, `root: teardown tests pass` 뒤의 `k0: idle (waiting for a timeout)`와 `root: timeout tests pass`, `root: revocation tests pass` 뒤의 `root: kernel reserve tests pass`를 기대합니다. `k0: all tasks`로 시작하는 줄은 모두 실패입니다. `root: teardown tests pass`와 `root: timeout tests pass` 사이의 타이머 틱 줄도 세어 4개 이상을 요구하는데, EL0에는 시계가 없어서 이것이 타임아웃의 하한을 확인하는 방법이기 때문입니다. 타임아웃 테스트는 실제 틱을 기다리므로 부팅 한 번이 이전보다 약 4초 더 걸립니다. 느린 환경에서는 `K0_BOOT_TIMEOUT`(초)을 늘려 주세요. 직렬 포트를 읽기 때문에 콘솔 드라이버가 있는 이미지가 필요합니다. 콘솔 없는 이미지를 시험하려면 [USAGE_KR.md](USAGE_KR.md#콘솔-없는-이미지-시험)의 "콘솔 없는 이미지 시험"에 설명된 `K0_BOOT_MEMLOG`, `K0_BOOT_SERIAL=empty`, `K0_BOOT_CONSOLE_PAGE`를 사용하세요.
+
+서명 오라클이 있는 이미지(`vault` 또는 `vault-ed25519`)는 일부러 일으키는 폴트가 두 번 더 있어 `k0: task fault` 줄이 6개가 아니라 8개이므로 `K0_BOOT_FAULTS=8`이 필요하고, `root: oracle tests pass`를 `K0_BOOT_REQUIRE`로 요구하세요. 부팅 매트릭스에는 이를 위한 행 `vault`, `vault-max`, `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault`와 정적 검사 `vault-symbols`가 있으며, 행렬은 HVF가 있는 Mac에서 61행, CI에서 51행입니다. 행의 내용은 [USAGE_KR.md](USAGE_KR.md)에 있습니다.
 
 기본 QEMU CPU 모델(`cortex-a72`)에는 PAC, PAN, RNDR이 없습니다. 이 경로까지 검증하려면 QEMU의 `max` 모델로 부팅하고 해당 로그 줄을 필수로 지정하세요. 커널 경로 뒤의 인자는 그대로 QEMU에 전달됩니다. 다음과 같이 입력할 수 있습니다.
 
@@ -125,6 +128,7 @@ $ tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.
 | `k0-abi` 상수와 공유 레이아웃 | 있음 | 간접적으로 |
 | `k0-cap` untyped 부트스트랩과 retype | 있음 | 있음 |
 | `k0-boot` DTB 파서, PAC 키 파생, 루트 태스크 이미지 | 있음, 퍼징 포함 | 있음 |
+| `k0-vault` 요청 상태 기계, 프로토콜, 정책, 프로바이더 경계 | 있음, `vault-ed25519` 포함과 미포함 | 있음, `vault`를 포함해 빌드한 이미지에서 `test_oracle`과 부팅 매트릭스의 `vault*` 행으로 |
 | `k0-efi` UEFI 메모리 맵에서의 메모리 계획, DTB 재작성, 독립 검증, ACPI 테이블 읽기와 트리 합성 | 있음, 퍼징 포함 | 있음, 부팅 매트릭스의 `uefi-*` 행으로 |
 | `loader` (UEFI 애플리케이션: 펌웨어 호출, 캐시 비우기, MMU 끄기, 점프) | 없음 | 있음, `uefi-*` 행과 정적 검사 `tools/pe-check.py`로 |
 | `k0-mm` 페이지 테이블과 W^X 속성 | AArch64 호스트에서 있음 | 있음 |
@@ -182,6 +186,8 @@ $ docker run --rm --network none k0-ci tools/boot-matrix.sh
 - **커널 밖에서 온 입력**: 전부 적대적으로 취급합니다. DTB와 모든 시스템 콜 인자가 여기에 해당합니다. 검사 산술을 사용하고, 역참조 전에 검증합니다.
 - **W^X**: 어느 예외 레벨에서든 쓰기 가능하면서 실행 가능한 매핑은 없습니다.
 - **새 입력 또는 출력 경로**: 처음부터 Cargo feature 뒤에 둡니다. feature는 I/O를 더하기만 하며 `default`에 추가하지 않습니다. 지원하는 조합마다 부팅 매트릭스(`tools/boot-matrix.sh`)에 행을 두고, 스크립트와 `virt` 별칭과 CI는 feature를 직접 적습니다. feature 없이 빌드한 이미지에는 그 코드가 없어야 하며 장치를 매핑하거나 건드려서도 안 됩니다.
+- **격리된 태스크의 코드**: 볼트처럼 격리된 태스크에서 도는 코드는 가변 정적 변수와 할당을 사용하지 않습니다. 상태는 자기 스택이나 받은 프레임에 둡니다.
+- **새 알고리즘**: 새 알고리즘은 자기만의 Cargo feature 뒤에 두며, 이 feature는 그 알고리즘이 속한 서비스의 feature를 포함합니다. feature 없이 빌드한 이미지에는 그 코드가 없어야 합니다. 부팅 매트릭스에 행을 두고, 볼트 이미지에 코드를 더한다면 정적 검사 `vault-symbols`도 확장합니다.
 - **테스트**: 동작을 바꾸면 테스트를 함께 추가합니다. 순수 로직은 호스트 단위 테스트로, 시스템 콜 동작은 루트 태스크 자가 테스트로 검증합니다.
 - **코드 주석**: 이 저장소의 코드 주석은 한국어로 작성합니다. 기여자는 영어로 작성해도 되고, 병합할 때 메인테이너가 번역할 수 있습니다.
 
@@ -190,7 +196,7 @@ $ docker run --rm --network none k0-ci tools/boot-matrix.sh
 - 커밋 하나에는 논리적 변경 하나만 담습니다. 리뷰어가 커밋을 하나씩 따로 읽을 수 있어야 합니다.
 - 제목은 짧고 평이하게 작성합니다. 한국어와 영어 모두 괜찮습니다. `feat:`나 `fix:` 같은 접두어는 사용하지 않습니다.
 - 풀 리퀘스트에는 무엇을, 왜 바꿨고, 어떻게 테스트했는지 적고, 관련 이슈가 있으면 연결합니다.
-- **CI를 통과해야 합니다**. CI는 4 KiB 이미지, 16 KiB 이미지, UEFI 로더를 빌드하고, x86-64와 AArch64에서 호스트 테스트를 돌리고, QEMU로 부팅 매트릭스(`tools/boot-matrix.sh`)를 UEFI 로더를 거치는 행과 콘솔 없는 이미지의 행까지 포함해 실행합니다.
+- **CI를 통과해야 합니다**. CI는 4 KiB 이미지, 16 KiB 이미지, UEFI 로더를 빌드하고, x86-64와 AArch64에서 호스트 테스트를 돌리고, QEMU로 부팅 매트릭스(`tools/boot-matrix.sh`)를 UEFI 로더를 거치는 행, 콘솔 없는 이미지의 행, 서명 오라클이 있는 이미지의 행까지 포함해 실행합니다.
 
 ## AI 보조 기여
 

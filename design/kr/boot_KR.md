@@ -104,16 +104,18 @@ $ cargo build -p k0-kernel --offline --no-default-features --features granule-16
 | `k0: console drivers [...]` | 플랫폼 기동의 첫 줄이며, 나중에 플랫폼이 거부되더라도 출력됩니다. 이 이미지에 들어 있는 콘솔 드라이버를 알려 줍니다("선택적 콘솔 출력" 참고). |
 | `k0: platform ...` | `bring_up_platform`이 DTB에서 콘솔, 인터럽트 컨트롤러, 타이머 인터럽트를 찾아 불변인 플랫폼 기술서 하나를 만듭니다. 디바이스 페이지를 매핑하기 전에 기술서를 메모리 맵과 대조합니다. RAM은 2^47 아래여야 하고, 커널 이미지와 DTB는 선언된 메모리 안에 있어야 하며, 그래뉼 단위로 넓힌 디바이스 구간은 메모리나 예약 구간과 겹치거나 CPU의 물리 주소 폭(`k0_mm::pa_bits`)을 넘으면 안 됩니다. 고정 모드에서는 이어서 이 줄을 기대값과 비교합니다. 그 뒤에야 콘솔을 연결합니다. 이 종류의 콘솔 드라이버가 있는 이미지는 콘솔을 매핑하고 연결하며, 이때 버퍼에 쌓인 로그가 재생됩니다. 드라이버가 없는 이미지는 아무것도 매핑하지 않고 `k0: no console (driver not built in)`을 출력합니다. 플랫폼이 거부되더라도 콘솔만으로 대조를 통과하면(그리고 이미지가 고정 모드가 아니고 드라이버가 있으면) 사유가 보이도록 콘솔을 먼저 연결합니다. 콘솔이 없으면 `k0: no console (...)`이 이유를 알려 줍니다. [dtb_KR.md](dtb_KR.md)를 참고하세요. |
 | `k0: root task integrity ok (...)` | 내장 루트 태스크 이미지를 다시 해시하고 빌드 시점에 고정된 해시와 비교합니다. |
-| `k0: entropy ...`, `k0: pac=... bti=... pan=...` | PAC 키를 파생해 적재하고 키 워드를 부트 스택에서 지우며, PAN을 켜고, 카운터·디버그·PMU에 대한 EL0 접근을 끕니다. [hardening_KR.md](hardening_KR.md)를 참고하세요. |
+| `k0: entropy ...`, `k0: pac=... bti=... pan=...` | PAC 키를 파생해 적재하고 키 워드를 부트 스택에서 지웁니다. 루트 태스크에 넘길 32바이트 시드도 여기서 PAC 키와 독립적으로 파생하여 이양까지 보관합니다. PAN을 켜고, 카운터·디버그·PMU에 대한 EL0 접근을 끕니다. [hardening_KR.md](hardening_KR.md)를 참고하세요. |
 | `k0: irq on (timer 1s)` | `setup_irq`가 필요한 인터럽트 컨트롤러 페이지만 매핑합니다. GICv3는 리디스트리뷰터 프레임을 하나씩 들여다보며 부트 CPU의 프레임을 찾은 뒤, 그 프레임과 SGI 프레임만 매핑합니다. 드라이버는 GIC 식별 레지스터가 DTB의 설명과 맞는지 확인합니다. EL1 가상 타이머는 플랫폼 기술서의 인터럽트 번호로 설정합니다. IRQ와 SError의 마스크를 해제합니다. |
 | `k0: kernel table pool N/40` | 2 MiB 부트 프레임 윈도우를 고르고 매핑한 뒤, 사용 중인 커널 페이지 테이블 수를 출력합니다(예: QEMU virt에서 `16/40`). 40개짜리 정적 풀은 부트 중에만 사용합니다. |
 | `k0: root task loaded (entry ...)` | 루트 태스크를 윈도우의 프레임에 복사하고, 윈도우에 루트 TCB를 만들고, 주소 공간을 만듭니다. 커널은 사용자 루트 테이블의 물리 주소를 출력하지 않습니다. 이후 이 주소 공간을 주소 공간 등록부에 올립니다. [user-address-space_KR.md](user-address-space_KR.md)를 참고하세요. |
 | `k0: memory <base> + <size> not handed out (<reason>)`(일어날 때만), `k0: kernel reserve <T> tables + <E> address space entries = <B> bytes in <N> ranges` | `reserve_kernel_share`가 untyped 케이퍼빌리티가 만들어지기 전에 비어 있는 물리 범위마다 커널 몫을 떼어 냅니다("untyped 메모리에서 커널 몫 떼어 내기" 참고). 자기 몫을 담지 못하는 범위는 넘기지 않으며, 이때 커널은 첫 번째 종류의 줄에 이유를 출력합니다. 두 번째 줄은 한 번 출력됩니다. 예를 들어 512 MiB, 4 KiB 그래뉼의 QEMU virt에서는 `k0: kernel reserve 262 tables + 130130 address space entries = 0x206000 bytes in 3 ranges`입니다. |
 | `k0: untyped ...`, `k0: root cnode ready (N caps, N untyped, N image frames, N slots)` | 루트 CNode(윈도우 안의 오브젝트이며 슬롯은 `ROOT_CNODE_SLOTS` = 512개, 로그에도 그렇게 나옵니다)를 채웁니다. 슬롯 1은 루트 TCB, 2는 루트 주소 공간, 3은 콘솔, 4는 루트 CNode 자신이고, 이어서 넘기기로 한 비어 있는 물리 범위마다 untyped 케이퍼빌리티, 루트 태스크 이미지의 매핑된 그래뉼마다 Frame 케이퍼빌리티 하나(text는 R과 X, 읽기 전용 데이터는 R, 데이터는 R과 W)가 들어갑니다. 마지막으로 루트 태스크를 다른 태스크와 똑같이 자신의 CNode와 주소 공간에 묶습니다. 두 케이퍼빌리티의 복사본이 TCB에 들어갑니다. [capabilities_KR.md](capabilities_KR.md)를 참고하세요. |
-| `k0: bootinfo page ready` | 케이퍼빌리티 목록을 읽기 전용 bootinfo 페이지에 기록합니다. 헤더와 슬롯마다 하나의 디스크립터이며, 이미지 Frame마다 VA, 크기, 권한이 들어갑니다. |
+| `k0: bootinfo page ready` | 케이퍼빌리티 목록을 읽기 전용 bootinfo 페이지(레이아웃 버전 3)에 기록합니다. 헤더와 슬롯마다 하나의 디스크립터이며, 이미지 Frame마다 VA, 크기, 권한이 들어갑니다. 이 페이지에는 부트 시드가 들어 있지 않습니다. |
 | `k0: user w^x checks pass` | `TTBR0`가 사용자 테이블을 가리키고, identity 매핑은 사라졌으며, 사용자 매핑을 EL0와 EL1 양쪽에서 검사합니다. |
+| `k0: dtb seeds wiped <n>B` | 이제 DTB는 필요 없으므로 커널이 그 안의 `rng-seed`와 `kaslr-seed` 바이트를 0으로 지웁니다(읽기 전용 별칭을 쓰는 동안만 읽기·쓰기로 바꿈). 지운 바이트를 다시 읽어 확인하고, 커널이 가진 자기 사본도 지웁니다. QEMU virt에서는 `40B`입니다. 다시 읽은 값이 0이 아니면 줄은 `k0: WARNING dtb seeds not wiped`가 됩니다. [hardening_KR.md](hardening_KR.md)를 참고하세요. |
 | `k0: device pages [...] of 0x1000 bytes` | 커널이 매핑한 채로 두는 모든 디바이스 페이지입니다. 이 줄 뒤에 커널은 더 이상 디바이스를 매핑하지 않습니다. |
-| `k0: entering root task (el0)` | `k0_sched::handoff`가 EL0로 진입합니다. |
+| `k0: entering root task (el0)` | `k0_sched::handoff`가 EL0로 진입합니다. 부트 시드는 루트 태스크의 진입 레지스터 `x0`부터 `x3`으로 전달되고, `x4`는 `rng-seed` 바이트가 몇 개 들어갔는지와 `RNDR`이 들어갔는지를 알립니다. 이 줄 직후에 커널은 살아 있는 프레임 아래의 부트 스택을 0으로 채웁니다. |
+| `root: boot seed from rng-seed bytes 0x... and rndr` 또는 `... without rndr` | 커널이 아니라 루트 태스크가 초기에 출력하는 줄입니다. bootinfo 버전을 확인한 뒤 시드 재료가 어디서 왔는지를 출력하며, 시드 자체는 출력하지 않습니다. |
 
 ### 부트 프레임 윈도우 고르기
 
@@ -140,6 +142,8 @@ $ cargo build -p k0-kernel --offline --no-default-features --features granule-16
 이 단계는 **부팅을 거부하지 않습니다**. 최악의 경우 메모리가 넘겨지지 않고 로그 한 줄이 그 사실을 알립니다. 오버헤드는 4 KiB 그래뉼에서 RAM의 약 0.2 %, 16 KiB 그래뉼에서 약 0.05 %입니다. 루트 태스크의 주소 공간은 루트 테이블이 부트 윈도우에 있으며 전용 등록부 항목 하나를 사용합니다.
 
 ### 이양 이후
+
+루트 태스크는 레지스터 `x0`부터 `x3`에 부트 시드를, `x4`에 시드 정보 워드를 담고 시작합니다. 이 값은 저장된 컨텍스트에 있으며, 루트 태스크가 처음 커널에 들어올 때 그 시점의 자기 레지스터로 덮입니다. 스택에 있던 커널의 시드 사본은 그 전에 0으로 지웠고, 위 표에서 설명한 스택 지우기는 최선의 노력입니다. `kernel_main`의 살아 있는 프레임은 지울 수 없기 때문입니다. [hardening_KR.md](hardening_KR.md)를 참고하세요.
 
 `handoff`는 루트 태스크를 실행 중인 태스크로 기록하고, 벡터 코드가 루트 태스크의 저장된 컨텍스트를 가리키게 합니다. 이어서 `enter_user`가 모든 예외를 마스크(`DAIFSet`)하고, 커널 스택을 꼭대기로 되감은 뒤, 이후의 모든 복귀가 사용하는 것과 같은 경로로 EL0에 복귀합니다. **마스크를 먼저 하는 이유**는 이 경로가 `eret` 전에 `ELR_EL1`과 `SPSR_EL1`을 기록하기 때문입니다. 부트 경로는 이미 타이머를 언마스크했으므로, 그 사이에 인터럽트가 들어오면 두 레지스터가 EL1 값으로 덮입니다. 이때부터 커널 코드는 예외에 대한 응답으로만 실행됩니다. 시스템 콜, 폴트, 타이머 인터럽트가 그 예외입니다. 이 경로는 [exceptions_KR.md](exceptions_KR.md)에서 설명합니다.
 

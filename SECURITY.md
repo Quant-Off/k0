@@ -47,7 +47,7 @@ Treat every task as fully trusted in those versions.
 
 ### The current `main` branch (unreleased)
 
-The current `main` branch contains task isolation. No release or tag contains it yet, and its system call ABI is incompatible with `v0.1.0` (bootinfo layout version 2).
+The current `main` branch contains task isolation. No release or tag contains it yet, and its system call ABI is incompatible with `v0.1.0` (bootinfo layout version 3).
 
 A confined task has the following properties:
 
@@ -75,11 +75,11 @@ What is still NOT provided on `main`:
 - **Executable code**: new executable code cannot be loaded after boot, so a confined task runs code from the root task image.
 - **Supported scope**: only the evidence tiers in [INTRODUCTION.md](INTRODUCTION.md) count as supported. Real boards, KVM and other hypervisors, the 16550 console driver, and processors with `HCR_EL2.E2H` fixed to 1 have never been booted.
 - **Device tree**: the device tree is not trusted, but it now supplies device addresses. A wrong or hostile device tree can point the console at another device. The kernel limits this: it checks the platform descriptor against the memory map, checks the identification registers of the GIC and the PL011 (the PL011 through a temporary probe mapping, so a device that fails the check is not left mapped; no such register exists for a 16550 or an SBSA UART, so those have no such check), maps a device page only after validation, bounds every console wait, and offers a pinned build (`K0_PIN`) that refuses a different platform. The pinned build compares values that come from the device tree, so it does not stop a hostile boot chain.
-- **Device tree address**: the address of the device tree cannot be checked before the first read. The boot loader passes it in `x0`, and the kernel has no memory map until it has read that blob. The kernel refuses a null or misaligned address, an address at or above 2^47 and a range that overlaps the kernel image. It then maps the address as read-only normal memory and reads eight bytes. It reads further, up to 2 MiB, only if those bytes look like a device tree header. A boot loader that passes the address of a device therefore makes the kernel read device registers as if they were memory, and reading some registers has side effects. The mapping is cacheable, so the processor may fetch more of that page than the eight bytes the kernel asks for. The later check that the device tree lies inside declared memory uses the memory map from the same blob. The kernel never writes through this mapping.
+- **Device tree address**: the address of the device tree cannot be checked before the first read. The boot loader passes it in `x0`, and the kernel has no memory map until it has read that blob. The kernel refuses a null or misaligned address, an address at or above 2^47 and a range that overlaps the kernel image. It then maps the address as read-only normal memory and reads eight bytes. It reads further, up to 2 MiB, only if those bytes look like a device tree header. A boot loader that passes the address of a device therefore makes the kernel read device registers as if they were memory, and reading some registers has side effects. The mapping is cacheable, so the processor may fetch more of that page than the eight bytes the kernel asks for. The later check that the device tree lies inside declared memory uses the memory map from the same blob. The only write through this mapping happens once, after the blob was parsed and validated: right before the kernel enters the root task, it zeroes the `rng-seed` and `kaslr-seed` values (see "Boot seed and seed wipe" under "The signing oracle"). A second `/chosen` node is refused.
 - **Source of output**: kernel output and task output share one boot log, and in an image built with a console driver also one console. A line does not say who wrote it. A task that holds a `Console` capability can print a line that starts with `k0:`. The kernel replaces control bytes and limits how much of the boot log task output may use, but nothing that reads the console or the log, including `tools/qemu-boot-test.sh`, can treat a `k0:` line printed after `k0: entering root task (el0)` as written by the kernel. This includes the `k0: console drivers [...]` line (see "Optional console output").
 - **Trap to EL2**: isolation covers confidentiality and integrity, not availability. A trap to EL2 after the kernel has stepped down to EL1 parks the whole machine by design.
 - **Entry at EL2**: entry at EL2 relies on the firmware contract that Linux also uses: an EL3 firmware must enable the fine-grained-trap and HCRX controls when those features exist.
-- **Root task**: the root task is still trusted and holds the initial `Untyped` capabilities, and `write_bootinfo` still exposes their physical addresses to it.
+- **Root task**: the root task is still trusted and holds the initial `Untyped` capabilities, and `write_bootinfo` still exposes their physical addresses to it. In an image with the signing oracle it also builds the vault and could read the vault's memory (see "The signing oracle").
 
 > [!WARNING]
 > Even on `main`, treat running untrusted code as experimental. The availability limits above still apply.
@@ -104,7 +104,7 @@ Limits and residual risks of the loader:
 5. QEMU cannot test the cache flush and MMU-off sequence: TCG has no caches, and HVF did not expose a missing flush either. It rests on the architecture rules, on the sequence Linux used when it entered the kernel with the MMU off, and on `tools/pe-check.py`, which checks that the instructions and both flush calls are present, not that they are right on real hardware.
 6. A pinned build (`K0_PIN`) under UEFI is untested. The pin line includes the RAM range, which under UEFI depends on the firmware build and the RAM size. A mismatch stops the kernel with nothing on the screen. The reason is in the kernel's boot log in memory, and the loader prints the address needed to read it (`k0-loader: image at 0x..., dtb at 0x...`).
 7. Boot services memory is never used, but nothing stops a device that firmware left running from writing to other memory after the firmware services end. K0 has no IOMMU support.
-8. The entropy the loader adds stays readable in the device tree in memory for the whole run. Without `EFI_RNG_PROTOCOL` the kernel gets only what the firmware device tree carried, and nothing at all when the tree was built from ACPI tables (the kernel then relies on RNDR if the CPU has it).
+8. The entropy the loader adds stays readable in the device tree in memory until the kernel zeroes the `rng-seed` bytes right before it enters the root task. Copies that the firmware or the loader keep elsewhere are not wiped. Without `EFI_RNG_PROTOCOL` the kernel gets only what the firmware device tree carried, and nothing at all when the tree was built from ACPI tables (the kernel then relies on RNDR if the CPU has it).
 9. The kernel never calls UEFI runtime services: no variable access, no reset or power-off through firmware. Runtime regions stay unused.
 10. Firmware that describes device registers as `EfiReservedMemoryType` (instead of leaving them out of the map or typing them as MMIO) makes the loader refuse, and one malformed descriptor makes it refuse the whole map. Both fail closed.
 11. The paths that move the block to another place and that free memory after a refusal could not be exercised under QEMU.
@@ -173,6 +173,41 @@ The limits are as follows:
 4. An image without console reduces the output path, not what the kernel holds in memory. The boot log is plain kernel memory, and anyone who can read RAM or attach a debugger sees it.
 5. A task that holds a `Console` capability can print lines that look like kernel lines, and that includes `k0: console drivers [...]`. Only the first occurrence of that line in the log, or the image file, identifies a build. The line is a label, not proof.
 
+## The signing oracle
+
+The signing oracle is the first service on top of the isolation core. A vault task holds one Ed25519 key. Client tasks get signatures and the public key over IPC and never the key. It is optional and off by default.
+
+> [!WARNING]
+> The Ed25519 implementation has no validation of any kind, and the key does not come from an approved random bit generator. Do not read this feature as FIPS validated, certified or compliant.
+
+What the oracle claims:
+
+- **Key separation**: the key lives in the vault's own address space and stack. The root task builds the vault, and no other task can map the vault's memory. A client's CNode holds only a send-only, badged copy of the vault endpoint.
+- **Frame rights**: per caller there is a request frame (caller read-write, vault read-only) and a response frame (vault read-write, caller read-only), enforced by reduced-rights copies of the frame capabilities.
+- **Fixed policy**: the policy is fixed at build time and keyed by the endpoint badge, which the kernel delivers and a client cannot forge. Roles: admin (the root task: STATUS, INIT, ZEROIZE, not SIGN), signer (STATUS, PUBLIC_KEY, SIGN) and reader (STATUS, PUBLIC_KEY). A call without a badge or with an unknown badge is refused. No operation changes the policy.
+- **Fixed image**: the vault code is part of the root task image, which is checked by SHA-256 at boot like before. Nothing is loaded after boot.
+- **Single read of the request**: the vault reads the request body once into a private buffer, with the length fixed first, and uses only that copy. A reply always sets four registers: status, length, indicator bits and the caller's nonce. A client must trust the response frame only after an OK reply that carries its own nonce.
+- **Failure state**: a failed known-answer self-test (two RFC 8032 vectors) or a failed pairwise consistency test after key generation puts the vault into a failed state that refuses everything but STATUS. Verification is strict (`verify_strict`). There is no key export, and ZEROIZE drops the key and ends SIGN and PUBLIC_KEY.
+
+What the oracle does not claim:
+
+1. The algorithm is Ed25519 (PureEdDSA with SHA-512, as in FIPS 186-5 and RFC 8032). The implementation is the vendored crate `ed25519-dalek` 2.2.0 and has no validation of any kind. The key does not come from an approved random bit generator.
+2. There is no side-channel analysis of the crate on this kernel.
+3. There is one key, no persistence, no key import or export, no DRBG and no operator input. No post-quantum algorithm exists yet.
+4. All signers share the one key, so a signature carries no client identity.
+5. Availability of the vault is not protected. Clients share one endpoint and must use timeouts.
+6. The root task is trusted and could read the vault.
+7. The oracle was only run in QEMU (TCG and HVF). The scrubs of stack copies (kernel boot stack, vault stack after signing) are best effort.
+8. The self-test runs its clients one after another in one client address space, so it shows isolation between the vault and a client, not between clients.
+
+Entropy rule: the vault refuses to make a key (status `NO_ENTROPY`) unless the boot seed contains at least 32 bytes of `rng-seed` or 256 bits from RNDR. QEMU virt provides a 32-byte `rng-seed`. Every reply carries indicator bits: the algorithm is in FIPS 186-5, the self-tests passed, at least 32 `rng-seed` bytes went into the key seed, and RNDR went into the key seed. These bits report what happened. They are not a validation claim.
+
+### Boot seed and seed wipe
+
+The kernel derives 32 bytes for the root task with SHA-256 under its own domain string from the device tree entropy, the counter and, when the CPU has RNDR, four fresh RNDR words. It is independent of the PAC keys by domain separation. The seed is as good as its inputs and no better. It reaches the root task in the entry registers `x0` to `x3`, and `x4` tells how many `rng-seed` bytes were used and whether RNDR contributed. It is not in the bootinfo page, and the root task prints only the source, never the seed.
+
+Right before the kernel enters the root task it zeroes the `rng-seed` and `kaslr-seed` bytes in the device tree: it switches the read-only alias entry of that page to read-write in place, writes zeros, cleans and invalidates the cache lines, switches it back and reads the bytes back. It then wipes its own copy in `BootInfo`, prints `k0: dtb seeds wiped <n>B` and zeroes the boot stack below the live frames. Copies that the firmware or the UEFI loader keep, and anything in the live frames of the boot stack, are not wiped.
+
 ## Known advisories
 
 The following advisories are tracked as GitHub Security Advisories in this repository. The first two were published on 2026-11-07. All of them affect version 0.1.0 and earlier, and none has a fixed version yet.
@@ -198,7 +233,7 @@ You can report a problem in the following ways:
 - **Preferred**: open a draft security advisory at <https://github.com/Quant-Off/k0/security/advisories/new>.
 - **Alternative**: email the maintainer at <qtfelix@qu4nt.space>. Include the affected commit hash, the platform (QEMU machine and CPU model, hypervisor, or board), the entry level (EL1 or EL2), the page size (4 KiB or 16 KiB), the `k0: platform ...` line from the boot log, and a reproduction if you have one.
 
-Isolation gaps in `v0.1.0` and earlier commits, and the availability and resource limits listed under "What is still NOT provided on `main`", are already known and **do not need to be filed again**. Isolation bypasses on the current `main` branch are welcome, for example a task reaching another task's memory or capabilities, a revoked capability that keeps working, or a stale mapping that survives unmap, revoke or address space destruction. Reports about the UEFI loader are welcome too, for example a memory map or device tree that makes it hand the kernel memory that firmware still uses, or a refusal that does not happen. Reports about anything else, including boot-time memory map validation, exception handling, scheduler policy, and IPC state machines, are welcome.
+Isolation gaps in `v0.1.0` and earlier commits, and the availability and resource limits listed under "What is still NOT provided on `main`", are already known and **do not need to be filed again**. Isolation bypasses on the current `main` branch are welcome, for example a task reaching another task's memory or capabilities, a revoked capability that keeps working, or a stale mapping that survives unmap, revoke or address space destruction. Reports about the signing oracle are welcome, for example a key disclosure to a client, a policy bypass, or a reply that reaches the wrong caller. Reports about the UEFI loader are welcome too, for example a memory map or device tree that makes it hand the kernel memory that firmware still uses, or a refusal that does not happen. Reports about anything else, including boot-time memory map validation, exception handling, scheduler policy, and IPC state machines, are welcome.
 
 ## Scope
 
@@ -208,7 +243,7 @@ The following picture shows how this document divides what is in scope, what is 
   <img src="assets/security-boundaries.svg" alt="The scope and trust boundaries of K0: the boot chain before the kernel entry point is out of scope, the loader, the kernel and the root task are in scope, and the device tree, confined tasks and k0: lines printed by tasks are not trusted">
 </p>
 
-**In scope**: everything under `kernel/`, `crates/` (including `crates/k0-efi`), `loader/` and `userspace/root-task/`. The UEFI loader is part of the boot chain, but it is code of this repository, so its handling of the memory map, the device tree and the kernel image is in scope.
+**In scope**: everything under `kernel/`, `crates/` (including `crates/k0-efi`), `loader/`, `userspace/root-task/` and `userspace/k0-vault` with its wiring in the root task. The UEFI loader is part of the boot chain, but it is code of this repository, so its handling of the memory map, the device tree and the kernel image is in scope.
 
 **Out of scope**: the rest of the boot chain before the kernel entry point (for example firmware, any other boot loader and the hypervisor), and the integrity of the kernel image itself. Kernel image signing is the boot chain's responsibility. Under UEFI that means Secure Boot in the firmware, because the loader's SHA-256 check is not a signature (see "The UEFI loader").
 

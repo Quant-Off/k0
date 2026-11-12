@@ -125,14 +125,16 @@ If `ID_AA64MMFR2_EL1` reports FEAT_E0PD, `enable_paging` also sets `TCR_EL1.E0PD
 
 ## Adding mappings later
 
-Two functions add read-write ranges to the higher half after boot. Both share one walker and differ in a single flag.
+Two functions add read-write ranges to the higher half after boot. Both share one walker and differ in a single flag. A third function, `wipe_ro_alias`, changes an existing entry and is described after them.
 
 - `map_kernel_window` maps the 2 MiB boot frame window before the root task is loaded. Any existing translation in the range is an error (`Overlap`), identical or not.
 - `alias_object` maps one granule for an object created by `RETYPE`, so that the kernel can zero and use it through the alias. If the leaf already holds exactly the same mapping (same physical address, same attributes), the call succeeds. Any different mapping is still `Overlap`.
 
 The identical case exists because aliases are never removed. When a `CAP_REVOKE` or `CAP_DELETE` returns untyped memory and it is retyped again, the alias of the same physical frame is already there. Accepting **only an identical entry** keeps reuse working without letting a retype replace a mapping that points somewhere else. The window mapping does not get this leniency, because a boot window overlapping an existing mapping would be a mistake.
 
-These calls only turn invalid entries into valid ones. Existing translations never change, so no break-before-make sequence is needed. A store barrier and an instruction barrier make the new entries visible to the table walker before the memory is used.
+These two calls only turn invalid entries into valid ones. Existing translations never change, so no break-before-make sequence is needed. A store barrier and an instruction barrier make the new entries visible to the table walker before the memory is used.
+
+`wipe_ro_alias` is the only place where a read-only alias entry is switched to read-write. The kernel calls it right before it enters the root task, to zero the `rng-seed` and `kaslr-seed` bytes in the DTB (see [boot.md](boot.md)). It switches the entry of the page to read-write in place, with break-before-make, writes zeros, cleans and invalidates the cache lines so that the read-back comes from memory, and switches the entry back to read-only.
 
 ## Self-checks at boot
 

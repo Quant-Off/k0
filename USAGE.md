@@ -82,13 +82,17 @@ The following table lists the lines that an image with a console driver prints, 
 | Line | Meaning |
 | --- | --- |
 | `root: hello from EL0` | The first program is running in user mode |
+| `k0: dtb seeds wiped <n>B` | Right before the root task starts, the kernel zeroed the random seed bytes (`rng-seed`, `kaslr-seed`) in the device tree copy and read them back. It reads `40B` on QEMU virt. It is printed by every image |
+| `root: boot seed from rng-seed bytes 0x... and rndr` or `... without rndr` | How much randomness the kernel put into the boot seed it gave the root task: the number of `rng-seed` bytes, and whether the CPU random number instruction RNDR added to it. The seed itself is never printed. It is printed by every image |
 | `root: ... pass` | One group of self-tests passed |
 | `root: secret at 0x...`, then `k0: task fault ... far 0x...` with the same address | A confined task tried to read memory that only the root task may see, and it was stopped at exactly that address |
-| `k0: task fault ...` and `k0: unknown syscall 65535, killing task` | Rule violations that the tests cause on purpose. Each one stops only the task that broke the rule. A normal run has exactly 6 `k0: task fault` lines and 1 `k0: unknown syscall` line |
+| `k0: task fault ...` and `k0: unknown syscall 65535, killing task` | Rule violations that the tests cause on purpose. Each one stops only the task that broke the rule. A normal run has exactly 6 `k0: task fault` lines and 1 `k0: unknown syscall` line. An image built with a `vault` feature has 8 `k0: task fault` lines |
 | `k0: kernel reserve <T> tables + <E> address space entries = <B> bytes in <N> ranges` | The kernel set aside memory at the top of each range it hands out, for its own page tables and for the list of address spaces. It is printed before the `k0: untyped` lines. On QEMU virt with 512 MiB it reads `262 tables + 130130 address space entries = 0x206000 bytes in 3 ranges`. The entry count depends on the image size |
 | `k0: memory <base> + <size> not handed out (<reason>)` | A memory range was too small to hold its own share of that reserve, or the share could not be mapped, so the kernel did not hand the range out. The boot continues. A normal run on QEMU virt does not print it |
 | `root: timeout tests pass` | The self-tests of IPC timeouts passed |
 | `root: kernel reserve tests pass` | The self-tests of the kernel reserve passed (300 address spaces alive at once, and frames made from untyped memory across many page table blocks) |
+| `root: oracle tests pass` | The self-tests of the signing oracle passed. Only an image built with a `vault` feature prints it (see "Signing oracle" below) |
+| `root: oracle made no key (boot seed has no entropy)` | The vault refused to make a key because the boot seed was too weak. Only an image built with a `vault` feature can print it, and then `root: oracle tests pass` does not follow |
 | `root: sched tests pass` | The last group of self-tests passed |
 | `k0: idle (waiting for a timeout)` | Every task was waiting and at least one wait had a time limit, so the kernel waited for the next interrupt instead of stopping. It is printed at most once per boot |
 | `k0: all tasks stopped (none ready, no timeout pending)` | Every task is waiting and no wait has a time limit. Nothing can wake a task today, so the machine stays idle. A normal run never prints it, and the boot test treats it as a failure. It is printed at most once per boot |
@@ -158,6 +162,39 @@ $ tools/boot-log.py <kernel ELF> <load address> <QEMU monitor socket>
 ```
 
 The load address is the physical address where the image was loaded. On QEMU `virt` with an unchanged image it is `0x40080000`.
+
+### Signing oracle
+
+The signing oracle is the first service that runs on top of the isolation core. A vault task holds one Ed25519 key. Client tasks get signatures and the public key from it over IPC and never see the key. The oracle is optional and off by default. The kernel crate has two features for it, and features only add:
+
+| Feature | What it adds |
+| --- | --- |
+| `vault` | The vault service with its protocol, its fixed policy and its self-test, but no signing algorithm. Every signing request is answered with "unsupported" |
+| `vault-ed25519` | Includes `vault` and adds Ed25519 (PureEdDSA with SHA-512, as in FIPS 186-5 and RFC 8032) |
+
+The code of the vault is part of the root task image, so a build must name the feature, and `cargo virt` does not include it. You can build and run an image with the oracle as follows:
+
+```sh
+$ cargo run -p k0-kernel --features console,vault-ed25519
+```
+
+You can also check it with the boot test. The self-test of the oracle adds two intended faults, so the test has to expect 8 `k0: task fault` lines instead of 6. You can enter it as follows:
+
+```sh
+$ cargo build -p k0-kernel --features console,vault-ed25519 --offline
+$ K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE='k0: dtb seeds wiped 40B|root: oracle tests pass' tools/qemu-boot-test.sh
+```
+
+In the boot log you should see these lines, in addition to the lines in "Reading the output":
+
+- `k0: dtb seeds wiped 40B` and `root: boot seed from rng-seed bytes 0x0000000000000020 without rndr` (with `K0_QEMU_CPU=max` the second line ends with `and rndr`). QEMU virt provides a 32-byte `rng-seed`, which is `0x20`.
+- Two more `k0: task fault` lines, 8 in total. They come from two clients that the self-test lets break the memory rules on purpose.
+- `root: oracle tests pass` before `root: sched tests pass`. This line means that all the checks of the oracle passed: the vault made its key from the boot seed, a signer got a signature that verifies, a changed message or signature does not verify, the admin and a reader were refused when they asked to sign, and signing was refused after the key was erased.
+
+The vault makes a key only if the boot seed holds at least 32 `rng-seed` bytes or 256 bits from RNDR. If it does not, for example on a machine whose device tree has no `rng-seed` and whose CPU has no RNDR, the vault answers `NO_ENTROPY` and makes no key. The root task then prints `root: oracle made no key (boot seed has no entropy)` and stops the oracle test there. `root: oracle tests pass` does not appear, so a boot test that requires it fails, which is the intended result.
+
+> [!NOTE]
+> The implementation of Ed25519 is the vendored crate `ed25519-dalek` 2.2.0 and has no validation of any kind, and the key does not come from an approved random bit generator. There is one key, no persistence, no key import or export and no input from an operator. The availability of the vault is not protected, because all clients share one endpoint and must use timeouts. The root task is trusted and could read the vault. The oracle was only run in QEMU (TCG and HVF). The details and the limits are in [SECURITY.md](SECURITY.md).
 
 ## Booting through UEFI
 
@@ -270,9 +307,9 @@ $ tools/qemu-boot-test.sh                                 # boot in QEMU and che
 $ tools/boot-matrix.sh                                    # boot every supported configuration (builds the 16 KiB, pinned and UEFI loader images too)
 ```
 
-- `tools/host-test.sh` runs the 250 host tests (164 on an x86-64 computer): small tests of single parts of the kernel (unit tests) as ordinary programs on your computer. It also does **fuzzing**: it feeds the device tree parser and the UEFI loader's planning code random, broken input to find crashes. The 250 are 14 (`k0-abi`), 42 (`k0-cap`), 76 (`k0-boot`), 32 (`k0-efi`) and 43 for each of the two page sizes (`k0-mm`). The memory management tests use ARM instructions, so they run only on an ARM computer (an Apple Silicon Mac or Linux arm64), and the x86-64 count leaves out those 86.
+- `tools/host-test.sh` runs the 276 host tests (190 on an x86-64 computer): small tests of single parts of the kernel (unit tests) as ordinary programs on your computer. It also does **fuzzing**: it feeds the device tree parser and the UEFI loader's planning code random, broken input to find crashes. The 276 are 14 (`k0-abi`), 42 (`k0-cap`), 82 (`k0-boot`), 32 (`k0-efi`), 20 (`k0-vault`, which is 13 with Ed25519 and 7 without) and 43 for each of the two page sizes (`k0-mm`). The memory management tests use ARM instructions, so they run only on an ARM computer (an Apple Silicon Mac or Linux arm64), and the x86-64 count leaves out those 86.
 - `tools/qemu-boot-test.sh` boots the kernel and reads the log line by line in a fixed order. It fails on any error line, checks the exact number of intentional fault lines, and stops QEMU when it is done. The root task's timeout tests wait for real timer ticks, so a boot takes about 4 seconds longer than it did before they existed. The test also counts the tick lines between `root: teardown tests pass` and `root: timeout tests pass` and wants at least 4, which is how it checks that a timeout does not end early. It prints `boot-test: pass` on success and saves the full log in `target/qemu-boot-test.log`. It takes the machine from the `K0_QEMU_*` variables above. It accepts `K0_BOOT_REUSE=skip` for memory layouts that have no untyped region of the right size, where the root task skips its reuse test. It reads the kernel lines from the **serial port**, so it needs an image with a console driver. For an image without one, see "Testing an image without console" below. If the serial log has no kernel line, it prints a hint about a kernel built without a console feature.
-- `tools/boot-matrix.sh` boots the kernel in **each** configuration that K0 calls supported and checks the result. It boots QEMU virt with GICv3 and GICv2 at EL1 and EL2, and also three CPU models, 4 cores, the 16 KiB image, other load addresses, `xlnx-versal-virt` and a pinned image. It also checks statically that the image does not touch the physical timer. You can name single rows as arguments. CI runs it.
+- `tools/boot-matrix.sh` boots the kernel in **each** configuration that K0 calls supported and checks the result. It boots QEMU virt with GICv3 and GICv2 at EL1 and EL2, and also three CPU models, 4 cores, the 16 KiB image, other load addresses, `xlnx-versal-virt`, a pinned image and the images with the signing oracle. It also checks statically that the image does not touch the physical timer. The matrix has 61 rows on a Mac with HVF and 51 in CI. You can name single rows as arguments. CI runs it.
 
 The console rows check the console features. The following table lists the console rows and what they check.
 
@@ -284,11 +321,22 @@ The console rows check the console features. The following table lists the conso
 | `pl011-identity` | The device tree is patched so that the console node points at the RTC, and the kernel must print `k0: console is not a pl011, ignored`, write nothing and not keep that page mapped |
 | `serial-check` | The judgement itself: a console image judged as quiet must fail on its serial output |
 
+The oracle rows check the signing oracle. In the following table, `root: oracle tests pass` is required in every boot row, and the boot rows expect 8 fault lines.
+
+| Row | What it checks |
+| --- | --- |
+| `vault` | An image with `vault-ed25519` on the default CPU. It also requires `k0: dtb seeds wiped 40B` |
+| `vault-max` | The same image on the `max` CPU, so that RNDR goes into the boot seed (`... and rndr`) |
+| `vault-el2` | The same image started at EL2 |
+| `vault-16k` | The 16 KiB image with `vault-ed25519` |
+| `vault-no-alg` | An image with `vault` only, which answers every signing request with "unsupported" |
+| `vault-symbols` | A static check. The default image has no vault code and no crypto code, and the vault image has no writable static variable from them |
+
 The `uefi-*` rows boot the kernel through the UEFI loader on EDK2: GICv3 and GICv2 at EL1 and EL2, the `max` CPU, 4 cores, the 16 KiB image, a random number source from the firmware and the FAT drive path. The `uefi-acpi-*` rows (`uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k`, `uefi-acpi-rng`) boot QEMU's default machine with ACPI on and no device tree. A static check (`tools/pe-check.py`) covers the loader file's form and its cache and MMU instruction order, which QEMU cannot test.
 
 For configurations that must be refused, it reads the reason from the boot log in memory, or for the loader from the serial log. These are a 16 KiB kernel on `cortex-a72` and a kernel with one changed byte.
 
-On an Apple Silicon Mac, `K0_MATRIX_HVF=1 tools/boot-matrix.sh` adds rows that run the kernel, also through the UEFI loader, on the real CPU cores through QEMU's HVF accelerator. Among them is `hvf-quiet` for the image without console.
+On an Apple Silicon Mac, `K0_MATRIX_HVF=1 tools/boot-matrix.sh` adds rows that run the kernel, also through the UEFI loader, on the real CPU cores through QEMU's HVF accelerator. Among them are `hvf-quiet` for the image without console and `hvf-vault` for the image with the oracle.
 
 ### Testing an image without console
 
@@ -340,6 +388,8 @@ The following table lists what to do for each problem.
 | `boot-test: the serial log has no kernel line` | The same cause: a kernel built without a console feature writes nothing to the serial port. Build with `--features console`, or judge the log in guest memory with `K0_BOOT_MEMLOG=<load address>` |
 | `boot-test` fails on a line that starts with `k0: all tasks` | Every task is waiting and no wait has a time limit, so nothing can wake a task. In the normal self-tests this does not happen. If you changed the root task, give each wait a timeout |
 | `k0: memory <base> + <size> not handed out (<reason>)` appears in the boot log | The kernel found a memory range that is too small for its own reserve, or whose reserve it could not map. It left that range out and kept booting. The range is simply not usable as untyped memory. Check the memory size and the load address you gave QEMU |
+| `root: oracle made no key (boot seed has no entropy)` appears, or `root: oracle tests pass` is missing | The boot seed held fewer than 32 `rng-seed` bytes and no RNDR. Use a machine whose device tree has an `rng-seed`, as QEMU virt does, or a CPU with RNDR (`K0_QEMU_CPU=max`) |
+| `boot-test` fails on the number of `k0: task fault` lines for an image with a `vault` feature | That image prints 8 of them. Run the test with `K0_BOOT_FAULTS=8` |
 | The boot test times out on a slow computer | Give it more time, for example `K0_BOOT_TIMEOUT=300 tools/qemu-boot-test.sh` |
 | The 16 KiB image does not boot on `cortex-a72` | Expected: that CPU has no 16 KiB page support. Use `K0_QEMU_CPU=max` |
 | A boot stops early and nothing is printed | There may be no supported console, or the image has no driver for it (an image with only one driver is silent on a console of the other kind). Read the boot log from memory with `tools/boot-log.py` |

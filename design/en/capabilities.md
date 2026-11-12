@@ -23,7 +23,7 @@ The related code is in the files of the following table.
 | `crates/k0-abi/src/lib.rs` | numbers and error codes (the source of truth for the ABI) |
 
 > [!IMPORTANT]
-> The system call ABI changed incompatibly with this model (bootinfo layout version 2). Read the "Known gaps" section before relying on any of this.
+> The system call ABI changed incompatibly with this model (bootinfo version 2, now 3). Read the "Known gaps" section before relying on any of this.
 
 Capability-based isolation covers confidentiality and integrity between tasks. It does not cover availability.
 
@@ -138,7 +138,7 @@ Running out of slots also stops the boot. A DTB memory region beyond the CPU's p
 
 ## The bootinfo page
 
-Just before the handoff, the kernel writes a description of the root CNode into the bootinfo page, which is mapped read-only for the root task at `bootinfo::VA`. This is layout version 2 (`bootinfo::VERSION`). A root task that sees another version must not proceed.
+Just before the handoff, the kernel writes a description of the root CNode into the bootinfo page, which is mapped read-only for the root task at `bootinfo::VA`. The version is 3 (`bootinfo::VERSION`). The page layout did not change from version 2; the version changed because the root task now receives a boot seed in its entry registers (the seed in `x0..x3`, its description in `x4`; see [boot.md](boot.md)), and the seed is not in this page. A root task that sees another version must not proceed.
 
 The page starts with a header `{version, frame_size, cap_count, cnode_slots}`, followed by `cap_count` descriptors `{kind, base, size, rights}`. The index of a descriptor is its slot number in the root CNode, and every slot at or beyond `cap_count` is empty. A descriptor is filled in by kind as follows:
 

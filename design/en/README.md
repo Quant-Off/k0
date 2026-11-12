@@ -25,5 +25,6 @@ Read them in the order of the following table the first time. This order follows
 | [exceptions.md](exceptions.md) | The vector table, saving user state, system call dispatch, and fault isolation |
 | [scheduling.md](scheduling.md) | TCBs and their bound CNode and address space, task creation and teardown, the round-robin scheduler, and timer preemption |
 | [ipc.md](ipc.md) | Endpoints and badges, `SEND`, `RECV`, `CALL` and `REPLY_RECV`, the single-use reply right, and what happens to waiting tasks when an endpoint is deleted |
+| [vault.md](vault.md) | The signing oracle: the vault task and its frames, the `CALL` protocol and nonce, the fixed badge policy, the provider boundary, the boot seed and its wipe, features, tests, and known gaps |
 
 Every note ends with a "**Known gaps**" section. The open security advisories are listed in [SECURITY.md](../../SECURITY.md).

@@ -59,6 +59,7 @@ $ cargo virt   # build the generic image with console and boot it on QEMU virt
 $ cargo build -p k0-kernel --features console --offline   # build the generic 4 KiB image with console only
 $ cargo build -p k0-kernel --offline --no-default-features --features granule-16k,console --target-dir target/g16   # 16 KiB image with console
 $ cargo build -p k0-kernel --offline --target-dir target/quiet   # image without console
+$ cargo build -p k0-kernel --features console,vault-ed25519 --offline --target-dir target/vault   # image with the signing oracle
 $ tools/build-loader.sh   # put the built kernel into the UEFI loader, prints the .efi path
 ```
 
@@ -91,9 +92,11 @@ $ cargo build -p k0-kernel --features console --offline
 $ tools/qemu-boot-test.sh   # boot under QEMU and check the self-tests
 ```
 
-`tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap`, `k0-boot` and `k0-efi` on any host (250 tests on an AArch64 host, 164 elsewhere). The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
+`tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi` and `k0-vault` on any host (276 tests on an AArch64 host, 190 elsewhere). It runs `k0-vault` twice, with and without the algorithm feature `vault-ed25519`, which gives 13 and 7 tests. The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
 
 `tools/qemu-boot-test.sh` boots the debug kernel, checks the boot log line by line in a fixed order, fails on any error marker, and stops QEMU as soon as the root task reports `root: sched tests pass`. Besides the pass lines, it expects `k0: kernel reserve ` before the `k0: untyped ` lines, `k0: idle (waiting for a timeout)` and `root: timeout tests pass` after `root: teardown tests pass`, and `root: kernel reserve tests pass` after `root: revocation tests pass`. Any line that starts with `k0: all tasks` is a failure. It also counts the timer tick lines between `root: teardown tests pass` and `root: timeout tests pass` and wants at least 4, because EL0 has no clock and this is how the lower bound of a timeout is checked. The timeout tests wait for real ticks, so a boot takes about 4 seconds longer than it did before. Set `K0_BOOT_TIMEOUT` (seconds) on slow machines. It reads the serial port, so it needs an image with a console driver. To test an image without console, use `K0_BOOT_MEMLOG`, `K0_BOOT_SERIAL=empty` and `K0_BOOT_CONSOLE_PAGE`, which are described in "Testing an image without console" in [USAGE.md](USAGE.md#testing-an-image-without-console).
+
+An image with the signing oracle (`vault` or `vault-ed25519`) has two more intended faults, so it prints 8 `k0: task fault` lines instead of 6. Run the test with `K0_BOOT_FAULTS=8` and require `root: oracle tests pass` with `K0_BOOT_REQUIRE`. The boot matrix has the rows `vault`, `vault-max`, `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault` and the static check `vault-symbols` for it, and 61 rows in total on a Mac with HVF and 51 in CI. [USAGE.md](USAGE.md) describes the rows.
 
 The default QEMU CPU model (`cortex-a72`) has no PAC, PAN or RNDR. To exercise those paths as well, boot on QEMU's `max` model and require the matching log lines. Any arguments after the kernel path are passed to QEMU. You can enter it as follows:
 
@@ -123,6 +126,7 @@ In the following table, you can see where each area is tested.
 | `k0-abi` constants and shared layouts | yes | indirectly |
 | `k0-cap` untyped bootstrap and retype | yes | yes |
 | `k0-boot` DTB parser, PAC key derivation, root task image | yes, plus fuzzing | yes |
+| `k0-vault` request state machine, protocol, policy and provider boundary | yes, with and without `vault-ed25519` | yes, in images built with `vault`, through `test_oracle` and the `vault*` rows of the boot matrix |
 | `k0-efi` memory plan from the UEFI memory map, DTB rewrite, independent check, ACPI table reader and tree synthesis | yes, plus fuzzing | yes, through the `uefi-*` rows of the boot matrix |
 | `loader` (UEFI application: firmware calls, cache flush, MMU off, jump) | no | yes, through the `uefi-*` rows, plus the static check `tools/pe-check.py` |
 | `k0-mm` page tables and W^X attributes | yes, on AArch64 hosts | yes |
@@ -178,6 +182,8 @@ Developers still use rustup on their own machines. Only the CI image changed.
 - **Outside input**: treat every input from outside the kernel as hostile. This includes the DTB and every system call argument. Use checked arithmetic and validate before you dereference.
 - **W^X**: keep it. No mapping is ever both writable and executable, at either exception level.
 - **New input or output paths**: every new path goes behind a Cargo feature from the start. Features only add I/O and are never put in `default`. Every supported combination gets a row in the boot matrix (`tools/boot-matrix.sh`), and the scripts, the `virt` alias and CI name the features explicitly. An image without the feature must contain none of that code and must not map or touch the device.
+- **Confined task code**: code that runs in a confined task, such as the vault, must not use mutable statics or allocation. Its state lives on its own stack or in frames it was given.
+- **New algorithms**: a new algorithm goes behind its own Cargo feature, which includes the feature of the service it belongs to. An image without it must contain none of its code. Give it a row in the boot matrix, and extend the static check `vault-symbols` if it adds code to the vault image.
 - **Tests**: add a test with every behavior change. Pure logic gets a host unit test. System call behavior gets a root task self-test.
 - **Code comments**: they are written in Korean in this repository. You may write yours in English. A maintainer may translate them when merging.
 
@@ -186,7 +192,7 @@ Developers still use rustup on their own machines. Only the CI image changed.
 - One logical change per commit. A reviewer should be able to read each commit on its own.
 - Keep the subject line short and plain. Korean or English are both fine. Do not use type prefixes such as `feat:` or `fix:`.
 - In the pull request, say what changed, why, and how you tested it. Link the issue if there is one.
-- **CI must pass**. It builds the 4 KiB and the 16 KiB image and the UEFI loader, runs the host tests on x86-64 and AArch64, and runs the boot matrix (`tools/boot-matrix.sh`) under QEMU, including the rows that boot through the UEFI loader and the rows for images without console.
+- **CI must pass**. It builds the 4 KiB and the 16 KiB image and the UEFI loader, runs the host tests on x86-64 and AArch64, and runs the boot matrix (`tools/boot-matrix.sh`) under QEMU, including the rows that boot through the UEFI loader, the rows for images without console and the rows for images with the signing oracle.
 
 ## AI-assisted contributions
 

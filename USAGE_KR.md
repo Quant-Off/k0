@@ -82,13 +82,17 @@ $ grep -a 'k0: console drivers' <이미지 파일>
 | 줄 | 뜻 |
 | --- | --- |
 | `root: hello from EL0` | 첫 프로그램이 사용자 모드에서 돌기 시작함 |
+| `k0: dtb seeds wiped <n>B` | 루트 태스크를 시작하기 직전에, 커널이 디바이스 트리 사본 안의 난수 시드 바이트(`rng-seed`, `kaslr-seed`)를 0으로 지우고 다시 읽어 확인함. QEMU virt에서는 `40B`로 나옴. 모든 이미지가 출력함 |
+| `root: boot seed from rng-seed bytes 0x... and rndr` 또는 `... without rndr` | 커널이 루트 태스크에 넘긴 부트 시드에 난수 재료를 얼마나 넣었는지 알려 줌. `rng-seed` 바이트 수와, CPU의 난수 명령 RNDR이 보탰는지 여부임. 시드 자체는 출력하지 않음. 모든 이미지가 출력함 |
 | `root: ... pass` | 자가 테스트 한 묶음이 통과함 |
 | `root: secret at 0x...` 다음에 같은 주소의 `k0: task fault ... far 0x...` | 격리된 태스크가 루트 태스크만 볼 수 있는 메모리를 읽으려다 정확히 그 주소에서 멈춤 |
-| `k0: task fault ...`와 `k0: unknown syscall 65535, killing task` | 테스트가 일부러 일으킨 규칙 위반. 매번 규칙을 어긴 태스크만 멈춤. 정상 실행에서는 `k0: task fault` 줄이 정확히 6개, `k0: unknown syscall` 줄이 1개 나옴 |
+| `k0: task fault ...`와 `k0: unknown syscall 65535, killing task` | 테스트가 일부러 일으킨 규칙 위반. 매번 규칙을 어긴 태스크만 멈춤. 정상 실행에서는 `k0: task fault` 줄이 정확히 6개, `k0: unknown syscall` 줄이 1개 나옴. `vault` feature를 포함해 빌드한 이미지에서는 `k0: task fault` 줄이 8개 나옴 |
 | `k0: kernel reserve <T> tables + <E> address space entries = <B> bytes in <N> ranges` | 커널이 넘겨 주는 메모리 범위마다 맨 위에 자기 페이지 테이블과 주소 공간 목록용 메모리를 따로 떼어 둠. `k0: untyped` 줄보다 먼저 출력됨. QEMU virt 512 MiB에서는 `262 tables + 130130 address space entries = 0x206000 bytes in 3 ranges`로 나오며, 항목 수는 이미지 크기에 따라 달라짐 |
 | `k0: memory <base> + <size> not handed out (<reason>)` | 메모리 범위가 너무 작아 그 예비 몫을 담지 못하거나 몫을 매핑하지 못해서, 커널이 그 범위를 넘겨 주지 않음. 부팅은 계속됨. QEMU virt의 정상 실행에서는 나오지 않음 |
 | `root: timeout tests pass` | IPC 타임아웃 자가 테스트가 통과함 |
 | `root: kernel reserve tests pass` | 커널 예비 공간 자가 테스트가 통과함(주소 공간 300개를 동시에 유지, 여러 페이지 테이블 블록에 걸친 untyped 메모리에서 프레임 생성) |
+| `root: oracle tests pass` | 서명 오라클 자가 테스트가 통과함. `vault` feature를 포함해 빌드한 이미지만 출력함(뒤의 "서명 오라클" 참고) |
+| `root: oracle made no key (boot seed has no entropy)` | 부트 시드가 약해서 볼트가 키 생성을 거부함. `vault` feature를 포함해 빌드한 이미지만 출력할 수 있으며, 이때 `root: oracle tests pass`는 뒤따르지 않음 |
 | `root: sched tests pass` | 마지막 자가 테스트 묶음이 통과함 |
 | `k0: idle (waiting for a timeout)` | 모든 태스크가 기다리는 중이고 시간 제한이 있는 대기가 하나 이상이어서, 커널이 멈추지 않고 다음 인터럽트를 기다림. 부팅당 최대 한 번 출력됨 |
 | `k0: all tasks stopped (none ready, no timeout pending)` | 모든 태스크가 기다리는 중이고 시간 제한이 있는 대기가 없음. 지금은 태스크를 깨울 수 있는 것이 없어서 머신은 유휴 상태로 남음. 정상 실행에서는 나오지 않고, 부팅 테스트는 이 줄을 실패로 처리함. 부팅당 최대 한 번 출력됨 |
@@ -158,6 +162,39 @@ $ tools/boot-log.py <커널 ELF> <적재 주소> <QEMU 모니터 소켓>
 ```
 
 적재 주소는 이미지를 올린 물리 주소입니다. 이미지를 고치지 않은 QEMU `virt`에서는 `0x40080000`입니다.
+
+### 서명 오라클
+
+서명 오라클은 격리 코어 위에서 도는 첫 번째 서비스입니다. 볼트 태스크가 Ed25519 키 하나를 가지고 있고, 클라이언트 태스크는 IPC로 서명과 공개 키를 받을 뿐 키는 보지 못합니다. 오라클은 선택 사항이며 기본으로는 꺼져 있습니다. 커널 크레이트에는 이를 위한 feature가 두 개 있으며, feature는 더하기만 합니다.
+
+| Feature | 추가하는 것 |
+| --- | --- |
+| `vault` | 볼트 서비스와 그 프로토콜, 고정된 정책, 자가 테스트. 서명 알고리즘은 없으며 모든 서명 요청에 "unsupported"로 답함 |
+| `vault-ed25519` | `vault`를 포함하고 Ed25519(FIPS 186-5와 RFC 8032의 SHA-512를 사용하는 PureEdDSA)를 추가함 |
+
+볼트의 코드는 루트 태스크 이미지에 포함되므로 빌드할 때 feature를 직접 적어야 하며, `cargo virt`에는 들어 있지 않습니다. 오라클이 있는 이미지는 다음과 같이 빌드하고 실행할 수 있습니다.
+
+```sh
+$ cargo run -p k0-kernel --features console,vault-ed25519
+```
+
+부팅 테스트로도 확인할 수 있습니다. 오라클 자가 테스트는 일부러 일으키는 폴트를 두 번 더 추가하므로, 테스트는 `k0: task fault` 줄이 6개가 아니라 8개라고 기대해야 합니다. 다음과 같이 입력할 수 있습니다.
+
+```sh
+$ cargo build -p k0-kernel --features console,vault-ed25519 --offline
+$ K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE='k0: dtb seeds wiped 40B|root: oracle tests pass' tools/qemu-boot-test.sh
+```
+
+부트 로그에는 "출력 읽는 법"의 줄에 더해 다음 줄이 보여야 합니다.
+
+- `k0: dtb seeds wiped 40B`와 `root: boot seed from rng-seed bytes 0x0000000000000020 without rndr`입니다(`K0_QEMU_CPU=max`에서는 두 번째 줄이 `and rndr`로 끝납니다). QEMU virt는 32바이트 `rng-seed`를 제공하며, 이것이 `0x20`입니다.
+- `k0: task fault` 줄이 두 개 더 나와 모두 8개입니다. 자가 테스트가 일부러 메모리 규칙을 어기게 하는 클라이언트 둘에서 나온 줄입니다.
+- `root: sched tests pass` 앞의 `root: oracle tests pass`입니다. 이 줄은 오라클의 검사가 모두 통과했다는 뜻입니다. 볼트가 부트 시드로 키를 만들었고, 서명자가 검증되는 서명을 받았으며, 메시지나 서명을 바꾸면 검증되지 않고, 관리자와 읽기 전용 클라이언트는 서명을 요청했을 때 거부되었으며, 키를 지운 뒤에는 서명이 거부되었습니다.
+
+볼트는 부트 시드에 `rng-seed` 바이트가 32개 이상 있거나 RNDR에서 온 256비트가 있을 때만 키를 만듭니다. 그렇지 않으면, 예를 들어 디바이스 트리에 `rng-seed`가 없고 CPU에 RNDR도 없는 머신에서는 볼트가 `NO_ENTROPY`로 답하고 키를 만들지 않습니다. 그러면 루트 태스크가 `root: oracle made no key (boot seed has no entropy)`를 출력하고 오라클 테스트를 거기서 멈춥니다. `root: oracle tests pass`는 나오지 않으므로 이 줄을 요구하는 부팅 테스트는 실패하며, 이것이 의도한 결과입니다.
+
+> [!NOTE]
+> Ed25519 구현은 vendor에 넣은 `ed25519-dalek` 2.2.0 크레이트이며 어떤 종류의 검증도 받지 않았고, 키는 승인된 난수 비트 생성기에서 나오지 않습니다. 키는 하나뿐이고, 영속성도 키의 가져오기나 내보내기도 운영자 입력도 아직 없습니다. 클라이언트가 엔드포인트 하나를 함께 사용하므로 볼트의 가용성은 보호되지 않으며 타임아웃을 써야 합니다. 루트 태스크는 신뢰 대상이며 볼트를 읽을 수 있습니다. 오라클은 QEMU(TCG와 HVF)에서만 실행해 보았습니다. 자세한 내용과 한계는 [SECURITY_KR.md](SECURITY_KR.md)에 있습니다.
 
 ## UEFI로 부팅
 
@@ -270,9 +307,9 @@ $ tools/qemu-boot-test.sh                                 # QEMU에서 부팅하
 $ tools/boot-matrix.sh                                    # 지원하는 구성을 전부 부팅(16 KiB 이미지, 고정 이미지, UEFI 로더 이미지도 빌드함)
 ```
 
-- `tools/host-test.sh`는 호스트 테스트 250개를 실행합니다(x86-64 컴퓨터에서는 164개). 커널의 부분 하나하나를 내 컴퓨터에서 일반 프로그램처럼 돌리는 작은 테스트(단위 테스트)입니다. **퍼징**도 합니다. 디바이스 트리 파서와 UEFI 로더의 계획 코드에 무작위로 망가뜨린 입력을 넣어 충돌을 찾는 방법입니다. 250개는 `k0-abi` 14개, `k0-cap` 42개, `k0-boot` 76개, `k0-efi` 32개, `k0-mm` 43개씩 두 페이지 크기분입니다. 메모리 관리 테스트는 ARM 명령을 사용하므로 ARM 컴퓨터(Apple Silicon Mac이나 Linux arm64)에서만 돌고, x86-64의 개수는 그 86개를 뺀 것입니다.
+- `tools/host-test.sh`는 호스트 테스트 276개를 실행합니다(x86-64 컴퓨터에서는 190개). 커널의 부분 하나하나를 내 컴퓨터에서 일반 프로그램처럼 돌리는 작은 테스트(단위 테스트)입니다. **퍼징**도 합니다. 디바이스 트리 파서와 UEFI 로더의 계획 코드에 무작위로 망가뜨린 입력을 넣어 충돌을 찾는 방법입니다. 276개는 `k0-abi` 14개, `k0-cap` 42개, `k0-boot` 82개, `k0-efi` 32개, `k0-vault` 20개(Ed25519를 포함하면 13개, 없으면 7개), `k0-mm` 43개씩 두 페이지 크기분입니다. 메모리 관리 테스트는 ARM 명령을 사용하므로 ARM 컴퓨터(Apple Silicon Mac이나 Linux arm64)에서만 돌고, x86-64의 개수는 그 86개를 뺀 것입니다.
 - `tools/qemu-boot-test.sh`는 커널을 부팅하고, 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 줄이 하나라도 나오면 실패하고, 일부러 일으킨 폴트 줄의 개수를 정확히 맞춘 뒤 QEMU를 끕니다. 루트 태스크의 타임아웃 테스트는 실제 타이머 틱을 기다리므로, 부팅 한 번이 그 테스트가 생기기 전보다 약 4초 더 걸립니다. `root: teardown tests pass`와 `root: timeout tests pass` 사이의 틱 줄도 세어 4개 이상을 요구하는데, 이것이 타임아웃이 일찍 끝나지 않는지 확인하는 방법입니다. 성공하면 `boot-test: pass`를 출력하고 전체 로그를 `target/qemu-boot-test.log`에 남깁니다. 머신은 앞의 `K0_QEMU_*` 변수에서 가져옵니다. 맞는 크기의 untyped 영역이 없는 메모리 배치에서는 루트 태스크가 재사용 시험을 건너뛰므로, 그때는 `K0_BOOT_REUSE=skip`을 받습니다. 커널 줄을 **직렬 포트**에서 읽으므로 콘솔 드라이버가 있는 이미지가 필요합니다. 콘솔 없는 이미지는 뒤의 "콘솔 없는 이미지 시험"을 보세요. 직렬 로그에 커널 줄이 하나도 없으면 콘솔 feature 없이 빌드한 커널이 아닌지 알려 주는 힌트를 출력합니다.
-- `tools/boot-matrix.sh`는 K0가 지원한다고 말하는 **구성마다** 커널을 부팅해서 결과를 확인합니다. GICv3와 GICv2의 QEMU virt를 EL1과 EL2에서 부팅하고, CPU 모델 세 가지, 코어 4개, 16 KiB 이미지, 다른 적재 주소, `xlnx-versal-virt`, 고정 이미지도 부팅합니다. 이미지가 물리 타이머를 건드리지 않는지는 정적으로 검사합니다. 행 이름을 인자로 주면 그 행만 돌립니다. CI가 이것을 실행합니다.
+- `tools/boot-matrix.sh`는 K0가 지원한다고 말하는 **구성마다** 커널을 부팅해서 결과를 확인합니다. GICv3와 GICv2의 QEMU virt를 EL1과 EL2에서 부팅하고, CPU 모델 세 가지, 코어 4개, 16 KiB 이미지, 다른 적재 주소, `xlnx-versal-virt`, 고정 이미지, 서명 오라클이 있는 이미지도 부팅합니다. 이미지가 물리 타이머를 건드리지 않는지는 정적으로 검사합니다. 행렬은 HVF가 있는 Mac에서 61행, CI에서 51행입니다. 행 이름을 인자로 주면 그 행만 돌립니다. CI가 이것을 실행합니다.
 
 콘솔 행은 콘솔 feature를 확인합니다. 다음 표는 콘솔 행과 확인하는 내용입니다.
 
@@ -284,11 +321,22 @@ $ tools/boot-matrix.sh                                    # 지원하는 구성�
 | `pl011-identity` | 콘솔 노드가 RTC를 가리키도록 디바이스 트리를 고치면, 커널이 `k0: console is not a pl011, ignored`를 출력하고 아무것도 쓰지 않으며 그 페이지를 매핑한 채로 두지 않아야 함 |
 | `serial-check` | 판정 자체를 시험. 콘솔 이미지를 조용한 이미지로 판정하면 직렬 출력 때문에 실패해야 함 |
 
+오라클 행은 서명 오라클을 확인합니다. 다음 표에서 부팅 행은 모두 `root: oracle tests pass`를 요구하고, 폴트 줄 8개를 기대합니다.
+
+| 행 | 확인하는 것 |
+| --- | --- |
+| `vault` | 기본 CPU에서 `vault-ed25519`를 포함한 이미지. `k0: dtb seeds wiped 40B`도 요구함 |
+| `vault-max` | 같은 이미지를 `max` CPU에서 부팅해, RNDR이 부트 시드에 들어가는지 확인(`... and rndr`) |
+| `vault-el2` | 같은 이미지를 EL2에서 시작 |
+| `vault-16k` | `vault-ed25519`를 포함한 16 KiB 이미지 |
+| `vault-no-alg` | `vault`만 포함한 이미지. 모든 서명 요청에 "unsupported"로 답함 |
+| `vault-symbols` | 정적 검사. 기본 이미지에는 볼트 코드와 암호 코드가 없고, 볼트 이미지에는 그 코드의 쓰기 가능한 정적 변수가 없음 |
+
 `uefi-*` 행은 EDK2 위에서 UEFI 로더를 거쳐 커널을 부팅합니다. GICv3와 GICv2를 EL1과 EL2에서, `max` CPU, 코어 4개, 16 KiB 이미지, 펌웨어의 난수 장치, FAT 드라이브 경로를 부팅합니다. ACPI를 켠 QEMU 기본 머신을 디바이스 트리 없이 부팅하는 `uefi-acpi-*` 행(`uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k`, `uefi-acpi-rng`)도 있습니다. 정적 검사(`tools/pe-check.py`)는 로더 파일의 형식과, QEMU로는 시험할 수 없는 캐시와 MMU 명령의 순서를 확인합니다.
 
 거부해야 하는 구성에서는 커널의 사유를 메모리에 남은 부트 로그에서 읽고, 로더의 사유는 직렬 로그에서 읽습니다. 이런 구성으로 `cortex-a72`에서의 16 KiB 커널과 한 바이트를 바꾼 커널이 있습니다.
 
-Apple Silicon Mac에서는 `K0_MATRIX_HVF=1 tools/boot-matrix.sh`로 QEMU의 HVF 가속기를 통해 실제 CPU 코어에서 커널을 (UEFI 로더를 거치는 경우도 포함해) 돌리는 행을 더할 수 있습니다. 콘솔 없는 이미지용으로는 `hvf-quiet`이 있습니다.
+Apple Silicon Mac에서는 `K0_MATRIX_HVF=1 tools/boot-matrix.sh`로 QEMU의 HVF 가속기를 통해 실제 CPU 코어에서 커널을 (UEFI 로더를 거치는 경우도 포함해) 돌리는 행을 더할 수 있습니다. 콘솔 없는 이미지용으로는 `hvf-quiet`이, 오라클이 있는 이미지용으로는 `hvf-vault`가 있습니다.
 
 ### 콘솔 없는 이미지 시험
 
@@ -340,6 +388,8 @@ GitHub도 풀 리퀘스트와 `main` 푸시가 있을 때마다 이 테스트를
 | `boot-test: the serial log has no kernel line` | 같은 원인입니다. 콘솔 feature 없이 빌드한 커널은 직렬 포트에 아무것도 쓰지 않습니다. `--features console`로 빌드하거나 `K0_BOOT_MEMLOG=<적재 주소>`로 게스트 메모리의 로그를 판정하세요 |
 | `boot-test`가 `k0: all tasks`로 시작하는 줄에서 실패함 | 모든 태스크가 기다리는 중인데 시간 제한이 있는 대기가 없어서 태스크를 깨울 수 있는 것이 없습니다. 기본 자가 테스트에서는 일어나지 않습니다. 루트 태스크를 바꿨다면 대기마다 타임아웃을 지정하세요 |
 | 부트 로그에 `k0: memory <base> + <size> not handed out (<reason>)`가 나옴 | 커널이 자기 예비 공간을 담기에 너무 작거나 그 몫을 매핑하지 못하는 메모리 범위를 찾았습니다. 그 범위를 제외하고 부팅을 계속했으며, 해당 범위는 untyped 메모리로 쓸 수 없습니다. QEMU에 준 메모리 크기와 적재 주소를 확인하세요 |
+| `root: oracle made no key (boot seed has no entropy)`가 나오거나 `root: oracle tests pass`가 없음 | 부트 시드에 `rng-seed` 바이트가 32개보다 적고 RNDR도 없었음. QEMU virt처럼 디바이스 트리에 `rng-seed`가 있는 머신이나 RNDR이 있는 CPU(`K0_QEMU_CPU=max`)를 사용하세요 |
+| `vault` feature를 포함한 이미지에서 `boot-test`가 `k0: task fault` 줄 수 때문에 실패 | 그 이미지는 8개를 출력함. `K0_BOOT_FAULTS=8`로 테스트를 실행하세요 |
 | 느린 컴퓨터에서 부팅 테스트가 시간 초과 | 시간을 늘리세요. 예: `K0_BOOT_TIMEOUT=300 tools/qemu-boot-test.sh` |
 | 16 KiB 이미지가 `cortex-a72`에서 부팅되지 않음 | 정상입니다. 그 CPU는 16 KiB 페이지를 지원하지 않습니다. `K0_QEMU_CPU=max`를 사용하세요 |
 | 부팅이 일찍 멈추고 아무것도 출력되지 않음 | 지원하는 콘솔이 없거나, 이미지에 그 콘솔의 드라이버가 없을 수 있습니다(드라이버가 하나뿐인 이미지는 다른 종류의 콘솔에서 조용합니다). `tools/boot-log.py`로 메모리에서 부트 로그를 읽으세요 |
