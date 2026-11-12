@@ -80,6 +80,8 @@ The bootloader may leave registers in states that let user space observe or cont
 
 A trap at EL0 is handled as a fault, and the task is terminated (see [exceptions.md](exceptions.md)). The only exception is `WFI` and `WFE`, which the kernel skips. Trapping FP/SIMD means the kernel never has to save vector registers, so a task can never read vector state left behind by another task.
 
+EL0 still cannot read any hardware counter or timer. IPC timeouts, however, give EL0 **a clock that is as coarse as the scheduler tick** (one second), together with a wake-up that is aligned to the timer interrupt (see [ipc.md](ipc.md)). The **tick period is therefore a side-channel decision**. Whether this clock can be amplified into a useful timing source for cache or speculation attacks has not been analysed.
+
 The EL0 thread pointer registers `TPIDR_EL0` and `TPIDRRO_EL0` are part of each task's saved context. `TCB_CONFIGURE` zeroes them, so a new task starts without the creator's values.
 
 `DEBUG_PUTC` requires the `Console` capability and replaces every byte that is neither printable ASCII nor a newline with `?`. A task cannot send terminal escape sequences to whoever reads the console (in an image built with a console driver) or the boot log.

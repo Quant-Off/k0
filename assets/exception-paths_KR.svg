@@ -66,6 +66,7 @@
   <text class="t h" x="462" y="308">인터럽트 확인</text>
   <text class="t s" x="462" y="332">타이머: 1초 뒤 재설정, tick</text>
   <text class="m" x="462" y="352">k0_preempt</text>
+  <text class="t s" x="462" y="372">먼저 타임아웃 만료</text>
   <line class="line" x1="206" y1="337" x2="236" y2="337" marker-end="url(#arrow)"/>
   <line class="line" x1="414" y1="337" x2="444" y2="337" marker-end="url(#arrow)"/>
   <rect class="box" x="30" y="416" width="176" height="86" rx="8"/>

@@ -53,7 +53,15 @@ A sender that has to wait in the queue keeps the badge of its send in its TCB (`
 
 ## The four calls
 
-All four take an `Endpoint` capability in `x0` and flags in `x1`. The only flag is `NONBLOCK`: if the other side is not ready, the call returns `WOULD_BLOCK` instead of waiting. There are no timeouts, so `NONBLOCK` is the only way not to wait. The following figure shows the order of `CALL` and `REPLY_RECV` in the case where the server waits in `RECV` first.
+All four take an `Endpoint` capability in `x0` and flags in `x1`. The flags register has the following layout:
+
+| Bits | Name | Meaning |
+| --- | --- | --- |
+| 0 | `NONBLOCK` | if the other side is not ready, the call returns `WOULD_BLOCK` instead of waiting |
+| 31 to 1 | reserved (`k0_abi::ipc::RESERVED`) | must be 0 |
+| 63 to 32 | timeout | the longest wait in scheduler ticks, 0 means wait forever (see [Timeouts](#timeouts)) |
+
+`k0_abi::ipc::timeout(ticks)` builds the timeout value, and `k0_abi::ipc::TIMEOUT_SHIFT` is 32. `NONBLOCK` wins over a timeout. A call with any reserved bit set fails with `BAD_FLAGS` before anything else is looked at. For `REPLY_RECV`, this happens before the pending reply is consumed. The following figure shows the order of `CALL` and `REPLY_RECV` in the case where the server waits in `RECV` first.
 
 <p align="center">
   <img src="../../assets/ipc-call-sequence.svg" alt="When the server is already waiting in RECV, the CALL of the client delivers the message and the badge to the server and blocks the client in BlockedReply, and REPLY_RECV of the server wakes the client with the one-time reply right">
@@ -67,7 +75,7 @@ The four calls work as follows.
 
 **CALL** sends a message and waits for the reply in a single trap. If a receiver is waiting, the message is delivered and the caller moves straight to `BlockedReply`. Otherwise the caller waits in the queue as `BlockedCall`. Either way, **the caller always blocks**. Because sending and waiting happen in one step, the reply can never arrive in the gap between them.
 
-**REPLY_RECV** is the server loop in one trap. If the calling task holds a reply right, the kernel delivers `x2` to `x5` as the reply to the waiting caller, makes the caller ready, and drops the right. Then it continues exactly like `RECV`.
+**REPLY_RECV** is the server loop in one trap. If the calling task holds a reply right, the kernel delivers `x2` to `x5` as the reply to the waiting caller, makes the caller ready, and drops the right. Then it continues exactly like `RECV`, including a timeout, which applies to this receive phase only.
 
 The endpoint is checked first. If the endpoint capability is invalid or lacks `R`, the call fails without using up the reply. The reply is delivered with `x1 = 0`.
 
@@ -97,20 +105,61 @@ The teardown looks only at the task's state and cuts every kernel pointer to it:
 - **Holding a reply right**: the caller waiting for it wakes with `NO_REPLY`.
 - **Inactive, stopped or running**: nothing to unlink.
 
-The state then becomes `Dead` and the saved registers are zeroed. If the task that made the system call is the one that died, the kernel never writes a return value into it and switches to the next ready task.
+A task that waits with a deadline is also removed from the timed list of the scheduler. The state then becomes `Dead` and the saved registers are zeroed. If the task that made the system call is the one that died, the kernel never writes a return value into it and switches to the next ready task.
 
 When the original capability of an endpoint is deleted, every task still queued on it wakes with `REVOKED`, and no TCB points at the endpoint afterwards. Deleting only a copy of the capability does not touch the queue.
 
+## Timeouts
+
+Every wait can be bounded. A timeout is the upper 32 bits of the flags register `x1`, counted in scheduler ticks. The tick period is 1 second (a kernel constant), so the tick is the unit of every timeout. The following rules apply.
+
+- **Deadline rule**: a timeout of n ticks ends at the (n+1)-th timer tick after the call. As long as ticks are handled on time, the wait lasts between n and n+1 tick periods.
+- **Lower bound, not wall-clock time**: the kernel runs with interrupts masked during every system call, and a long one such as a large `CAP_REVOKE` makes a tick late. The wait is then that much longer.
+- **0 means no deadline**: the task waits until its partner acts, as before.
+- **One deadline for a call**: the deadline of `CALL` covers both phases, waiting for a receiver and then waiting for the reply.
+- **Reply and receive**: `REPLY_RECV` applies the timeout to its receive phase only.
+
+The following table lists what the caller gets when a wait ends by timeout.
+
+| Call | Where it waited | Result | What happened to the message |
+| --- | --- | --- | --- |
+| `SEND` | in the endpoint queue | `TIMEOUT` | not delivered |
+| `RECV`, `REPLY_RECV` | in the endpoint queue | `TIMEOUT` | nothing received (a reply given by `REPLY_RECV` was already delivered) |
+| `CALL` | in the endpoint queue | `TIMEOUT` | not delivered |
+| `CALL` | `BlockedReply` | `REPLY_TIMEOUT` | delivered, and the server may or may not have acted |
+
+When a `CALL` ends with `REPLY_TIMEOUT`, the kernel clears the reply right of the server that holds it. If the server answers later, its `REPLY_RECV` finds no reply right to use, and the late reply is dropped. The next caller receives its own reply.
+
+### The timed list
+
+Each TCB has the fields `deadline`, `tnext` and `tprev`. `k0-sched` keeps an unsorted, intrusive list of the timed waiters (`arm_timeout`, `disarm_timeout`, `expired`, `has_timed`), plus a lower bound of the earliest deadline so that most ticks do not walk the list. A task leaves a blocked state in only two ways, and both remove it from the list:
+
+- `k0_sched::enqueue` (a wake-up), so a waiter woken by a message keeps no deadline, and
+- `k0_ipc::teardown` (death).
+
+`k0_ipc::expire_timeouts` handles the expired waiters. It removes a waiter from its endpoint queue and wakes it with `TIMEOUT`, or it clears the reply link of the task that holds its reply and wakes it with `REPLY_TIMEOUT`. A link that does not match the state halts the kernel with `k0: FATAL`, as in teardown. It runs on every timer tick:
+
+- from `k0_preempt`, when a task was running, and
+- from the idle loop, when none was.
+
+The walk costs O(number of timed waiters) with interrupts masked, at most once per tick.
+
+> [!NOTE]
+> EL0 still cannot read any hardware counter or timer. A timeout gives EL0 a clock as coarse as the scheduler tick and a wake-up aligned to the timer interrupt. Whether that can be amplified into a useful timing source for cache or speculation attacks has not been analysed.
+
 ## Blocking and deadlock
 
-A task that has to wait is marked with its blocked state and linked into the endpoint queue or held by a reply right. Then the scheduler switches to the next ready task (see [scheduling.md](scheduling.md)). Its return registers are written later, by the task that releases it.
+A task that has to wait is marked with its blocked state and linked into the endpoint queue or held by a reply right. If the call has a timeout, the task is also put in the timed list. Then the scheduler switches to the next ready task (see [scheduling.md](scheduling.md)). Its return registers are written later, by the task that releases it.
 
-If no task is ready at that point, every task is blocked and nothing can ever wake one, because K0 does not yet have notification objects for interrupts. The kernel prints `k0: all tasks blocked` and parks the core.
+If no task is ready at that point, the kernel does not stop. It idles in `idle_until_ready` (`kernel/src/syscall.rs`): it waits for the next interrupt, wakes every waiter whose deadline has passed, and switches to a ready task if there is one. Timer ticks keep being counted and handled meanwhile. The idle loop prints one of two lines, each at most once per boot:
+
+- `k0: idle (waiting for a timeout)`: at least one waiter has a deadline, so something will wake a task.
+- `k0: all tasks stopped (none ready, no timeout pending)`: no waiter has a deadline. Nothing can wake a task in that state today, because K0 has no notification objects and no device interrupts for tasks, so the machine stays idle. `tools/qemu-boot-test.sh` treats any line that starts with `k0: all tasks` as a failure.
 
 > [!WARNING]
-> Stopping the whole system is the fail-secure choice here, but it is also advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md): one task can halt the machine by blocking last. A confined task that holds a capability to an endpoint can still do it, and isolation does not cover availability.
+> The kernel no longer halts when every task is blocked, and a task can bound its own waits with timeouts. Availability is still not protected. A task that waits without a timeout can wait forever if its partner never acts, and a confined task that holds a capability to an endpoint can still make others wait. This is the subject of advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md). The advisory is updated at release time.
 
-This is unchanged by task isolation.
+A server, or the root task, that must stay responsive has to give a timeout on every wait. Task isolation does not change this.
 
 ## Errors
 
@@ -124,6 +173,9 @@ The following table lists the error codes and their causes.
 | `WOULD_BLOCK` | `NONBLOCK` was set and the other side was not ready |
 | `NO_REPLY` | the receiver of a `CALL` exited, faulted or took a newer `CALL` without replying, or was destroyed |
 | `REVOKED` | the original capability of the endpoint was deleted while the caller was queued on it |
+| `TIMEOUT` | the wait ended before a partner arrived, and the message was not delivered |
+| `REPLY_TIMEOUT` | a `CALL` was delivered but no reply came in time, and the server may or may not have acted |
+| `BAD_FLAGS` | a reserved bit (31 to 1) of the flags register was set |
 
 ## How it is tested
 
@@ -135,6 +187,17 @@ IPC and teardown are tested by booting. The root task starts a server task and c
 - first in, first out order with two queued senders,
 - a server that receives a new `CALL` while it still holds a reply right, so that the first caller gets `NO_REPLY`, and
 - a server that exits while a caller waits, so that the caller gets `NO_REPLY`.
+
+The timeout tests (`test_timeouts` in `userspace/root-task/src/main.rs`) wait for real ticks and check the following:
+
+- that reserved flag bits are refused, and that `NONBLOCK` beats a timeout,
+- a `CALL` whose server never answers, which returns `REPLY_TIMEOUT` while every other task is blocked too,
+- three waiters in `RECV`, `SEND` and `CALL`, which return `TIMEOUT`,
+- that the late reply of the server is dropped and the next call gets its own reply,
+- that a timed waiter can be deleted, and
+- that a waiter woken by a message keeps no deadline.
+
+The timeout tests take their objects from the largest untyped. The tests wait for real ticks, so a boot test takes about 4 seconds longer.
 
 The capability tests check that a badge can be set once and is refused a second time, that a copy keeps the badge, that a send-only capability cannot receive and a receive-only one cannot send (`NO_RIGHTS`), and that revoking an endpoint removes every copy while the original stays.
 
@@ -151,12 +214,16 @@ The teardown tests delete tasks in each state and check the queues afterwards:
 
 The boot test script also requires an exact number of `k0: task fault` lines and exactly one `k0: unknown syscall` line, so a task that keeps running after it was destroyed fails the test.
 
-`tools/qemu-boot-test.sh` requires `root: ipc tests pass`.
+`tools/qemu-boot-test.sh` requires `root: ipc tests pass`, `k0: idle (waiting for a timeout)` and `root: timeout tests pass`. When it judges by the serial port, it also counts the timer tick lines between `root: teardown tests pass` and `root: timeout tests pass`. There must be at least 4, which is how the lower bound of a timeout is checked, because EL0 has no clock.
 
 ## Known gaps
 
 > [!NOTE]
-> Capability transfer over IPC does not exist yet. Notifications and timeouts do not exist yet either, so a blocked task waits until its partner acts.
+> Capability transfer over IPC and notification objects do not exist yet. Timeouts are opt-in per call, so a task that waits without one still waits until its partner acts.
 
+- **Timeouts say when a task becomes ready, not when it runs**: there is no priority and no CPU budget, and the scheduler is round robin with a one-tick slice (see [scheduling.md](scheduling.md)).
+- **Long system calls**: the kernel is not preemptible, so a long call such as `CAP_REVOKE` on an untyped with many objects delays every other task and every timeout.
+- **Fatal stops**: a `k0_arch::fatal` or a kernel panic still stops the machine.
+- **Timing source for EL0**: whether the tick-aligned wake-up can be used for timing attacks has not been analysed.
 - **A queued sender**: it delivers once after revocation. A sender that is already waiting on an endpoint keeps the badge of the send that queued it. If its capability is revoked while it waits, its message is still delivered once to the next receiver.
 - **Four words per message**: larger data needs shared memory. The holder of a task's `AddrSpace` capability must map it into that task's address space, since tasks can now run in separate address spaces.

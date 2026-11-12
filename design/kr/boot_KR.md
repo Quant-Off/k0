@@ -106,9 +106,10 @@ $ cargo build -p k0-kernel --offline --no-default-features --features granule-16
 | `k0: root task integrity ok (...)` | 내장 루트 태스크 이미지를 다시 해시하고 빌드 시점에 고정된 해시와 비교합니다. |
 | `k0: entropy ...`, `k0: pac=... bti=... pan=...` | PAC 키를 파생해 적재하고 키 워드를 부트 스택에서 지우며, PAN을 켜고, 카운터·디버그·PMU에 대한 EL0 접근을 끕니다. [hardening_KR.md](hardening_KR.md)를 참고하세요. |
 | `k0: irq on (timer 1s)` | `setup_irq`가 필요한 인터럽트 컨트롤러 페이지만 매핑합니다. GICv3는 리디스트리뷰터 프레임을 하나씩 들여다보며 부트 CPU의 프레임을 찾은 뒤, 그 프레임과 SGI 프레임만 매핑합니다. 드라이버는 GIC 식별 레지스터가 DTB의 설명과 맞는지 확인합니다. EL1 가상 타이머는 플랫폼 기술서의 인터럽트 번호로 설정합니다. IRQ와 SError의 마스크를 해제합니다. |
-| `k0: kernel table pool N/40` | 2 MiB 부트 프레임 윈도우를 고르고 매핑한 뒤, 사용 중인 커널 페이지 테이블 수를 출력합니다(예: QEMU virt에서 `16/40`). |
+| `k0: kernel table pool N/40` | 2 MiB 부트 프레임 윈도우를 고르고 매핑한 뒤, 사용 중인 커널 페이지 테이블 수를 출력합니다(예: QEMU virt에서 `16/40`). 40개짜리 정적 풀은 부트 중에만 사용합니다. |
 | `k0: root task loaded (entry ...)` | 루트 태스크를 윈도우의 프레임에 복사하고, 윈도우에 루트 TCB를 만들고, 주소 공간을 만듭니다. 커널은 사용자 루트 테이블의 물리 주소를 출력하지 않습니다. 이후 이 주소 공간을 주소 공간 등록부에 올립니다. [user-address-space_KR.md](user-address-space_KR.md)를 참고하세요. |
-| `k0: untyped ...`, `k0: root cnode ready (N caps, N untyped, N image frames, N slots)` | 루트 CNode(윈도우 안의 오브젝트이며 슬롯은 `ROOT_CNODE_SLOTS` = 512개, 로그에도 그렇게 나옵니다)를 채웁니다. 슬롯 1은 루트 TCB, 2는 루트 주소 공간, 3은 콘솔, 4는 루트 CNode 자신이고, 이어서 비어 있는 물리 범위마다 untyped 케이퍼빌리티, 루트 태스크 이미지의 매핑된 그래뉼마다 Frame 케이퍼빌리티 하나(text는 R과 X, 읽기 전용 데이터는 R, 데이터는 R과 W)가 들어갑니다. 마지막으로 루트 태스크를 다른 태스크와 똑같이 자신의 CNode와 주소 공간에 묶습니다. 두 케이퍼빌리티의 복사본이 TCB에 들어갑니다. [capabilities_KR.md](capabilities_KR.md)를 참고하세요. |
+| `k0: memory <base> + <size> not handed out (<reason>)`(일어날 때만), `k0: kernel reserve <T> tables + <E> address space entries = <B> bytes in <N> ranges` | `reserve_kernel_share`가 untyped 케이퍼빌리티가 만들어지기 전에 비어 있는 물리 범위마다 커널 몫을 떼어 냅니다("untyped 메모리에서 커널 몫 떼어 내기" 참고). 자기 몫을 담지 못하는 범위는 넘기지 않으며, 이때 커널은 첫 번째 종류의 줄에 이유를 출력합니다. 두 번째 줄은 한 번 출력됩니다. 예를 들어 512 MiB, 4 KiB 그래뉼의 QEMU virt에서는 `k0: kernel reserve 262 tables + 130130 address space entries = 0x206000 bytes in 3 ranges`입니다. |
+| `k0: untyped ...`, `k0: root cnode ready (N caps, N untyped, N image frames, N slots)` | 루트 CNode(윈도우 안의 오브젝트이며 슬롯은 `ROOT_CNODE_SLOTS` = 512개, 로그에도 그렇게 나옵니다)를 채웁니다. 슬롯 1은 루트 TCB, 2는 루트 주소 공간, 3은 콘솔, 4는 루트 CNode 자신이고, 이어서 넘기기로 한 비어 있는 물리 범위마다 untyped 케이퍼빌리티, 루트 태스크 이미지의 매핑된 그래뉼마다 Frame 케이퍼빌리티 하나(text는 R과 X, 읽기 전용 데이터는 R, 데이터는 R과 W)가 들어갑니다. 마지막으로 루트 태스크를 다른 태스크와 똑같이 자신의 CNode와 주소 공간에 묶습니다. 두 케이퍼빌리티의 복사본이 TCB에 들어갑니다. [capabilities_KR.md](capabilities_KR.md)를 참고하세요. |
 | `k0: bootinfo page ready` | 케이퍼빌리티 목록을 읽기 전용 bootinfo 페이지에 기록합니다. 헤더와 슬롯마다 하나의 디스크립터이며, 이미지 Frame마다 VA, 크기, 권한이 들어갑니다. |
 | `k0: user w^x checks pass` | `TTBR0`가 사용자 테이블을 가리키고, identity 매핑은 사라졌으며, 사용자 매핑을 EL0와 EL1 양쪽에서 검사합니다. |
 | `k0: device pages [...] of 0x1000 bytes` | 커널이 매핑한 채로 두는 모든 디바이스 페이지입니다. 이 줄 뒤에 커널은 더 이상 디바이스를 매핑하지 않습니다. |
@@ -125,6 +126,18 @@ $ cargo build -p k0-kernel --offline --no-default-features --features granule-16
 - **물리 주소 0**: 첫 그래뉼은 커널 안에서 0이 "없음"을 뜻하므로 오브젝트로 내주지 않습니다.
 - **윈도우의 내용**: 루트 태스크 이미지, 스택, 페이지 테이블, bootinfo 페이지, 루트 TCB, 루트 CNode가 들어갑니다.
 - **untyped 제외**: 윈도우는 untyped 케이퍼빌리티에서 제외되므로, 커널이 아직 사용하는 메모리를 루트 태스크가 retype하는 일은 없습니다.
+
+### untyped 메모리에서 커널 몫 떼어 내기
+
+`kernel/src/main.rs`의 `reserve_kernel_share`는 루트 태스크를 적재한 뒤, untyped 케이퍼빌리티를 만들기 전에 실행됩니다. 비어 있는 물리 범위마다 다음과 같이 동작합니다.
+
+- **몫**: 범위의 모든 그래뉼을 매핑하는 데 필요할 수 있는 페이지 테이블의 최대 개수(`k0_mm::alias_tables_for`)와, 범위의 그래뉼마다 8바이트 주소 공간 항목 하나를 담는 데 필요한 그래뉼 수를 계산합니다.
+- **배치**: 그 몫을 범위의 윗부분에서 가져옵니다. 테이블은 테이블 예비분이 되고(`k0_mm::reserve_tables`), 항목은 그 범위의 주소 공간 등록부가 됩니다(`add_range`). 항목 영역은 커널 별칭 윈도우에 매핑하고 0으로 지웁니다. 예비분의 테이블은 부팅 때가 아니라 넘겨줄 때 0으로 지웁니다.
+- **결과**: 몫을 뺀 나머지 범위가 `Untyped` 케이퍼빌리티 하나로 넘어갑니다. 부팅 후 `alias_object`는 이 예비분에서 테이블을 가져오므로 태스크가 이를 소진할 수 없습니다.
+- **몫을 담지 못하는 범위**: 너무 작거나 몫을 매핑할 수 없는 범위는 `Untyped`로 넘기지 않습니다. 커널은 `k0: memory <base> + <size> not handed out (<reason>)`을 출력하고 계속합니다. 범위 버퍼에 들어가지 않는 범위도 같은 방식으로 건너뜁니다(`too many ranges`).
+- **온전한 그래뉼이 없는 틈**: 오브젝트를 만들 수 없고 몫도 필요 없으므로 그대로 넘깁니다.
+
+이 단계는 **부팅을 거부하지 않습니다**. 최악의 경우 메모리가 넘겨지지 않고 로그 한 줄이 그 사실을 알립니다. 오버헤드는 4 KiB 그래뉼에서 RAM의 약 0.2 %, 16 KiB 그래뉼에서 약 0.05 %입니다. 루트 태스크의 주소 공간은 루트 테이블이 부트 윈도우에 있으며 전용 등록부 항목 하나를 사용합니다.
 
 ### 이양 이후
 

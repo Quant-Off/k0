@@ -84,7 +84,16 @@
 
 ### 등록부
 
-`k0-mm`의 정적 등록부(`AddrSpaces`, `MAX_ADDR_SPACES`개 항목, 0번은 쓰지 않음)가 살아 있는 모든 주소 공간에 번호(`asid`)와 세대를 줍니다. 루트 태스크의 주소 공간은 `kernel_main`에서, 나머지는 `sys_retype`에서 등록합니다. 빈 항목은 배열 안의 단일 연결 목록으로 엮여 있어 등록과 해제에 탐색이 없습니다. 해제하면 세대가 올라갑니다. 세대를 더 올릴 수 없게 된 항목은 퇴역시켜 다시는 내주지 않습니다. 등록부가 가득 차면 `AddrSpace`의 `RETYPE`이 실패합니다.
+`k0-mm`의 등록부(`AddrSpaces`)는 부팅 때 크기가 정해집니다. untyped 메모리로 넘기는 **모든 구간의 그래뉼마다 8바이트 항목이 하나씩** 있습니다. 항목은 세대 카운터와 "살아 있음" 비트입니다. 항목은 커널 페이지 테이블과 같은 구간 맨 위 예약 영역에 있고([memory_KR.md](memory_KR.md) 참고) 부팅 때 소거합니다.
+
+- 주소 공간의 번호(`asid`)는 그 루트 테이블이 놓인 그래뉼의 번호(`root_pa / GRANULE`)이고 `u64`입니다. `Cap::AddrSpace`와 매핑 기록에서 같은 번호를 씁니다.
+- 주소 공간을 해제하면 세대가 올라갑니다. 따라서 옛 `(asid, generation)` 쌍은 같은 그래뉼에 새 주소 공간이 생겨도 다시는 일치하지 않습니다.
+- 루트 태스크의 주소 공간은 루트 테이블이 untyped 메모리가 아니라 부트 윈도우에 있습니다. 전용 항목 하나(`register_boot`)를 쓰며 `kernel_main`에서 등록합니다. 나머지는 `sys_retype`에서 등록합니다.
+- 주소 공간 하나는 루트로 그래뉼 하나가 필요하므로, 메모리가 허락하는 모든 주소 공간에는 항목이 있습니다. **주소 공간의 수에는 메모리 말고 다른 한도가 없고**, `AddrSpace`의 `RETYPE`이 빈 항목이 모자라 실패하는 일은 없습니다.
+- 더 올릴 수 없게 된 세대는 포화합니다. 그 그래뉼은 퇴역해 다시는 주소 공간의 루트가 되지 않습니다. 다른 그래뉼에는 영향이 없습니다.
+
+> [!NOTE]
+> 항목의 비용은 그래뉼마다 8바이트로, 4 KiB 그래뉼에서 RAM의 약 0.2 %, 16 KiB 그래뉼에서 약 0.05 %입니다. 부팅 로그 줄 `k0: kernel reserve <T> tables + <E> address space entries = <B> bytes in <N> ranges`가 합계를 보여 줍니다.
 
 `Frame`이나 `PageTable` 케이퍼빌리티는 자신이 매핑된 위치를 `(asid, 세대, va, 레벨)` 기록으로 기억하며, 포인터는 절대 저장하지 않습니다. 주소 공간이 먼저 파괴되면 이 기록은 더 이상 해석되지 않으므로, 커널은 메모리가 이미 다른 용도로 바뀌었을 수 있는 루트 테이블을 걷지 않습니다.
 
@@ -98,7 +107,7 @@
 - `user_map_frame`으로 `Frame` 케이퍼빌리티를 **매핑**하면 리프 엔트리 하나를 만듭니다. 도중에 중간 테이블이 없으면 호출은 `MISSING_TABLE`로 실패합니다. 리프는 비어 있어야 하며, 그렇지 않으면 호출은 `OVERLAP`으로 실패합니다.
 - `user_install_table`로 `PageTable` 케이퍼빌리티를 **매핑**하면 주어진 주소의 경로를 따라 내려가며 처음 만나는 빈 레벨에 테이블을 연결합니다. 경로가 리프 레벨까지 이미 완성되어 있으면 호출은 `OVERLAP`으로 실패합니다.
 
-따라서 사용자 공간은 `PageTable` 오브젝트를 retype하는 방식으로, 자신의 untyped 메모리를 들여 자기 페이지 테이블 비용을 직접 부담합니다. 커널의 정적 테이블 풀은 사용자 매핑에 대해 소모되지 않습니다.
+따라서 사용자 공간은 `PageTable` 오브젝트를 retype하는 방식으로, 자신의 untyped 메모리를 들여 자기 페이지 테이블 비용을 직접 부담합니다. 커널 자신의 테이블은 사용자 매핑에 대해 소모되지 않습니다.
 
 `sys_map`의 추가 규칙은 다음과 같습니다.
 
@@ -151,7 +160,7 @@ CPU에 FEAT_PAN이 있으면 커널은 PAN을 설정한 채 실행되므로, 사
   - 모든 사용자 권한의 W^X 속성
   - 어떤 테이블도 건드리기 전에 잘못된 입력을 거부해야 하는 검증 경로
   - 호스트 메모리 위에서 도는 실제 워커: 테이블의 위에서 아래 순서 설치(`tables_install_top_down_and_frames_need_the_full_path`), 바로 그 프레임의 리프만 지우는 unmap(`unmap_clears_only_the_leaf_that_maps_this_very_frame`), 링크 하나만 끊는 uninstall(`uninstall_cuts_exactly_one_link_and_a_zeroed_table_carries_nothing`), 무작위 map·unmap 순서에 대한 모델 테스트(`random_map_and_unmap_agree_with_a_model`), 48비트 범위 전체 커버리지입니다.
-  - 등록부: 서로 다른 0이 아닌 번호, 거부되는 잘못된 번호, 낡은 세대(`a_stale_generation_never_resolves_again`), 무작위 등록·해제 순서, 소진된 세대의 퇴역
+  - 등록부: 구간의 모든 그래뉼이 동시에 주소 공간을 가질 수 있음(`every_granule_of_a_range_can_hold_an_address_space_at_once`), 등록부가 다루지 않는 번호의 거부(`registry_rejects_what_it_does_not_cover`), 낡은 세대(`a_stale_generation_never_resolves_again`), 무작위 등록·해제 순서(`registry_survives_random_register_release_sequences`), 소진된 세대의 퇴역(`a_granule_whose_generation_is_exhausted_is_retired`), 루트 태스크의 전용 항목(`the_root_task_address_space_has_its_own_entry`), 서로 독립인 구간과 한도가 있는 구간 표(`ranges_are_independent_and_the_table_of_ranges_is_bounded`)
 - `tools/host-test.sh`는 `k0-mm`을 AArch64 호스트에서만 두 그래뉼 모두로 실행합니다.
 - 루트 태스크 자가 테스트는 실행 중 경로를 점검합니다. 점검 항목은 다음과 같습니다.
   - 페이지 테이블이 생기기 전의 매핑
@@ -167,13 +176,13 @@ CPU에 FEAT_PAN이 있으면 커널은 PAN을 설정한 채 실행되므로, 사
   - 떼어 낸 테이블이 옛 리프를 새 자리로 가져가지 않는 것
   - 테이블이 분리된 뒤의 낡은 프레임 기록
   - 새 매핑을 통한 읽기와 쓰기
+  - 주소 공간 300개가 동시에 살아 있는 경우로, 예전 등록부가 담던 수보다 많음(`test_reserve`)
 - 격리 자가 테스트는 자기 CNode와 자기 주소 공간(이미지 text와 읽기 전용 데이터만 매핑)을 가진 격리 태스크를 만들어, 루트 전용 주소를 읽으면 정확히 그 주소에서 폴트가 나는지, 읽기 전용 페이지 쓰기·스택 페이지 실행·커널 주소 읽기가 폴트를 내는지, 주소 공간이 삭제되면 태스크가 죽는지를 확인합니다.
 - `tools/qemu-boot-test.sh`는 `k0: user w^x checks pass`, `root: retype/map tests pass`, `root: isolation tests pass`, `root: teardown tests pass`, `root: revocation tests pass` 등을 요구하고, `k0: task fault` 줄의 정확한 개수도 요구합니다.
 
 ## 알려진 공백
 
-- **가용성**: 격리는 가용성을 포함하지 않습니다. 모든 태스크가 막히면 커널은 코어를 파킹하며([SECURITY_KR.md](../../SECURITY_KR.md) 참고), 격리된 태스크가 마지막으로 막힘으로써 이를 일으킬 수 있습니다.
-- **등록부와 풀 한도**: 등록부는 최대 `MAX_ADDR_SPACES`개의 주소 공간을 담습니다. retype된 모든 오브젝트의 커널 별칭은 정적 커널 페이지 테이블 풀을 사용합니다. untyped 메모리를 많이 가진 태스크가 이 풀을 고갈시키면 모두에게 `RETYPE`이 `KERNEL_RESOURCE`로 실패합니다.
+- **가용성**: 격리는 가용성을 포함하지 않습니다. 모든 태스크가 막혀도 커널은 더 이상 멈추지 않으며, 등록부와 커널 페이지 테이블은 태스크가 소진시킬 수 없게 되었습니다([memory_KR.md](memory_KR.md)와 [SECURITY_KR.md](../../SECURITY_KR.md) 참고). 타임아웃 없이 기다리는 태스크는 여전히 영원히 기다릴 수 있고, 우선순위와 CPU 예산은 없습니다. untyped 메모리를 가진 태스크는 주소 공간과 태스크를 많이 만들어 다른 태스크의 몫을 희석시킬 수 있습니다.
 - **새 실행 코드**: 설계상(프레임 단위 W^X) 부팅 이후에는 새 실행 코드를 적재할 수 없습니다. 격리된 태스크는 루트 태스크 이미지의 코드만 실행할 수 있습니다.
 - **하드웨어 ASID**: 하드웨어 ASID가 없으므로 `TTBR0` 전환과 모든 매핑 해제마다 TLB 전체를 비웁니다. 안전이 아니라 성능의 비용입니다.
 - **커널 별칭**: 사용자 공간에 매핑된 모든 프레임은 커널 별칭에도 읽기·쓰기로 매핑되어 있습니다. retype 중에 커널이 그곳에서 프레임을 0으로 채웠기 때문입니다.

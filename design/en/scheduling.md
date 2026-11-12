@@ -31,6 +31,7 @@ A **task control block** (TCB) holds the following:
 - **Queue links**: `next` and `prev`, the links to its neighbours in whatever queue the task is in.
 - **Reply right**: the single-use reply right (`reply_to`) and its reverse link (`reply_from`), described in [ipc.md](ipc.md).
 - **IPC wait information**: `blocked_on`, the endpoint the task is queued at, and `ipc_badge`, the badge of the message it is waiting to send.
+- **Timeout fields**: `deadline`, the tick at which the task's IPC wait ends, and `tnext` and `tprev`, the links of the timed waiter list (see [Timeouts](#timeouts)).
 - **Three embedded capability slots**: slot 1 holds the task's `CNode` capability and slot 2 its `AddrSpace` capability. Slot 0 is unused.
 
 The **embedded slots** are what bind a task to its capability space and its address space. System calls resolve slot numbers only in the CNode named by slot 1 (see [capabilities.md](capabilities.md)), and the task runs in the address space named by slot 2. Both are copies, that is children in the derivation list, of the capabilities given to `TCB_CONFIGURE`, and they are marked as bound to the task. When either one is removed, the task is torn down (see [Teardown](#teardown)).
@@ -44,7 +45,7 @@ The kernel reaches a TCB only through its own alias, and it is never mapped at E
 The following figure shows the task states and the transitions between them. The meaning of each state is in the table after it.
 
 <p align="center">
-  <img src="../../assets/scheduling-states.svg" alt="Inactive becomes Stopped through TCB_CONFIGURE and Ready through TCB_RESUME, round robin moves a task between Running and Ready, a task blocks in IPC and becomes Ready when released, and teardown makes it Dead from any state">
+  <img src="../../assets/scheduling-states.svg" alt="Inactive becomes Stopped through TCB_CONFIGURE and Ready through TCB_RESUME, round robin moves a task between Running and Ready, a task blocks in IPC and becomes Ready when its partner releases it or its deadline passes, and teardown makes it Dead from any state">
 </p>
 
 | State | Meaning |
@@ -56,6 +57,8 @@ The following figure shows the task states and the transitions between them. The
 | `BlockedSend`, `BlockedRecv`, `BlockedCall` | waiting in an endpoint queue |
 | `BlockedReply` | waiting for the answer to a `CALL` |
 | `Dead` | exited, killed, or torn down |
+
+A task in any of the blocked states can also become `Ready` when its deadline passes (see [Timeouts](#timeouts)).
 
 `Inactive` has the value 0. A freshly retyped frame is all zeroes, so it already is a valid `Inactive` TCB with empty queue links, empty embedded slots and no reply right. Retype needs no constructor.
 
@@ -99,7 +102,7 @@ Three operations use this switch, as shown in the following table.
 | Operation | Used by | What happens to the current task |
 | --- | --- | --- |
 | `rotate` | `YIELD`, timer preemption | goes to the tail of the ready queue, unless nothing else is ready, in which case it simply continues |
-| `block_and_switch` | IPC, and the system call exit path when the current task died | stays out of the ready queue. The caller has already put it in an endpoint queue or behind a reply right, or it is `Dead`. |
+| `block_and_switch` | IPC, the idle loop, and the system call exit path when the current task died | stays out of the ready queue. The caller has already put it in an endpoint queue or behind a reply right, or it is `Dead`. |
 | `handoff` | boot, once | the root task becomes the first `Running` task |
 
 ## Preemption
@@ -110,6 +113,15 @@ The timer fires once per second. When it fires while EL0 is running, the IRQ pat
 > The kernel itself is never preempted. Exception entry masks interrupts, and the kernel keeps them masked while it handles a system call or fault.
 
 A timer interrupt that arrives at EL1 is possible only during boot, before the handoff, and it only counts the tick.
+
+## Timeouts
+
+The tick is the unit of every IPC timeout, as described in [ipc.md](ipc.md). The scheduler keeps the waiters that have a deadline in a timed list (`arm_timeout`, `disarm_timeout`, `expired`, `has_timed` in `k0-sched`). The list is unsorted, and a lower bound of the earliest deadline lets most ticks skip it.
+
+A task leaves a blocked state only through `k0_sched::enqueue` (wake-up) or `k0_ipc::teardown` (death), and both remove it from the timed list. On every timer tick, `k0_ipc::expire_timeouts` wakes the waiters whose deadline has passed. It runs from `k0_preempt` when a task was running, and from the idle loop when none was. A timeout of n ticks ends at the (n+1)-th tick after the call.
+
+> [!NOTE]
+> A timeout says when a task becomes ready, not when it runs. The woken task joins the tail of the ready queue like any other.
 
 ## Teardown
 
@@ -131,8 +143,8 @@ The following table shows what teardown does in each state.
 | `Dead` | nothing, so it is safe to call twice |
 | `Inactive`, `Stopped` | nothing to unlink |
 | `Ready` | removes the task from the ready queue |
-| `BlockedSend`, `BlockedRecv`, `BlockedCall` | removes the task from the endpoint queue named by `blocked_on` |
-| `BlockedReply` | clears the reply right in the task that holds it (`reply_from`) |
+| `BlockedSend`, `BlockedRecv`, `BlockedCall` | removes the task from the endpoint queue named by `blocked_on`, and from the timed list if it has a deadline |
+| `BlockedReply` | clears the reply right in the task that holds it (`reply_from`), and removes the task from the timed list if it has a deadline |
 | `Running` | nothing is unlinked. See below. |
 
 For every state it then withdraws any reply right the task itself holds, so that the caller waiting for that reply wakes with `NO_REPLY` and does not stay blocked forever. Finally it sets the state to `Dead`, clears the queue links, `blocked_on`, `reply_from`, `ipc_badge` and `ttbr0_pa`, and, unless the task is `Running`, zeroes its saved registers. A queue or reply link that does not match what the state promises is a kernel invariant violation, and the kernel halts with `k0: FATAL ...` (see [exceptions.md](exceptions.md)).
@@ -143,13 +155,21 @@ A dead task's frame is not freed by teardown. It stays a `Dead` TCB, and `TCB_CO
 
 ## When there is nothing left to run
 
-- **The current task died**: if the current task died during a kernel entry and no task is ready, `finish` prints `k0: all tasks exited` and parks the core.
-- **The current task blocked**: if the current task blocks in IPC and no task is ready, `block_and_switch` reports it, and the kernel prints `k0: all tasks blocked` and parks. No other event can wake a task today, because notification objects do not exist yet.
+The kernel no longer parks the core when no task can run. If the current task blocked or died and no task is ready, `idle_until_ready` in `kernel/src/syscall.rs` takes over:
+
+1. It waits for the next interrupt (`k0_arch::irq::wait_for_interrupt`: `wfi` with IRQs masked, then a short unmask so that the EL1 vector takes the interrupt).
+2. It wakes every IPC waiter whose deadline has passed.
+3. It switches to a ready task if there is one, and otherwise waits again.
+
+Timer ticks keep being counted and handled while the kernel idles. The idle loop prints one of two lines, each at most once per boot:
+
+- `k0: idle (waiting for a timeout)`: at least one waiter has a deadline.
+- `k0: all tasks stopped (none ready, no timeout pending)`: no waiter has a deadline. Nothing can wake a task in that state today, because there are no notification objects and no device interrupts for tasks, so the machine stays idle.
 
 > [!WARNING]
-> The case where every task is blocked is advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md). Task isolation does not change this: a confined task that is the last one to block can still park the whole system. Isolation protects confidentiality and integrity between tasks, not availability.
+> Availability is still not protected. A task that waits without a timeout can wait forever if its partner never acts, and a confined task that is the last one to block can still leave the system with nothing to run (advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md), updated at release time). Isolation protects confidentiality and integrity between tasks, not availability.
 
-Parking is a `wfe` loop inside the kernel, which runs with interrupts masked.
+An SError taken from EL0 still stops the whole machine, and so does a `k0_arch::fatal` or a kernel panic.
 
 ## How it is tested
 
@@ -162,17 +182,18 @@ The scheduler and the system call paths read system registers, so they are teste
 - build confined tasks that have their own CNode and their own address space, and check that the root task's slot numbers mean nothing there, and
 - delete a task in each state (inactive, stopped, ready, blocked in send, receive and call, waiting for a reply, holding a reply right, and at the head, middle and tail of an endpoint queue), delete endpoints with tasks queued, kill a task by revoking its CNode or deleting its address space, and have a task delete its own TCB and revoke the untyped it was carved from.
 
-`tools/qemu-boot-test.sh` requires the markers `root: child exit test pass`, `root: preempt test pass`, `root: isolation tests pass`, `root: violation tests pass`, `root: teardown tests pass`, `root: revocation tests pass` and `root: sched tests pass`, followed by at least one more timer tick. It fails if the log contains `k0: all tasks`, `k0: FATAL` or `k0: PANIC`, so a premature "all tasks exited" fails the run. It also counts task fault lines exactly (see [exceptions.md](exceptions.md)), which catches a task that keeps running after its teardown.
+`tools/qemu-boot-test.sh` requires the markers `root: child exit test pass`, `root: preempt test pass`, `root: isolation tests pass`, `root: violation tests pass`, `root: teardown tests pass`, `root: revocation tests pass` and `root: sched tests pass`, followed by at least one more timer tick. The markers also include `k0: idle (waiting for a timeout)` and `root: timeout tests pass`, which come from the timeout tests (see [ipc.md](ipc.md)). It fails if the log contains a line that starts with `k0: all tasks`, `k0: FATAL` or `k0: PANIC`, so a run in which the kernel ends up with nothing to run and no timeout pending fails. It also counts task fault lines exactly (see [exceptions.md](exceptions.md)), which catches a task that keeps running after its teardown.
 
 ## Known gaps
 
 > [!NOTE]
-> Priorities, budgets, timeouts and an idle state do not exist yet. There is one core only.
+> Priorities and CPU budgets do not exist yet. There is one core only.
 
-- **Scheduling**: plain round robin with a fixed one-second slice.
-- **Behaviour without an idle state**: when the root task has finished its self-tests it keeps calling `YIELD`, so the CPU does not sleep. When no task can run, the kernel parks instead of waiting for an event.
-- **Availability**: if every task is blocked, the kernel parks the core, and a confined task can cause this by blocking last (GHSA-q99x-2wrv-358p). Task isolation does not cover availability.
-- **Blocked tasks**: a blocked task wakes only when its IPC partner acts or when the endpoint is deleted.
+- **Scheduling**: plain round robin with a fixed one-second slice. A task that holds untyped memory can create many tasks and dilute everybody's share.
+- **Timeouts**: they say when a task becomes ready, not when it runs. They are opt-in per call, so a task that waits without one can wait forever.
+- **Idle state**: it exists, but while the root task keeps calling `YIELD` after its self-tests, the CPU does not sleep. When no task is ready and no waiter has a deadline, the machine stays idle and nothing can wake a task.
+- **Availability**: a task that blocks without a timeout, including a confined one, can stay blocked for good if its partner never acts (GHSA-q99x-2wrv-358p). The kernel is not preemptible, so a long system call such as `CAP_REVOKE` on an untyped with many objects delays every other task and every timeout. Task isolation does not cover availability.
+- **Blocked tasks**: a blocked task wakes when its IPC partner acts, when its deadline passes, or when the endpoint is deleted.
 - **Dead TCB**: it is not reclaimed by teardown. Its frame becomes reusable only when its capability is deleted or its untyped is revoked and retyped.
 - **Address space identifiers**: there are no hardware address space identifiers, so every switch between address spaces flushes the whole TLB.
 - **Dead task**: it cannot be restarted. A new task needs a new TCB.

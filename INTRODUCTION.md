@@ -10,7 +10,7 @@ This document explains in plain words what K0 is, what it can do today and what 
 
 ## What K0 is
 
-An operating system kernel is the program that controls the hardware and decides what every other program may do. Most kernels are large and do many jobs themselves. K0 is a **microkernel**: it does only the few jobs that must be done inside the kernel and leaves everything else to ordinary programs. The kernel side is about 7,400 lines of Rust and assembly (comments included, tests excluded). It is small enough to read from start to end.
+An operating system kernel is the program that controls the hardware and decides what every other program may do. Most kernels are large and do many jobs themselves. K0 is a **microkernel**: it does only the few jobs that must be done inside the kernel and leaves everything else to ordinary programs. The kernel side is about 11,800 lines of Rust and assembly (comments included, tests excluded). It is small enough to read from start to end.
 
 The most important of those jobs is keeping programs apart. Think of a dormitory. Each room is a block of memory, each key opens one thing, and the kernel is the caretaker. A resident can open only the doors they hold a key for. A copy cannot be turned into a stronger key, and when a key is taken back, every copy made from it stops working too. In K0 these keys are called **capabilities**. The idea comes from the seL4 kernel.
 
@@ -131,6 +131,9 @@ These features only add and are not in `default`, so **every build command must 
   Memory is placed on an address space's map only by showing that address space's key (MAP, UNMAP). Keys carry rights (read, write, execute). A mailbox key can carry a tag that tells the receiver who sent a message (badge). Keys can be copied with the same or fewer rights, or moved between slots (CAP_COPY, CAP_MOVE).
 - **Running tasks**: a task is tied to one key ring and one address space when it is set up (TCB_CONFIGURE) and then started (TCB_RESUME). Tasks take turns, and a timer interrupts a task that runs too long (round-robin scheduling with timer preemption). A task can give up its turn (YIELD) or finish (EXIT).
 - **Messages**: tasks exchange short messages that travel in processor registers. The sender waits until the receiver takes the message (synchronous IPC: SEND, RECV, CALL, REPLY_RECV). Sending needs the write right on the mailbox key and receiving needs the read right. The receiver learns the tag of the sender's key, and the right to reply can be used only once.
+- **Timeouts**: every one of these calls can carry a time limit, counted in timer ticks (one tick is one second). If no partner arrives in time, the call returns an error (`TIMEOUT`, or `REPLY_TIMEOUT` when a `CALL` was delivered but no reply came). Without a limit a task waits as long as it takes. The wait lasts at least the given number of ticks and may be a little longer. The limit says when the task becomes ready again, not when it runs.
+- **Idle**: when no task can run, the kernel no longer stops. It waits for the next interrupt, wakes tasks whose time limit has passed and carries on. If nothing can ever wake a task, the machine stays idle and the boot log says `k0: all tasks stopped (none ready, no timeout pending)`.
+- **Kernel tables sized at boot**: the kernel sets aside the memory for its own page tables and address space entries at boot, in proportion to the memory it hands out (about 0.4 % of RAM). So a task cannot use these tables up, and the number of address spaces is limited only by memory.
 - **Crash containment**: when a task crashes, makes a system call the kernel does not know, or exits, only that task is stopped (fault isolation).
 - **Task isolation and taking keys back**: tasks tied to different key rings and address spaces cannot reach each other's memory or keys. Every key remembers which key it was copied from (derivation list). Taking a key back (CAP_REVOKE) or deleting it (CAP_DELETE) has the following effects.
   - Every key copied from it is removed as well.
@@ -226,13 +229,22 @@ What it stops:
 - **Access to resources and memory**: a task cannot use a resource it holds no key for, and it cannot see memory that is not on its own map.
 
 > [!WARNING]
-> Availability is not protected. A task can still bring everything to a halt.
+> Availability is not protected in general. A task can still slow down or block the other tasks, as the list below shows.
 
 What it does not stop:
 
-- **Availability**: there are two cases.
-  - If every task ends up waiting for a message, the kernel stops the processor core. A confined task can cause this by being the last one to wait.
-  - A task given a lot of free memory can use up the kernel's fixed tables (40 page tables for the kernel's own use, 256 address space entries), and then nobody can create new objects.
+- **Availability**: three things improved, but a lot is still open.
+  - The kernel no longer stops when every task is waiting. It idles and keeps handling timer ticks.
+  - A task can limit its own waits with a timeout.
+  - The kernel's two tables for page tables and address spaces can no longer be used up by a task.
+
+  Still open:
+
+  - A task that waits without a timeout can wait forever if its partner never acts. Timeouts are used per call, so a server that must stay responsive has to give one on every wait.
+  - There is no priority and no CPU budget. Tasks take turns in equal slices, and a task that holds a lot of free memory can create many tasks and shrink everyone else's share.
+  - The kernel cannot be interrupted while it handles a system call. A long call, such as taking back a key to a large block of memory, delays every other task and every timeout.
+  - A fatal error inside the kernel, or an error from the hardware that the kernel cannot attribute to one task, still stops the whole machine.
+  - The kernel part of the boot log can be filled up by crash and exit lines.
 - **Tasks that share a key ring and an address space**: such tasks are not isolated from each other. They behave like threads, parts of one program that share everything.
 - **Control of a task**: whoever holds the key to a task, to its key ring or to its address space controls that task.
 
@@ -247,7 +259,7 @@ Missing features:
 - **Capability transfer**: a key cannot be handed to another task inside a message (capability transfer over IPC).
 - **Hardware interrupt notification**: a program cannot be told about hardware interrupts (Notification objects).
 - **Crash reports**: a crashed task is only stopped. It is not reported to a handler task.
-- **Timeouts and multicore**: there are no timeouts, and only one processor core is used.
+- **Multicore**: only one processor core is used.
 - **Device access**: programs cannot access hardware devices (device memory and interrupts).
 - **Loading new executable code after boot**: this is the flip side of the write-or-run rule. Executable memory exists only for the root task image, so a confined task runs code from that image.
 - **Multi-level key lookup and ASIDs**: multi-level key lookup and hardware address space tags (ASIDs) do not exist. Today every switch to another address space empties the processor's cache of memory map lookups (the TLB).
@@ -269,9 +281,9 @@ Missing features:
 
 Missing protection and assurance:
 
-- **Availability guarantees**: see the previous section.
+- **Availability guarantees**: see the previous section. Several ways to block other tasks remain.
 - **DMA isolation**: some devices read and write memory directly, without the processor (DMA). Once devices are handed to programs, a memory map for devices (an IOMMU, such as the SMMU on ARM) has to stop such a device from reading all memory. Nothing for this exists yet.
-- **Side channels**: secrets can leak through timing or through caches the processor shares, rather than by direct access. A few such leaks are closed (programs cannot read the hardware counters, and the TLB is emptied whenever the address space changes). There is no general defence against cache or timing side channels, and they have not been analysed.
+- **Side channels**: secrets can leak through timing or through caches the processor shares, rather than by direct access. A few such leaks are closed (programs cannot read the hardware counters, and the TLB is emptied whenever the address space changes). Timeouts give programs a clock, but it is as coarse as one timer tick. Whether that can help an attack has not been analysed. There is no general defence against cache or timing side channels, and they have not been analysed.
 - **Waiting senders**: taking a key back does not cancel a sender already waiting at the mailbox. Its message is still delivered once.
 - **Basis of assurance**: assurance comes from testing only.
   - Unit tests and fuzzing (feeding random, broken input to find crashes) on the build machine

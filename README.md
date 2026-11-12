@@ -18,7 +18,7 @@ K0 is a small operating system kernel for 64-bit ARM (AArch64) computers. It is 
 ## Security status
 
 - **Published version**: the version published as the `v0.1.0` tag has **no isolation between programs**. The published security advisories (public notices about known flaws) apply to it.
-- **Development branch**: the current `main` branch (unreleased) keeps programs apart in memory and in the keys they can use. It does **not** protect availability. One program can still bring the whole system to a halt.
+- **Development branch**: the current `main` branch (unreleased) keeps programs apart in memory and in the keys they can use. It does **not** protect availability in general. One program can still hold up the others, for example by never giving up a wait.
 
 > [!WARNING]
 > Do not run code you do not trust on K0 anywhere an outage would matter.

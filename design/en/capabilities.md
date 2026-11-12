@@ -47,6 +47,7 @@ Capabilities are stored as raw words and decoded with validation on every use. A
 - rights on a kind that has none
 - stray bits
 - a mapping record on an unmapped capability
+- an address space id (`asid`) that is 0 or larger than the greatest granule number a slot can hold
 - an empty slot that is still linked into a list
 
 > [!IMPORTANT]
@@ -119,17 +120,19 @@ The root task's CNode is the root CNode. It has `ROOT_CNODE_SLOTS` (512) slots a
 
 The image `Frame` capabilities have rights fixed by the segment: text is `R|X` (no `W`), read-only data is `R`, data is `R|W` (no `X`). The text frames are the only frames in the system that carry `X`, and their contents are the image whose hash was verified at boot. The root task's own boot mappings are permanent and are not represented by these capabilities.
 
-The untyped capabilities cover every byte of RAM reported by the device tree, minus every reserved range. The kernel passes these reserved ranges:
+The untyped capabilities cover every byte of RAM reported by the device tree, minus every reserved range, minus the kernel's own share of each range (see below). The kernel takes these reserved ranges out:
 
 - the kernel image
 - the DTB
 - the 2 MiB boot frame window
 - every firmware reserved range from the DTB, both the memory reservation block and the children of `/reserved-memory`
 
-Reserved ranges may overlap one another and may arrive in any order. For each memory region, a cursor walks forward through the reserved ranges in address order and emits the gaps between them. So overlapping reservations simply merge.
+Reserved ranges may overlap one another and may arrive in any order. Before the root CNode is filled, the kernel checks the regions with `check_regions`. For each memory region, `for_each_gap` then walks a cursor forward through the reserved ranges in address order and emits the gaps between them. So overlapping reservations simply merge.
+
+From the top of each gap, the kernel then takes its own share: the page tables for the kernel alias and the address space registry entries (see [memory.md](memory.md) and [user-address-space.md](user-address-space.md)). `bootstrap` receives the ranges that are left, already carved, and makes one `Untyped` capability of each. A gap that cannot host its share is not handed out, and the kernel prints `k0: memory <base> + <size> not handed out (<reason>)`.
 
 > [!IMPORTANT]
-> Memory regions themselves must not overlap. If two regions overlapped, the same physical frame would sit in two untyped capabilities and could be retyped into two different objects. `bootstrap` rejects such a map, and the kernel stops booting.
+> Memory regions themselves must not overlap. If two regions overlapped, the same physical frame would sit in two untyped capabilities and could be retyped into two different objects. `check_regions` rejects such a map, and the kernel stops booting.
 
 Running out of slots also stops the boot. A DTB memory region beyond the CPU's physical address width stops the boot as well.
 
@@ -162,11 +165,11 @@ The checks run in the following order, and the order is the important part.
 5. If the untyped has no descendants, the watermark restarts at the base (memory reuse, see below).
 6. The rounded watermark plus one granule must fit inside the untyped range, with every addition checked for overflow, and the object's physical address must be encodable in a slot. Otherwise `EXHAUSTED`.
 7. The new capability's derivation depth must stay within `MAX_DEPTH`, otherwise `TOO_DEEP`.
-8. Only then does the kernel prepare the memory. The callback in `sys_retype` maps the granule into the kernel alias (see [memory.md](memory.md); re-mapping an identical alias is accepted) and zeroes it. For an `ADDR_SPACE` it also registers the new address space in the registry. A failure here returns `KERNEL_RESOURCE`.
+8. Only then does the kernel prepare the memory. The callback in `sys_retype` maps the granule into the kernel alias (see [memory.md](memory.md); re-mapping an identical alias is accepted) and zeroes it. For an `ADDR_SPACE` it also registers the new address space in the registry. The tables and the registry entry come from the reserve that the kernel set aside at boot, so a granule inside an `Untyped` capability that the kernel handed out always has both. A failure here would return `KERNEL_RESOURCE`, but no known cause remains.
 9. Only if the preparation succeeds does the watermark move and the new capability go into the destination slot.
 
 > [!IMPORTANT]
-> If any step fails, nothing has changed. The watermark, the destination slot, the registry and the kernel table pool are exactly as before, and the caller gets an error code. The memory is zeroed before the capability exists, so no task can observe the previous contents of retyped memory.
+> If any step fails, nothing has changed. The watermark, the destination slot, the registry and the kernel tables are exactly as before, and the caller gets an error code. The memory is zeroed before the capability exists, so no task can observe the previous contents of retyped memory.
 
 Zeroing is a security step and a design choice at the same time. It keeps previous contents from leaking into the new object, and it means a zeroed frame already is a valid initial object. In the following table, you can see how each zeroed object is interpreted.
 
@@ -232,7 +235,7 @@ When an original capability is removed, its object is finalized by the callbacks
 - **Tcb** (original), and any capability bound to a task: the task is torn down, see [scheduling.md](scheduling.md) and [ipc.md](ipc.md).
 - **AddrSpace** (original): it is released in the registry (which bumps its generation). If it is installed in TTBR0, TTBR0 is switched to an empty table from the kernel pool.
 
-A **mapping record** is `(id, generation, va, level)`. Unmapping, deleting and revoking only walk a root that the registry confirms is still the same address space, and only clear an entry that still points at that very frame or table. See [user-address-space.md](user-address-space.md).
+A **mapping record** is `(asid, generation, va, level)`. The `asid` is the number of the granule that holds the root table of the address space, a `u64` (the same number as in `Cap::AddrSpace`). It is checked when the word is decoded. Unmapping, deleting and revoking only walk a root that the registry confirms is still the same address space, and only clear an entry that still points at that very frame or table. See [user-address-space.md](user-address-space.md).
 
 **No recursion**. A CNode or a TCB holds slots, so finalizing one means deleting what it holds, which may finalize more containers. k0-cap does not recurse. It links the slot array of a finalized container onto a pending list, threaded through the array's slot 0, and the same call drains the list in a loop. Kernel stack use does not grow with derivation depth or CNode nesting. Time is proportional to the number of capabilities removed, and interrupts are masked meanwhile.
 
@@ -278,7 +281,7 @@ The following table lists the error codes for slot problems and their meaning.
 | `BAD_BADGE` | a badge on a kind that cannot carry one, or a different badge on an already badged capability |
 | `TOO_DEEP` | the derivation depth limit would be exceeded |
 | `REVOKED` | returned to a task that was waiting on an endpoint that was deleted |
-| `KERNEL_RESOURCE` | an internal pool is exhausted (kernel table pool for alias mappings, address space registry) |
+| `KERNEL_RESOURCE` | an internal resource is missing. It is still a defined code, but neither the kernel alias tables nor the address space registry can cause it any more |
 
 ## How it is tested
 
@@ -325,9 +328,9 @@ The 16 KiB image boots and passes the boot checks on QEMU `-cpu max`, and it boo
 ## Known gaps
 
 > [!NOTE]
-> Capability transfer does not exist yet. Capabilities cannot be sent over IPC, and tasks get capabilities only by `CAP_COPY` and `CAP_MOVE` into a CNode they already hold. Notifications, fault delivery to a handler task and timeouts are not in the model yet, and there is one core.
+> Capability transfer does not exist yet. Capabilities cannot be sent over IPC, and tasks get capabilities only by `CAP_COPY` and `CAP_MOVE` into a CNode they already hold. Notifications and fault delivery to a handler task are not in the model yet, and there is one core. Timeouts exist (see [ipc.md](ipc.md)).
 
-- **Availability**: it is not isolated. If every task is blocked, the kernel still parks the core (see GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md)), and a confined task can cause this by blocking last. A task that holds a lot of untyped memory can exhaust the static pool of 40 kernel page tables used for alias mappings, or the address space registry. Then `RETYPE` fails with `KERNEL_RESOURCE` for everyone.
+- **Availability**: it is not isolated. The kernel no longer halts when every task is blocked, a task can bound its own waits with timeouts, and the kernel page tables and the address space registry can no longer be used up. A task that waits without a timeout can still wait forever if its partner never acts, so a server must give a timeout on every wait. There is no priority and no CPU budget, and a task that holds untyped memory can create many tasks and dilute the share of the others. The kernel is not preemptible, so a long system call such as `CAP_REVOKE` delays everybody. See GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md) for the state of the advisory.
 - **A queued sender**: a sender already queued on an endpoint still delivers its message once more after its capability is revoked.
 - **Differences from seL4**: they are the following:
   - Single-level CSpace (no guards, no multi-level lookup).

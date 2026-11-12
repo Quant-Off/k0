@@ -16,7 +16,7 @@ Read them in the order of the following table the first time. This order follows
 | Note | Subject |
 | --- | --- |
 | [boot.md](boot.md) | From the first instruction to the root task: core selection, the drop to EL1, the jump to the higher half, and the fixed initialization order |
-| [memory.md](memory.md) | Kernel page tables, the static table pool and its rollback, W^X, guard pages, and the boot-time translation checks |
+| [memory.md](memory.md) | Kernel page tables, the boot-time table pool, the table reserve and rollback, W^X, guard pages, and the boot-time translation checks |
 | [user-address-space.md](user-address-space.md) | `AddrSpace` objects and their registry, user permissions, `MAP` and `UNMAP` without the kernel allocating tables, and how mappings are cleaned up when capabilities are removed |
 | [capabilities.md](capabilities.md) | Per-task CNodes, rights and badges, the derivation list, untyped memory, retype and its failure guarantees, revoke and delete, and what task isolation does and does not cover |
 | [dtb.md](dtb.md) | The device tree as hostile input: what the parser reads, its limits, and how it is fuzzed |

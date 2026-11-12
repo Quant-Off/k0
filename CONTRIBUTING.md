@@ -91,9 +91,9 @@ $ cargo build -p k0-kernel --features console --offline
 $ tools/qemu-boot-test.sh   # boot under QEMU and check the self-tests
 ```
 
-`tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap`, `k0-boot` and `k0-efi` on any host (221 tests on an AArch64 host, 161 elsewhere). The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
+`tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap`, `k0-boot` and `k0-efi` on any host (250 tests on an AArch64 host, 164 elsewhere). The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
 
-`tools/qemu-boot-test.sh` boots the debug kernel, checks the boot log line by line in a fixed order, fails on any error marker, and stops QEMU as soon as the root task reports `root: sched tests pass`. Set `K0_BOOT_TIMEOUT` (seconds) on slow machines. It reads the serial port, so it needs an image with a console driver. To test an image without console, use `K0_BOOT_MEMLOG`, `K0_BOOT_SERIAL=empty` and `K0_BOOT_CONSOLE_PAGE`, which are described in "Testing an image without console" in [USAGE.md](USAGE.md#testing-an-image-without-console).
+`tools/qemu-boot-test.sh` boots the debug kernel, checks the boot log line by line in a fixed order, fails on any error marker, and stops QEMU as soon as the root task reports `root: sched tests pass`. Besides the pass lines, it expects `k0: kernel reserve ` before the `k0: untyped ` lines, `k0: idle (waiting for a timeout)` and `root: timeout tests pass` after `root: teardown tests pass`, and `root: kernel reserve tests pass` after `root: revocation tests pass`. Any line that starts with `k0: all tasks` is a failure. It also counts the timer tick lines between `root: teardown tests pass` and `root: timeout tests pass` and wants at least 4, because EL0 has no clock and this is how the lower bound of a timeout is checked. The timeout tests wait for real ticks, so a boot takes about 4 seconds longer than it did before. Set `K0_BOOT_TIMEOUT` (seconds) on slow machines. It reads the serial port, so it needs an image with a console driver. To test an image without console, use `K0_BOOT_MEMLOG`, `K0_BOOT_SERIAL=empty` and `K0_BOOT_CONSOLE_PAGE`, which are described in "Testing an image without console" in [USAGE.md](USAGE.md#testing-an-image-without-console).
 
 The default QEMU CPU model (`cortex-a72`) has no PAC, PAN or RNDR. To exercise those paths as well, boot on QEMU's `max` model and require the matching log lines. Any arguments after the kernel path are passed to QEMU. You can enter it as follows:
 
@@ -159,7 +159,16 @@ $ docker run --rm --network none k0-ci tools/host-test.sh
 $ docker run --rm --network none k0-ci tools/boot-matrix.sh
 ```
 
-Run this from **a clean checkout**, because the build context includes everything in the working directory.
+Run this from **a clean checkout**, because the build context is the working directory. The following list describes how the image is made.
+
+- **Base image**: it is pinned by the digest of its multi-architecture index (`debian:bookworm@sha256:...`).
+- **Rust toolchain**: the image does not use rustup. `ci/install-toolchain.py` pins the SHA-256 of the Rust 1.89.0 channel manifest and checks every package it installs (rustc, cargo, rust-std for the host and for `aarch64-unknown-none-softfloat` and `aarch64-unknown-uefi`, rust-src and llvm-tools) against the hashes in that manifest. A mismatch fails the image build.
+- **Build context**: `.dockerignore` is an allowlist, so nothing enters the image unless it is listed there. **A new top-level file or directory** that the build or the tests need must be added to it. `.git` is kept in the image.
+
+> [!NOTE]
+> Not everything is pinned. The versions of the Debian packages float (apt checks them with the archive keys inside the pinned base image), and so do the GitHub runner images. The GitHub Actions used by the workflows are pinned by commit hash.
+
+Developers still use rustup on their own machines. Only the CI image changed.
 
 ## Rules for kernel changes
 

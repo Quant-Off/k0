@@ -43,7 +43,9 @@ The fatal vector path above is for exceptions the CPU raises. `k0_arch::fatal` i
 
 ### Interrupts while in the kernel
 
-An IRQ taken at EL1 saves the caller-saved registers on the kernel stack, calls the handler and returns. After the handoff this does not happen, because exception entry masks interrupts and the kernel never unmasks them while handling an exception. The kernel itself is never preempted.
+An IRQ taken at EL1 saves the caller-saved registers on the kernel stack, calls the handler and returns. While the kernel handles an exception it keeps interrupts masked, with one exception: the idle wait in `idle_until_ready` (see [The finish path](#the-finish-path)). The kernel itself is never preempted.
+
+The idle wait opens only the I bit, for one pending interrupt, by `k0_arch::irq::wait_for_interrupt` (`wfi` with IRQs masked, then a short unmask). This is safe for three reasons. First, the whole EL0 context, including `ELR_EL1` and `SPSR_EL1`, is already saved in the TCB, so the nested EL1 IRQ may overwrite both registers without losing anything. Second, the handler runs on the kernel stack, which has plenty of room because the exception entry starts at the top of it. Third, the mask is set again right after the interrupt, so no other kernel code runs with interrupts open.
 
 ### Vectors at EL2
 
@@ -120,16 +122,25 @@ It then calls `kill_current`, which runs the teardown described in [scheduling.m
 
 Every system call and every fault ends in `finish`, which runs after the handler and after all capability cleanup. A handler can kill the calling task without a fault: `EXIT`, deleting its own CNode, address space or TCB, or revoking the untyped it came from. So `finish` decides what happens to the context only once everything else is done:
 
-1. **The current task is Dead**: no return value is written into its context. The context is zeroed, so no register of a dead task survives, and the kernel switches to the next ready task. If none is ready, it prints `k0: all tasks exited` and parks.
+1. **The current task is Dead**: no return value is written into its context. The context is zeroed, so no register of a dead task survives, and the kernel switches to the next ready task. If none is ready, it calls `idle_until_ready` (see below).
 2. **Any other case**: the return value is written to `x0`. IPC calls that block write their results later, when the partner acts.
 
 Cleanup comes before the switch because a revoke can destroy the very address space or CNode the task was using. The next task must not run on top of half-finished cleanup.
+
+When no task is ready (for example the last runnable task died, or every task is blocked), `idle_until_ready` **keeps the kernel idle instead of stopping it**. In a loop it waits for the next interrupt with `k0_arch::irq::wait_for_interrupt`, calls `k0_ipc::expire_timeouts` so that every IPC waiter whose deadline has passed is woken, and switches to a ready task if there is one. Timer ticks keep being counted and handled while the kernel idles. The nested EL1 IRQ is explained in [Interrupts while in the kernel](#interrupts-while-in-the-kernel). The function prints two lines, each at most once per boot:
+
+| Line | When |
+| --- | --- |
+| `k0: idle (waiting for a timeout)` | the first time the kernel idles while at least one waiter has a deadline |
+| `k0: all tasks stopped (none ready, no timeout pending)` | the first time the kernel idles while no waiter has a deadline |
+
+In the second state nothing can wake a task today, because there are no notification objects and no device interrupts for tasks. The machine stays idle. `tools/qemu-boot-test.sh` treats any line that starts with `k0: all tasks` as a failure.
 
 ## Timer interrupts from EL0
 
 The only interrupt the kernel enables is **the EL1 virtual timer**. Its interrupt number comes from the DTB, and the kernel uses no physical timer. The interrupt controller is GICv2 or GICv3, whichever the DTB says is the timer's interrupt parent. Before it writes anything, the driver checks the identification registers against that description and refuses to boot if they differ. See [dtb.md](dtb.md).
 
-An IRQ taken from EL0 is saved the same way as a system call. The handler acknowledges the interrupt. If it was the timer, it re-arms the timer for one second, and prints `k0: tick N`. In an image built with a console driver, the line also goes to the console; only the first 4 tick lines are logged. Then it calls `k0_preempt`, which rotates to the next ready task. Spurious interrupt numbers 1020 to 1023 are ignored. Any other interrupt number, or any FIQ, cannot happen by design, so the kernel prints `k0: UNEXPECTED ...` and parks.
+An IRQ taken from EL0 is saved the same way as a system call. The handler acknowledges the interrupt. If it was the timer, it re-arms the timer for one second, and prints `k0: tick N`. In an image built with a console driver, the line also goes to the console; only the first 4 tick lines are logged. Then it calls `k0_preempt`. That function first expires the IPC timeouts that are due (`k0_ipc::expire_timeouts`), so a waiter whose deadline has passed is ready before the round-robin switch, and then rotates to the next ready task. Spurious interrupt numbers 1020 to 1023 are ignored. Any other interrupt number, or any FIQ, cannot happen by design, so the kernel prints `k0: UNEXPECTED ...` and parks.
 
 ## How it is tested
 
@@ -145,5 +156,6 @@ The test also requires the ordered markers, among them `k0: task fault dabort-lo
 > A faulting task is always killed. Delivering the fault to a handler task over IPC, so that a pager or supervisor can respond, is planned but does not exist yet.
 
 - Any exception at EL1 other than an interrupt is **fatal**. The kernel does not recover from its own faults: the fatal vector path prints a diagnosis and halts the whole system. A kernel invariant violation found by the kernel's own checks stops the system the same way through `k0_arch::fatal`.
-- A task that faults or makes an unknown system call kills only itself, but if it was the last runnable task **the whole system parks** (`k0: all tasks exited`). If all tasks are blocked, the kernel also parks (GHSA-q99x-2wrv-358p). Isolation does not cover availability.
+- A task that faults or makes an unknown system call kills only itself. If no task is ready afterwards, the kernel idles instead of stopping (see [The finish path](#the-finish-path)). A task that waits without a timeout can still wait forever if its partner never acts, and the scheduler has no priority and no CPU budget (GHSA-q99x-2wrv-358p is still listed as affecting 0.1.0 and earlier). Isolation does not cover availability.
+- The whole system still stops in these cases: `k0_arch::fatal` and the fatal vector path, a kernel panic, an SError taken from EL0, and a trap to EL2.
 - The fault message **includes user addresses**. That is useful for debugging, but it goes to the boot log and, in an image built with a console driver, to the console. Every task holding a `Console` capability can also write to both.

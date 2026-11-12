@@ -16,8 +16,8 @@
 | 노트 | 주제 |
 | --- | --- |
 | [boot_KR.md](boot_KR.md) | 첫 명령에서 루트 태스크까지: 코어 선택, EL1로의 하강, higher-half로의 점프, 고정된 초기화 순서 |
-| [memory_KR.md](memory_KR.md) | 커널 페이지 테이블, 정적 테이블 풀과 롤백, W^X, 가드 페이지, 부팅 시 변환 검사 |
-| [user-address-space_KR.md](user-address-space_KR.md) | `AddrSpace` 오브젝트와 레지스트리, 사용자 권한, 커널이 테이블을 할당하지 않는 `MAP`과 `UNMAP`, 케이퍼빌리티가 제거될 때 매핑을 정리하는 방법 |
+| [memory_KR.md](memory_KR.md) | 커널 페이지 테이블, 부팅용 테이블 풀, 테이블 예약 구간과 롤백, W^X, 가드 페이지, 부팅 시 변환 검사 |
+| [user-address-space_KR.md](user-address-space_KR.md) | `AddrSpace` 오브젝트와 등록부, 사용자 권한, 커널이 테이블을 할당하지 않는 `MAP`과 `UNMAP`, 케이퍼빌리티가 제거될 때 매핑을 정리하는 방법 |
 | [capabilities_KR.md](capabilities_KR.md) | 태스크별 CNode, 권한과 배지, 파생 목록, untyped 메모리, retype과 실패 시 보장, revoke와 delete, 태스크 격리가 다루는 것과 다루지 않는 것 |
 | [dtb_KR.md](dtb_KR.md) | 적대적 입력으로서의 디바이스 트리: 파서가 읽는 것, 한계, 퍼징 방법 |
 | [uefi_KR.md](uefi_KR.md) | UEFI 로더: 커널 밖에 두는 이유, 실행 흐름, RAM으로 인정하지 않는 메모리, 디바이스 트리 재작성, 점프 전 자가 검사, QEMU로 테스트할 수 없는 것, 부팅해 본 환경 |

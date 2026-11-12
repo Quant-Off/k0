@@ -84,7 +84,16 @@ The root task's address space is no longer the only one. `RETYPE` with `ADDR_SPA
 
 ### The registry
 
-A static registry in `k0-mm` (`AddrSpaces`, `MAX_ADDR_SPACES` entries, index 0 never used) gives every live address space an id (`asid`) and a generation. The root task's address space is registered in `kernel_main`, the others by `sys_retype`. Free entries form a singly linked list inside the array, so registering and releasing take no search. Releasing bumps the generation. An entry whose generation can no longer be bumped is retired and never handed out again. If the registry is full, `RETYPE` of an `AddrSpace` fails.
+The registry in `k0-mm` (`AddrSpaces`) is sized at boot. It has **one 8-byte entry for every granule of every range that is handed out as untyped memory**. An entry holds a generation counter and a "live" bit. The entries live in the same reserve at the top of the range as the kernel's page tables (see [memory.md](memory.md)) and are zeroed at boot.
+
+- The id of an address space (`asid`) is the number of the granule that holds its root table (`root_pa / GRANULE`), a `u64`. It is the same number in `Cap::AddrSpace` and in mapping records.
+- Releasing an address space bumps the generation. An old `(asid, generation)` pair therefore never matches a new address space at the same granule.
+- The root task's address space has its root table in the boot window, not in untyped memory. It uses one dedicated entry (`register_boot`), registered in `kernel_main`. The others are registered by `sys_retype`.
+- An address space needs one granule for its root, so every address space that memory allows has an entry. **There is no limit on the number of address spaces other than memory**, and `RETYPE` of an `AddrSpace` cannot fail for lack of a free entry.
+- A generation that can no longer be bumped saturates: the granule is retired and never again becomes the root of an address space. Other granules are not affected.
+
+> [!NOTE]
+> The entries cost 8 bytes per granule, about 0.2 % of RAM with the 4 KiB granule and 0.05 % with the 16 KiB granule. The boot log line `k0: kernel reserve <T> tables + <E> address space entries = <B> bytes in <N> ranges` shows the totals.
 
 A `Frame` or `PageTable` capability remembers where it is mapped as a record of `(asid, generation, va, level)`. It never stores a pointer. If the address space is destroyed first, the record no longer resolves, and the kernel does not walk a root table whose memory may already be something else.
 
@@ -98,7 +107,7 @@ User space maps into an address space with `MAP`. The kernel walks the tables th
 - Mapping a `Frame` capability with `user_map_frame` **creates one leaf entry**. If an intermediate table is missing on the way, the call fails with `MISSING_TABLE`. The leaf must be empty, or the call fails with `OVERLAP`.
 - Mapping a `PageTable` capability with `user_install_table` **links a table**. It walks down the path of the given address and links the table into the first empty level it finds. If the path is already complete down to the leaf level, the call fails with `OVERLAP`.
 
-User space therefore pays for its own page tables with its own untyped memory, by retyping `PageTable` objects. The kernel's static table pool is never charged for user mappings.
+User space therefore pays for its own page tables with its own untyped memory, by retyping `PageTable` objects. The kernel's own tables are never charged for user mappings.
 
 Further rules in `sys_map`:
 
@@ -151,7 +160,7 @@ When the CPU has FEAT_PAN, the kernel runs with PAN set, so any EL1 access throu
   - the W^X properties of every user permission
   - the validation paths that must reject bad input before touching any table
   - the real walkers on host memory: top-down table installation (`tables_install_top_down_and_frames_need_the_full_path`), unmap that clears only the leaf of the very frame (`unmap_clears_only_the_leaf_that_maps_this_very_frame`), uninstall that cuts exactly one link (`uninstall_cuts_exactly_one_link_and_a_zeroed_table_carries_nothing`), a model test of random map and unmap sequences (`random_map_and_unmap_agree_with_a_model`), and full coverage of the 48-bit range
-  - the registry: distinct non-zero ids, rejected bad ids, stale generations (`a_stale_generation_never_resolves_again`), random register and release sequences and retirement of an exhausted generation
+  - the registry: every granule of a range can hold an address space at once (`every_granule_of_a_range_can_hold_an_address_space_at_once`), ids the registry does not cover are rejected (`registry_rejects_what_it_does_not_cover`), stale generations (`a_stale_generation_never_resolves_again`), random register and release sequences (`registry_survives_random_register_release_sequences`), retirement of an exhausted generation (`a_granule_whose_generation_is_exhausted_is_retired`), the dedicated entry of the root task (`the_root_task_address_space_has_its_own_entry`), and independent ranges with a bounded table of ranges (`ranges_are_independent_and_the_table_of_ranges_is_bounded`)
 - `tools/host-test.sh` runs `k0-mm` for both granules on AArch64 hosts only.
 - The root task self-tests exercise the run-time path. They cover the following:
   - mapping before a page table exists
@@ -167,13 +176,13 @@ When the CPU has FEAT_PAN, the kernel runs with PAN set, so any EL1 access throu
   - a detached table that does not carry its old leaf to a new place
   - stale frame records after the table was detached
   - reading and writing through the new mappings
+  - 300 address spaces alive at once, which is more than the old registry could hold (`test_reserve`)
 - The isolation self-tests build confined tasks with their own CNode and address space (only image text and read-only data mapped) and check that a read of a root-only address faults at exactly that address, that writes to a read-only page, execution from a stack page and reads of a kernel address fault, and that a task dies when its address space is deleted.
 - `tools/qemu-boot-test.sh` requires, among others, `k0: user w^x checks pass`, `root: retype/map tests pass`, `root: isolation tests pass`, `root: teardown tests pass` and `root: revocation tests pass`, and an exact count of `k0: task fault` lines.
 
 ## Known gaps
 
-- **Availability**: isolation does not cover availability. If every task is blocked, the kernel parks the core (see [SECURITY.md](../../SECURITY.md)), and a confined task can cause this by blocking last.
-- **Registry and pool limits**: the registry holds at most `MAX_ADDR_SPACES` address spaces. The kernel alias of every retyped object uses a static pool of kernel page tables. A task holding a lot of untyped memory can exhaust that pool, and then `RETYPE` fails with `KERNEL_RESOURCE` for everyone.
+- **Availability**: isolation does not cover availability. The kernel no longer halts when every task is blocked, and the registry and the kernel page tables can no longer be used up by a task (see [memory.md](memory.md) and [SECURITY.md](../../SECURITY.md)). A task that waits without a timeout can still wait forever, and there is no priority and no CPU budget. A task that holds untyped memory can create many address spaces and tasks and dilute the share of the others.
 - **New executable code**: no new executable code can be loaded after boot, by design (per-frame W^X). A confined task can only run code from the root task image.
 - **Hardware ASIDs**: there are no hardware ASIDs, so every `TTBR0` switch and every unmap flushes the whole TLB. This costs performance, not safety.
 - **Kernel alias**: every frame mapped into user space is also mapped read-write in the kernel alias, because the kernel zeroed it there during retype.

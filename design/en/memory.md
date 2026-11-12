@@ -6,7 +6,7 @@ English | [한국어](../kr/memory_KR.md)
 
 </div>
 
-This note describes how the kernel maps itself: the translation setup, the static table pool, the permission scheme, and the checks that confirm the result at boot. The code is in `crates/k0-mm/src/paging.rs`. User address spaces are covered in [user-address-space.md](user-address-space.md).
+This note describes how the kernel maps itself: the translation setup, the static table pool and the table reserve, the permission scheme, and the checks that confirm the result at boot. The code is in `crates/k0-mm/src/paging.rs`. User address spaces are covered in [user-address-space.md](user-address-space.md).
 
 ## Two halves
 
@@ -35,12 +35,12 @@ The kernel maps **only pages**, never blocks. Every mapping goes through the sam
 
 ## The static table pool
 
-The kernel has no heap. Its page tables come from a **pool of 40 tables** in `.bss`, handed out by a counter that only goes up. Three tables are taken when the MMU is set up:
+The kernel has no heap. During boot, its page tables come from a **pool of 40 tables** in `.bss`, handed out by a counter that only goes up. Three tables are taken when the MMU is set up:
 
 - the roots of the two halves (two tables)
 - an empty `TTBR0_EL1` root with no mappings in it (`null_user_root`)
 
-The kernel switches `TTBR0_EL1` to that empty root when the address space that is currently installed is destroyed, so the hardware never walks a table that no longer exists. The rest become intermediate tables as mappings are added. On QEMU virt with the default build, the boot log line `k0: kernel table pool N/40`, printed after the boot frame window is mapped, shows `16/40`. Later `RETYPE` calls can use more.
+The kernel switches `TTBR0_EL1` to that empty root when the address space that is currently installed is destroyed, so the hardware never walks a table that no longer exists. The rest become intermediate tables as mappings are added. On QEMU virt with the default build, the boot log line `k0: kernel table pool N/40`, printed after the boot frame window is mapped, shows `16/40`. The pool is used only during boot. After boot, the tables for `RETYPE` come from the table reserve (see "The table reserve").
 
 When the walk follows an existing table entry, `index_of` converts the address in that entry back into a pool index. It rejects any address that does not land exactly on an allocated table in the pool. A corrupted or forged table address therefore stops the walk with `BadTable`. It is never followed into arbitrary memory.
 
@@ -48,10 +48,26 @@ When the walk follows an existing table entry, `index_of` converts the address i
 
 `map_page` remembers every link it creates on the way down. If the walk fails, for example because the pool runs out or the leaf entry is already in use, it clears those links and restores the counter. The pool ends up exactly as it was before the call.
 
-This matters after boot. Each `RETYPE` system call maps the new object into the kernel alias through this pool. Without the rollback, a user task could issue retypes that fail halfway and drain the pool a few tables at a time, until the kernel itself could no longer map anything. With the rollback, a failed retype costs nothing. Two host tests show this:
+This matters after boot. Each `RETYPE` system call maps the new object into the kernel alias, and the rollback covers the tables taken from the reserve as well as those from the static array. Without the rollback, a user task could issue retypes that fail halfway and drain the tables a few at a time, until the kernel itself could no longer map anything. With the rollback, a failed retype costs nothing. Two host tests show this:
 
 - One fails a walk midway and checks that the pool is unchanged.
 - The other fails a thousand times in a row on a nearly full pool.
+
+## The table reserve
+
+The tables for the kernel alias of retyped objects do not come from the static pool. At boot, for every memory range that becomes an `Untyped` capability, the kernel works out the largest number of tables that mapping every granule of the range can need, and sets that many granules aside inside the range.
+
+- `alias_tables_for` returns the bound for a range. It counts, for each of the three levels below the root, the blocks that the range touches, so the true need is never above it.
+- The kernel takes this share from the top of the range and registers it with `reserve_tables`. The rest of the range, below the share, is what is handed out as `Untyped`. The share also holds the address space registry entries (see [user-address-space.md](user-address-space.md)).
+- A reserve maps itself in pieces of one last-level table each, and registers every piece as soon as it is mapped. Only the first piece is paid for from what exists at that moment (the static pool or an earlier reserve). The rest of the range pays for itself.
+- Table numbers continue from the static array into the reserves, in the order in which the reserves were registered. `index_of` accepts a table address only for a table that has already been handed out, in the array or in a reserve.
+- A table from a reserve is **zeroed when it is handed out**, not at boot.
+- If a walk fails, the rollback gives back the tables from both places.
+
+After boot, `alias_object` takes its tables from the reserves. It cannot fail for lack of tables for any address inside an `Untyped` that the kernel handed out. A range that cannot host its share, or whose share cannot be mapped, is **not handed out** as `Untyped`. The kernel prints `k0: memory <base> + <size> not handed out (<reason>)` and goes on booting. A gap that holds no whole granule is handed out unchanged, because no object can be made from it.
+
+> [!NOTE]
+> The reserve costs one table per 2 MiB of memory with the 4 KiB granule (about 0.2 % of RAM), and one per 32 MiB with the 16 KiB granule (about 0.05 %).
 
 ## Permissions
 
@@ -136,12 +152,13 @@ Any mismatch **stops the boot** with the name of the check. These checks test th
 ## How it is tested
 
 - `tools/boot-matrix.sh` boots the default build and the 16 KiB build on several QEMU configurations, and checks that unsupported configurations are refused with a reason in the boot log.
-- Host unit tests in `crates/k0-mm/src/paging/tests.rs` check the index arithmetic for both granules, the W^X properties of every kernel permission, the rollback after a failed walk, the rejection of forged or block entries, and that an identical leaf is accepted only when the caller asks for it (`an_identical_leaf_is_accepted_only_when_asked`). They run on AArch64 hosts.
+- Host unit tests in `crates/k0-mm/src/paging/tests.rs` check the index arithmetic for both granules, the W^X properties of every kernel permission, the rollback after a failed walk (also for tables from a reserve), the rejection of forged or block entries, the zeroing of reserve tables when they are handed out, the numbering across several reserves, and a reserve that cannot map its first piece (it is not registered), and that an identical leaf is accepted only when the caller asks for it (`an_identical_leaf_is_accepted_only_when_asked`). They run on AArch64 hosts.
+- A host property test (`aliasing_every_granule_of_any_ranges_stays_within_the_bound`) draws random ranges near block boundaries, closes the static array, maps every granule of every range, and checks that no more tables are used than `alias_tables_for` gives.
+- The root task self-test `test_reserve` retypes frames across up to 40 table blocks and requires that no `RETYPE` fails with `KERNEL_RESOURCE`. The marker `root: kernel reserve tests pass` and the boot line `k0: kernel reserve ` are required.
 - `tools/qemu-boot-test.sh` requires the line `k0: w^x checks pass`.
 
 ## Known gaps
 
-- **Pool exhaustion**: the pool size is fixed at 40 tables. If retypes spread over enough distinct address ranges, the pool runs out and `RETYPE` returns `KERNEL_RESOURCE`. Nothing leaks, but the pool is never reclaimed.
-- **Aliases stay**: kernel alias mappings are never removed. A retyped object stays mapped in the kernel alias even after its capability is revoked and its memory is retyped again. Reuse no longer fails, because an identical alias is accepted, but the alias itself and the tables that hold it stay.
-- **Availability limit**: because of the previous two points, a task that holds a lot of untyped memory can retype across enough distinct address ranges to use up the pool. `RETYPE` then returns `KERNEL_RESOURCE` for every task, not only for the one that caused it. Isolation between tasks does not cover this availability limit.
+- **Aliases stay**: kernel alias mappings are never removed. A retyped object stays mapped in the kernel alias even after its capability is revoked and its memory is retyped again. Reuse does not fail, because an identical alias is accepted, but the alias itself and the tables that hold it stay. The reserve is sized for this: it covers every granule of every handed-out range once.
+- **Availability**: the kernel tables can no longer be used up by retyping, but availability in general is still not protected. The scheduler has no priority and no CPU budget, and a long system call delays every other task. Isolation between tasks does not cover availability.
 - **No ASIDs**: address space identifiers (ASIDs) are not used. Every switch to a different user address space invalidates the whole TLB.

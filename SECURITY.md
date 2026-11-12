@@ -61,9 +61,15 @@ A confined task has the following properties:
 
 What is still NOT provided on `main`:
 
-- **Availability**: isolation does not cover it. If every task is blocked the kernel still parks the core (GHSA-q99x-2wrv-358p), and a confined task can cause this by being the last task to block.
-- **Kernel resource exhaustion**: a task holding a lot of `Untyped` memory can exhaust the static pool of 40 kernel page tables used for alias mappings, after which `RETYPE` fails with `KERNEL_RESOURCE` for every task, or exhaust the static address space registry.
-- **Missing features**: no fault delivery to a handler task, no notifications, no timeouts, and no capability transfer over IPC.
+- **Availability**: isolation does not cover it. The kernel no longer halts when every task is blocked, a task can bound its own waits with a timeout (GHSA-q99x-2wrv-358p, see "Known advisories"), and the two kernel tables for alias mappings and address spaces can no longer be exhausted. The following is still open:
+  - A task that waits without a timeout can wait forever if its partner never acts. A timeout is opt-in per call, so a server or the root task that must stay responsive has to give a timeout on every wait.
+  - A timeout says when a task becomes ready, not when it runs. There is no priority and no CPU budget. The scheduler is round-robin with a one-tick slice, and a task that holds `Untyped` memory can create many tasks and dilute the share of every other task.
+  - The kernel is not preemptible. A long system call, for example `CAP_REVOKE` on an `Untyped` with many objects, delays every other task and every timeout.
+  - A `k0_arch::fatal` or a kernel panic still stops the machine, and so does an SError taken from EL0.
+  - The kernel part of the boot log can be filled by fault and exit lines.
+- **Kernel resource exhaustion**: at boot the kernel reserves the page tables and the address space registry entries that the memory it hands out as `Untyped` can need, taking them from the top of each range. `RETYPE` therefore no longer fails with `KERNEL_RESOURCE` for lack of page tables, and the number of address spaces is limited only by memory. The reserve costs about 0.4 % of RAM with the 4 KiB granule (about 0.2 % each for the page tables and for the registry entries). A range that is too small for its own reserve is not handed out as `Untyped`.
+- **Missing features**: no fault delivery to a handler task, no notifications, and no capability transfer over IPC.
+- **Time visible to EL0**: EL0 still cannot read any hardware counter or timer. IPC timeouts give a task a clock as coarse as the scheduler tick (1 second) and a wake-up aligned to the timer interrupt. Whether that can be amplified into a usable timing source for cache or speculation attacks has not been analysed.
 - **Sender after revoke**: a sender already queued on an endpoint still delivers once after its capability is revoked.
 - **Cores**: one core only.
 - **Executable code**: new executable code cannot be loaded after boot, so a confined task runs code from the root task image.

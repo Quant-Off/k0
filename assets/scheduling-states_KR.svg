@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 440" width="960" height="440" role="img" aria-labelledby="title desc">
   <title id="title">태스크 상태와 전환</title>
-  <desc id="desc">Inactive에서 TCB_CONFIGURE로 Stopped, TCB_RESUME으로 Ready가 되고, 라운드 로빈으로 Running과 Ready를 오가며, IPC에서 블록되었다가 해제되면 Ready가 되고, 어느 상태에서든 정리되면 Dead가 됩니다.</desc>
+  <desc id="desc">Inactive에서 TCB_CONFIGURE로 Stopped, TCB_RESUME으로 Ready가 되고, 라운드 로빈으로 Running과 Ready를 오가며, IPC에서 블록되었다가 상대가 해제하거나 기한이 지나면 Ready가 되고, 어느 상태에서든 정리되면 Dead가 됩니다.</desc>
   <style>
     .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
     .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
@@ -45,8 +45,10 @@
   <text class="m" x="490" y="280">BlockedReply</text>
   <line class="line" x1="840" y1="134" x2="840" y2="228" marker-end="url(#arrow)"/>
   <text class="t s" x="830" y="190" text-anchor="end">IPC에서 블록</text>
-  <line class="line" x1="570" y1="228" x2="570" y2="134" marker-end="url(#arrow)"/>
-  <text class="t s" x="580" y="160">상대가 해제</text>
+  <line class="line" x1="530" y1="228" x2="530" y2="134" marker-end="url(#arrow)"/>
+  <text class="t s" x="520" y="160" text-anchor="end">상대가 해제</text>
+  <line class="line" x1="610" y1="228" x2="610" y2="134" marker-end="url(#arrow)"/>
+  <text class="t s" x="620" y="160">기한 경과 (타임아웃)</text>
   <rect class="warn" x="30" y="340" width="400" height="80" rx="8"/>
   <text class="m" x="46" y="366">Dead</text>
   <text class="t s" x="46" y="388">EXIT, EL0 폴트, 알 수 없는 시스템 콜,</text>
