@@ -6,16 +6,22 @@ English | [한국어](README_KR.md)
 
 </div>
 
-K0 is a small operating system kernel for 64-bit ARM (AArch64) computers, written in Rust. It is a microkernel: the kernel does only what has to be done inside the kernel, above all keeping programs apart, and everything else is meant to run as ordinary programs on top of it. A program can use only the resources it holds a key for. These keys are called capabilities, and the design follows the seL4 kernel.
+K0 is a small operating system kernel for 64-bit ARM (AArch64) computers. It is written in Rust. It is a **microkernel**: the kernel does only what has to be done inside the kernel, above all keeping programs apart. Everything else is meant to run as ordinary programs on top of it. A program can use only the resources it holds a key for. These keys are called capabilities, and the design follows the seL4 kernel.
 
 > [!IMPORTANT]
-> One K0 image is meant to boot wherever the hardware and the boot loader meet the contract in [INTRODUCTION.md](INTRODUCTION.md). The contract is the Linux arm64 boot protocol, and a UEFI loader (`loader/`) can start the kernel from firmware that provides a device tree or ACPI static tables. So far it has been booted on several QEMU machines, directly and through UEFI firmware (EDK2, also under UEFI Secure Boot), and on real Apple cores as a hypervisor guest. It has not been booted on any real board or on any firmware other than EDK2. Today K0 is a research platform for the isolation core of high-security systems. It boots and checks its own security properties, but it does no useful work of its own yet.
+> One K0 image is meant to boot wherever the hardware and the boot loader meet the contract in [INTRODUCTION.md](INTRODUCTION.md). The contract is the Linux arm64 boot protocol. A UEFI loader (`loader/`) can start the kernel from firmware that provides a device tree or ACPI static tables.
+>
+> So far it has been booted on several QEMU machines, directly and through UEFI firmware (EDK2, also under UEFI Secure Boot). It has also been booted on real Apple cores as a hypervisor guest. It has not been booted on any real board or on any firmware other than EDK2.
+>
+> Today K0 is a research platform for the isolation core of high-security systems. It boots and checks its own security properties, but it does no useful work of its own yet.
 
 ## Security status
 
-- The version published as the `v0.1.0` tag has **no isolation between programs**. The published security advisories (public notices about known flaws) apply to it.
-- The current `main` branch (unreleased) keeps programs apart in memory and in the keys they can use. It does **not** protect availability. **One program can still bring the whole system to a halt.**
-- Do not run code you do not trust on K0 anywhere an outage would matter.
+- **Published version**: the version published as the `v0.1.0` tag has **no isolation between programs**. The published security advisories (public notices about known flaws) apply to it.
+- **Development branch**: the current `main` branch (unreleased) keeps programs apart in memory and in the keys they can use. It does **not** protect availability. One program can still bring the whole system to a halt.
+
+> [!WARNING]
+> Do not run code you do not trust on K0 anywhere an outage would matter.
 
 [SECURITY.md](SECURITY.md) explains the isolation model, the known advisories and how to report a vulnerability.
 
@@ -45,7 +51,7 @@ $ cargo virt
 
 ## Documents
 
-The table below lists the documents in this repository. The design notes are under `design/`.
+In the following table, you can find the documents in this repository. The design notes are under `design/`.
 
 | Document | Contents |
 | --- | --- |
@@ -61,7 +67,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Before your first contribution is merged
 
 ## License
 
-K0 is source-available software under the [PolyForm Noncommercial License 1.0.0](LICENSE). **Noncommercial use**, **modification** and **redistribution** are permitted, as long as you **pass on the license text and the `Required Notice:` line (the copyright notice)**. **Commercial use is not permitted.** If you need a commercial license, please contact <qtfelix@qu4nt.space>.
+K0 is source-available software under the [PolyForm Noncommercial License 1.0.0](LICENSE). **Noncommercial use**, **modification** and **redistribution** are permitted, as long as you pass on the **license text** and the `Required Notice:` line (the copyright notice). **Commercial use is not permitted**. If you need a commercial license, please contact <qtfelix@qu4nt.space>.
 
 > [!NOTE]
 > Third-party crates under the `vendor/` directory keep their own licenses (MIT or Apache-2.0).

@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 440" width="960" height="440" role="img" aria-labelledby="title desc">
+  <title id="title">UEFI 부팅의 경로</title>
+  <desc id="desc">커널을 빌드하고, tools/build-loader.sh가 커널을 로더 .efi 파일에 포함하고, 펌웨어가 로더를 시작하고, 로더가 커널을 시작합니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="439" rx="10"/>
+
+  <text class="t h" x="30" y="38">단계</text>
+  <text class="t h" x="650" y="38">만들어지는 파일</text>
+  <rect class="kernel" x="30" y="60" width="560" height="64" rx="8"/>
+  <text class="t h" x="46" y="86">1. 커널 빌드</text>
+  <text class="m" x="46" y="110">cargo build -p k0-kernel --features console --offline</text>
+  <path class="line" d="M 310 126 V 154" marker-end="url(#arrow)"/>
+  <rect class="kernel" x="30" y="156" width="560" height="64" rx="8"/>
+  <text class="t h" x="46" y="182">2. 커널을 로더에 포함</text>
+  <text class="m" x="46" y="206">tools/build-loader.sh</text>
+  <path class="line" d="M 310 222 V 250" marker-end="url(#arrow)"/>
+  <rect class="ext" x="30" y="252" width="560" height="64" rx="8"/>
+  <text class="t h" x="46" y="278">3. 펌웨어가 로더를 시작</text>
+  <text class="t s" x="46" y="302">러너가 EDK2 펌웨어로 QEMU를 시작</text>
+  <path class="line" d="M 310 318 V 346" marker-end="url(#arrow)"/>
+  <rect class="kernel" x="30" y="348" width="560" height="64" rx="8"/>
+  <text class="t h" x="46" y="374">4. 로더가 커널을 시작</text>
+  <text class="t s" x="46" y="398">로더가 부트 서비스를 끝낸 뒤 커널이 시작됨</text>
+  <rect class="user" x="650" y="60" width="280" height="64" rx="8"/>
+  <text class="t h" x="666" y="86">커널 ELF</text>
+  <text class="m" x="666" y="110">k0-kernel</text>
+  <path class="line" d="M 590 92 H 648" marker-end="url(#arrow)"/>
+  <rect class="user" x="650" y="156" width="280" height="64" rx="8"/>
+  <text class="t h" x="666" y="182">로더 .efi 파일</text>
+  <text class="m" x="666" y="206">k0-kernel.efi</text>
+  <path class="line" d="M 590 188 H 648" marker-end="url(#arrow)"/>
+</svg>

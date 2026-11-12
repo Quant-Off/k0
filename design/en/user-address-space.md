@@ -12,9 +12,13 @@ This note describes how K0 builds the root task's address space at boot, how use
 
 Before the root task exists, the kernel needs memory for its image, its stack, its page tables and the bootinfo page. `kernel_main` reserves a 2 MiB window of RAM right after the kernel image for this (see [boot.md](boot.md)). `FrameAlloc` hands out frames from the window, one after another, and never frees any. Each frame is zeroed through the kernel alias before it is handed out.
 
-The window is listed as reserved when the root CNode is filled, so none of it becomes untyped memory. The root task can never retype a frame that still holds its own page tables.
+The window is listed as **reserved** when the root CNode is filled, so none of it becomes untyped memory. The root task can never retype a frame that still holds its own page tables.
 
 ## Building the root task's tables
+
+The following figure shows the user address space of a task. It covers the frames a task can map and with which rights, the layout at boot, what EL0 can never reach, and W^X per frame.
+
+![The user address space of a task: the frames it can map and with which rights, the layout at boot, what EL0 can never reach, and W^X per frame](../../assets/user-address-space.svg)
 
 `spawn_root` takes the root task image that has already passed its integrity check (see [hardening.md](hardening.md)) and does the following.
 
@@ -25,9 +29,17 @@ The window is listed as reserved when the root CNode is filled, so none of it be
 5. It maps the bootinfo page at `0x0F00_0000` read-only.
 6. It fills the root TCB's saved context: the program counter at the entry point, the stack pointer at the stack top, and a saved processor state of EL0 with interrupts unmasked.
 
-`UserSpace::map_range` rejects any range that is not granule-aligned, any range that would map the first granule, and any range that reaches past the 48-bit user half. Because the first granule is never mapped, a null pointer dereference in user space always faults.
+`UserSpace::map_range` rejects all of the following ranges:
+
+- a range that is not granule-aligned
+- a range that would map the first granule
+- a range that reaches past the 48-bit user half
+
+Because the first granule is never mapped, a **null pointer dereference in user space always faults**.
 
 ## User permissions
+
+In the following table, you can see the kinds of user mappings and their permissions.
 
 | Kind | Used for | EL0 | EL1 |
 | --- | --- | --- | --- |
@@ -35,13 +47,16 @@ The window is listed as reserved when the root CNode is filled, so none of it be
 | `RoUser` | read-only data, bootinfo, read-only frames | read | read, never execute |
 | `RwUser` | data, stacks, read-write frames | read and write | read and write, never execute |
 
-Every user mapping sets `PXN`, so the kernel can never execute user memory. Only `TextUser` leaves `UXN` clear, and `TextUser` is read-only. `TextUser` mappings come from two places: the boot builder, and `MAP` with permission `RX`, which needs a `Frame` capability that carries the `X` right (see below). No frame can be writable in one place and executable in another, so after boot no new executable code can be loaded.
+Every user mapping sets `PXN`, so the kernel can never execute user memory. Only `TextUser` leaves `UXN` clear, and `TextUser` is read-only. `TextUser` mappings come from two places: the boot builder, and `MAP` with permission `RX`, which needs a `Frame` capability that carries the `X` right (see below).
+
+> [!IMPORTANT]
+> No frame can be writable in one place and executable in another, so after boot no new executable code can be loaded.
 
 ## Switching `TTBR0`
 
 `install_user_ttbr0` replaces the identity map with the root task's tables and invalidates the TLB. After the handoff the scheduler calls it again whenever the next task's address space root differs from `current_user_root()`. From that point, a physical address used as a pointer is meaningless to the kernel. The console (in an image built with a driver for it), the GIC, the DTB and all page tables are already reached through the kernel alias, which is why this switch happens late in `kernel_main`.
 
-Right after the switch, `check_user_wx` checks the result with address translation instructions:
+Right after the switch, `check_user_wx` checks the result with address translation instructions. In the following table, you can see the checks and their expected results.
 
 | Check | Expected |
 | --- | --- |
@@ -55,11 +70,15 @@ Right after the switch, `check_user_wx` checks the result with address translati
 | user text readable from EL1 | no when PAN can be checked, otherwise yes |
 | old identity map of kernel text readable | no |
 
-The PAN check needs the `AT S1E1RP` instruction from FEAT_PAN2. On CPUs without it, the check falls back to the page permissions, which do allow EL1 to read user text.
+> [!NOTE]
+> The PAN check needs the `AT S1E1RP` instruction from FEAT_PAN2. On CPUs without it, the check falls back to the page permissions, which do allow EL1 to read user text.
 
 ## Address spaces as objects
 
-The root task's address space is no longer the only one. `RETYPE` with `ADDR_SPACE` turns an untyped granule into an `AddrSpace` object: one zeroed level 0 table. The granule is zeroed through the kernel alias before the capability exists. A task is bound to an address space by `TCB_CONFIGURE`, which takes an `AddrSpace` capability and stores a copy of it in the TCB (see [capabilities.md](capabilities.md)). Tasks in different address spaces cannot see each other's memory, and each task resolves slot numbers only in its own CNode. Isolation here means confidentiality and integrity between tasks. It does not cover availability.
+The root task's address space is no longer the only one. `RETYPE` with `ADDR_SPACE` turns an untyped granule into an `AddrSpace` object: one zeroed level 0 table. The granule is zeroed through the kernel alias before the capability exists. A task is bound to an address space by `TCB_CONFIGURE`, which takes an `AddrSpace` capability and stores a copy of it in the TCB (see [capabilities.md](capabilities.md)). Tasks in different address spaces cannot see each other's memory, and each task resolves slot numbers only in its own CNode.
+
+> [!NOTE]
+> Isolation here means confidentiality and integrity between tasks. It does not cover availability.
 
 ### The registry
 
@@ -69,10 +88,13 @@ A `Frame` or `PageTable` capability remembers where it is mapped as a record of 
 
 ## Growing an address space at run time
 
-User space maps into an address space with `MAP`. The kernel walks the tables through the alias, and there is one firm rule: **the run-time walker never allocates a page table**.
+User space maps into an address space with `MAP`. The kernel walks the tables through the alias, and there is one firm rule.
 
-- **Mapping a `Frame` capability** with `user_map_frame` creates one leaf entry. If an intermediate table is missing on the way, the call fails with `MISSING_TABLE`. The leaf must be empty, or the call fails with `OVERLAP`.
-- **Mapping a `PageTable` capability** with `user_install_table` walks down the path of the given address and links the table into the first empty level it finds. If the path is already complete down to the leaf level, the call fails with `OVERLAP`.
+> [!IMPORTANT]
+> The run-time walker never allocates a page table.
+
+- Mapping a `Frame` capability with `user_map_frame` **creates one leaf entry**. If an intermediate table is missing on the way, the call fails with `MISSING_TABLE`. The leaf must be empty, or the call fails with `OVERLAP`.
+- Mapping a `PageTable` capability with `user_install_table` **links a table**. It walks down the path of the given address and links the table into the first empty level it finds. If the path is already complete down to the leaf level, the call fails with `OVERLAP`.
 
 User space therefore pays for its own page tables with its own untyped memory, by retyping `PageTable` objects. The kernel's static table pool is never charged for user mappings.
 
@@ -86,7 +108,7 @@ Further rules in `sys_map`:
 
 ### Permissions and rights
 
-The permission argument of a `Frame` mapping must be covered by the rights of the capability:
+The permission argument of a `Frame` mapping must be covered by the rights of the capability. In the following table, you can see the permissions, the rights they need and the resulting mappings.
 
 | Permission | Rights needed | Resulting mapping |
 | --- | --- | --- |
@@ -96,7 +118,7 @@ The permission argument of a `Frame` mapping must be covered by the rights of th
 
 An unknown permission fails with `BAD_PERM`, missing rights with `NO_RIGHTS`. Rights can only be removed, and only by `CAP_COPY`, so a capability can never gain more than its source has. A frame made by `RETYPE` gets `R` and `W` and can never get `X`. The `X` right exists only on the `Frame` capabilities of the root task's own text frames, which the kernel hands over at boot without `W`.
 
-This gives W^X per physical frame instead of per mapping. A frame that can be written has no capability that allows `RX`, and a frame that can be executed has no capability that allows `RW`. No physical frame is writable in one place and executable in another, in any address space. The consequence is stated plainly: **new executable code cannot be loaded after boot.** A confined task runs code from the root task's image text, mapped `RX` into its own address space.
+This gives W^X **per physical frame** instead of per mapping. A frame that can be written has no capability that allows `RX`, and a frame that can be executed has no capability that allows `RW`. No physical frame is writable in one place and executable in another, in any address space. The consequence is stated plainly: **new executable code cannot be loaded after boot**. A confined task runs code from the root task's image text, mapped `RX` into its own address space.
 
 ### Unmapping
 
@@ -123,17 +145,35 @@ When the CPU has FEAT_PAN, the kernel runs with PAN set, so any EL1 access throu
 
 ## How it is tested
 
-- Host unit tests in `crates/k0-mm/src/user/tests.rs` check the W^X properties of every user permission and the validation paths that must reject bad input before touching any table. They also run the real walkers on host memory: top-down table installation (`tables_install_top_down_and_frames_need_the_full_path`), unmap that clears only the leaf of the very frame (`unmap_clears_only_the_leaf_that_maps_this_very_frame`), uninstall that cuts exactly one link (`uninstall_cuts_exactly_one_link_and_a_zeroed_table_carries_nothing`), a model test of random map and unmap sequences (`random_map_and_unmap_agree_with_a_model`), and full coverage of the 48-bit range. The registry has tests for distinct non-zero ids, rejected bad ids, stale generations (`a_stale_generation_never_resolves_again`), random register and release sequences and retirement of an exhausted generation. `tools/host-test.sh` runs `k0-mm` for both granules on AArch64 hosts only.
-- The root task self-tests exercise the run-time path: mapping before a page table exists, double mapping, mapping at the null address, bad permissions, overlapping mappings, executable mapping of a retyped frame (`NO_RIGHTS`), `RX` of a text frame and `RW` of it (`NO_RIGHTS`), rights that never grow through copies, unmap and remap, mapping that follows a moved capability, a detached table that does not carry its old leaf to a new place, stale frame records after the table was detached, and reading and writing through the new mappings.
+- Host unit tests in `crates/k0-mm/src/user/tests.rs` check the following:
+  - the W^X properties of every user permission
+  - the validation paths that must reject bad input before touching any table
+  - the real walkers on host memory: top-down table installation (`tables_install_top_down_and_frames_need_the_full_path`), unmap that clears only the leaf of the very frame (`unmap_clears_only_the_leaf_that_maps_this_very_frame`), uninstall that cuts exactly one link (`uninstall_cuts_exactly_one_link_and_a_zeroed_table_carries_nothing`), a model test of random map and unmap sequences (`random_map_and_unmap_agree_with_a_model`), and full coverage of the 48-bit range
+  - the registry: distinct non-zero ids, rejected bad ids, stale generations (`a_stale_generation_never_resolves_again`), random register and release sequences and retirement of an exhausted generation
+- `tools/host-test.sh` runs `k0-mm` for both granules on AArch64 hosts only.
+- The root task self-tests exercise the run-time path. They cover the following:
+  - mapping before a page table exists
+  - double mapping
+  - mapping at the null address
+  - bad permissions
+  - overlapping mappings
+  - executable mapping of a retyped frame (`NO_RIGHTS`)
+  - `RX` of a text frame and `RW` of it (`NO_RIGHTS`)
+  - rights that never grow through copies
+  - unmap and remap
+  - mapping that follows a moved capability
+  - a detached table that does not carry its old leaf to a new place
+  - stale frame records after the table was detached
+  - reading and writing through the new mappings
 - The isolation self-tests build confined tasks with their own CNode and address space (only image text and read-only data mapped) and check that a read of a root-only address faults at exactly that address, that writes to a read-only page, execution from a stack page and reads of a kernel address fault, and that a task dies when its address space is deleted.
 - `tools/qemu-boot-test.sh` requires, among others, `k0: user w^x checks pass`, `root: retype/map tests pass`, `root: isolation tests pass`, `root: teardown tests pass` and `root: revocation tests pass`, and an exact count of `k0: task fault` lines.
 
 ## Known gaps
 
-- Isolation does not cover availability. If every task is blocked, the kernel parks the core (see [SECURITY.md](../../SECURITY.md)), and a confined task can cause this by blocking last.
-- The registry holds at most `MAX_ADDR_SPACES` address spaces. The kernel alias of every retyped object uses a static pool of kernel page tables. A task holding a lot of untyped memory can exhaust that pool, and then `RETYPE` fails with `KERNEL_RESOURCE` for everyone.
-- No new executable code can be loaded after boot, by design (per-frame W^X). A confined task can only run code from the root task image.
-- There are no hardware ASIDs, so every `TTBR0` switch and every unmap flushes the whole TLB. This costs performance, not safety.
-- Every frame mapped into user space is also mapped read-write in the kernel alias, because the kernel zeroed it there during retype.
-- The kernel copies no user buffers. A future system call that does must use `LDTR` and `STTR` and resolve the buffer in the caller's address space.
-- One core only, and no notifications, fault delivery to a handler task or capability transfer over IPC.
+- **Availability**: isolation does not cover availability. If every task is blocked, the kernel parks the core (see [SECURITY.md](../../SECURITY.md)), and a confined task can cause this by blocking last.
+- **Registry and pool limits**: the registry holds at most `MAX_ADDR_SPACES` address spaces. The kernel alias of every retyped object uses a static pool of kernel page tables. A task holding a lot of untyped memory can exhaust that pool, and then `RETYPE` fails with `KERNEL_RESOURCE` for everyone.
+- **New executable code**: no new executable code can be loaded after boot, by design (per-frame W^X). A confined task can only run code from the root task image.
+- **Hardware ASIDs**: there are no hardware ASIDs, so every `TTBR0` switch and every unmap flushes the whole TLB. This costs performance, not safety.
+- **Kernel alias**: every frame mapped into user space is also mapped read-write in the kernel alias, because the kernel zeroed it there during retype.
+- **User buffers**: the kernel copies no user buffers. A future system call that does must use `LDTR` and `STTR` and resolve the buffer in the caller's address space.
+- **Not there yet**: one core only, and no notifications, fault delivery to a handler task or capability transfer over IPC.

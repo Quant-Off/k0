@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520" role="img" aria-labelledby="title desc">
+  <title id="title">케이퍼빌리티 파생 관계</title>
+  <desc id="desc">부팅 시 만들어진 Untyped에서 RETYPE으로 오브젝트가 생기고, CAP_COPY로 같거나 적은 권한의 복사본이 파생 리스트에 자식으로 들어가며, CAP_REVOKE와 CAP_DELETE가 자손을 제거합니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="519" rx="10"/>
+
+  <text class="t h" x="30" y="38">파생 리스트 (전위 순서)</text>
+  <text class="t h" x="520" y="38">연산</text>
+  <rect class="kernel" x="30" y="60" width="440" height="52" rx="8"/>
+  <text class="m" x="46" y="82">Untyped</text>
+  <text class="t s" x="46" y="102">원본, 부팅 시 생성</text>
+  <text class="t s" x="454" y="82" text-anchor="end">깊이 0</text>
+  <rect class="box" x="70" y="130" width="400" height="52" rx="8"/>
+  <text class="m" x="86" y="152">Endpoint  R|W</text>
+  <text class="t s" x="86" y="172">원본, RETYPE으로 생성</text>
+  <text class="t s" x="454" y="152" text-anchor="end">깊이 1</text>
+  <rect class="user" x="110" y="200" width="360" height="52" rx="8"/>
+  <text class="m" x="126" y="222">Endpoint  W</text>
+  <text class="t s" x="126" y="242">복사본, 원본의 자식</text>
+  <text class="t s" x="454" y="222" text-anchor="end">깊이 2</text>
+  <rect class="box" x="70" y="270" width="400" height="52" rx="8"/>
+  <text class="m" x="86" y="292">Frame  R|W</text>
+  <text class="t s" x="86" y="312">원본, RETYPE으로 생성</text>
+  <text class="t s" x="454" y="292" text-anchor="end">깊이 1</text>
+  <rect class="user" x="110" y="340" width="360" height="52" rx="8"/>
+  <text class="m" x="126" y="362">Frame  R</text>
+  <text class="t s" x="126" y="382">복사본, 원본의 자식</text>
+  <text class="t s" x="454" y="362" text-anchor="end">깊이 2</text>
+  <line class="line" x1="50" y1="112" x2="50" y2="296"/>
+  <line class="line" x1="50" y1="156" x2="68" y2="156"/>
+  <line class="line" x1="50" y1="296" x2="68" y2="296"/>
+  <line class="line" x1="90" y1="182" x2="90" y2="226"/>
+  <line class="line" x1="90" y1="226" x2="108" y2="226"/>
+  <line class="line" x1="90" y1="322" x2="90" y2="366"/>
+  <line class="line" x1="90" y1="366" x2="108" y2="366"/>
+  <rect class="ext" x="520" y="55" width="410" height="62" rx="8"/>
+  <text class="t h" x="536" y="81">부팅 케이퍼빌리티</text>
+  <text class="t s" x="536" y="103">독립된 리스트의 뿌리 (깊이 0)</text>
+  <line class="line" x1="518" y1="86" x2="472" y2="86" marker-end="url(#arrow)"/>
+  <rect class="kernel" x="520" y="125" width="410" height="62" rx="8"/>
+  <text class="m" x="536" y="151">RETYPE(untyped, type, dest)</text>
+  <text class="t s" x="536" y="173">untyped의 자식, 새 오브젝트의 원본</text>
+  <line class="line" x1="518" y1="156" x2="472" y2="156" marker-end="url(#arrow)"/>
+  <rect class="user" x="520" y="195" width="410" height="62" rx="8"/>
+  <text class="m" x="536" y="221">CAP_COPY(src, cnode, index, mask, badge)</text>
+  <text class="t s" x="536" y="243">원본의 자식, 권한은 같거나 적게 (mask와 AND)</text>
+  <line class="line" x1="518" y1="226" x2="472" y2="226" marker-end="url(#arrow)"/>
+  <rect class="box" x="30" y="420" width="440" height="62" rx="8"/>
+  <text class="m" x="46" y="446">CAP_REVOKE(slot)</text>
+  <text class="t s" x="46" y="468">슬롯의 자손을 전부 제거, 슬롯 자신은 남김</text>
+  <rect class="warn" x="490" y="420" width="440" height="62" rx="8"/>
+  <text class="m" x="506" y="446">CAP_DELETE(slot)</text>
+  <text class="t s" x="506" y="468">회수한 뒤 슬롯 자신도 제거</text>
+  <text class="t s" x="30" y="508">원본 케이퍼빌리티가 제거되면 오브젝트가 종료됩니다. 파생된 것은 함께 삭제됩니다.</text>
+</svg>

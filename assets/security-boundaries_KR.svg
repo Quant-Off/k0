@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 358" width="960" height="358" role="img" aria-labelledby="title desc">
+  <title id="title">K0가 신뢰하는 것과 신뢰하지 않는 것</title>
+  <desc id="desc">커널 진입점 이전의 부트 체인은 범위 밖이고, kernel, crates, loader, 루트 태스크는 범위 안입니다. 디바이스 트리, 격리된 태스크, 태스크가 출력한 k0: 줄은 신뢰하지 않습니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="357" rx="10"/>
+
+  <text class="t h" x="30" y="38">범위 밖</text>
+  <text class="t h" x="350" y="38">범위 안</text>
+  <text class="t h" x="670" y="38">신뢰하지 않는 것</text>
+  <rect class="ext" x="30" y="60" width="280" height="50" rx="8"/>
+  <text class="t" x="46" y="90">펌웨어</text>
+  <rect class="ext" x="30" y="124" width="280" height="50" rx="8"/>
+  <text class="t" x="46" y="154">다른 부트로더</text>
+  <rect class="ext" x="30" y="188" width="280" height="50" rx="8"/>
+  <text class="t" x="46" y="218">하이퍼바이저</text>
+  <rect class="ext" x="30" y="252" width="280" height="86" rx="8"/>
+  <text class="t" x="46" y="278">커널 이미지 서명</text>
+  <text class="t s" x="46" y="300">부트 체인의 책임,</text>
+  <text class="t s" x="46" y="320">UEFI에서는 펌웨어의 Secure Boot</text>
+  <rect class="kernel" x="350" y="60" width="270" height="50" rx="8"/>
+  <text class="t" x="366" y="80">UEFI 로더</text>
+  <text class="m" x="366" y="100">loader/ crates/k0-efi</text>
+  <rect class="kernel" x="350" y="124" width="270" height="50" rx="8"/>
+  <text class="t" x="366" y="144">커널</text>
+  <text class="m" x="366" y="164">kernel/ crates/</text>
+  <rect class="user" x="350" y="188" width="270" height="64" rx="8"/>
+  <text class="t" x="366" y="212">루트 태스크</text>
+  <text class="m" x="366" y="232">userspace/root-task/</text>
+  <text class="t s" x="520" y="212">신뢰 대상</text>
+  <rect class="warn" x="670" y="60" width="260" height="50" rx="8"/>
+  <text class="t" x="686" y="82">디바이스 트리</text>
+  <text class="t s" x="686" y="100">신뢰하지 않음</text>
+  <rect class="warn" x="670" y="124" width="260" height="50" rx="8"/>
+  <text class="t" x="686" y="146">격리된 태스크</text>
+  <text class="t s" x="686" y="164">신뢰하지 않는 코드</text>
+  <rect class="warn" x="670" y="188" width="260" height="64" rx="8"/>
+  <text class="t" x="686" y="212">태스크가 출력한 k0: 줄</text>
+  <text class="t s" x="686" y="232">커널이 쓴 것으로 믿을 수 없음</text>
+  <path class="line" d="M 310 85 H 348" marker-end="url(#arrow)"/>
+  <path class="line" d="M 668 85 H 622" marker-end="url(#arrow)"/>
+  <path class="line" d="M 668 149 H 622" marker-end="url(#arrow)"/>
+</svg>

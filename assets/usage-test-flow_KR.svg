@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 412" width="960" height="412" role="img" aria-labelledby="title desc">
+  <title id="title">테스트 도구의 관계</title>
+  <desc id="desc">tools/host-test.sh는 내 컴퓨터에서 단위 테스트와 퍼징을 실행하고, tools/qemu-boot-test.sh는 한 구성을 부팅해 직렬 포트 또는 게스트 메모리의 부트 로그에서 판정하고, tools/boot-matrix.sh는 지원하는 구성을 전부 부팅합니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="411" rx="10"/>
+
+  <text class="t h" x="30" y="38">도구</text>
+  <text class="t h" x="420" y="38">하는 일과 판정</text>
+  <rect class="box" x="30" y="60" width="310" height="64" rx="8"/>
+  <text class="m" x="46" y="86">tools/host-test.sh</text>
+  <text class="t s" x="46" y="108">내 컴퓨터에서 실행</text>
+  <rect class="user" x="420" y="60" width="510" height="64" rx="8"/>
+  <text class="t h" x="436" y="86">단위 테스트와 디바이스 트리 퍼징</text>
+  <text class="t s" x="436" y="108">일반 프로그램처럼 돌리는 작은 테스트</text>
+  <path class="line" d="M 340 92 H 418" marker-end="url(#arrow)"/>
+  <rect class="kernel" x="30" y="156" width="310" height="124" rx="8"/>
+  <text class="m" x="46" y="182">tools/qemu-boot-test.sh</text>
+  <text class="t s" x="46" y="204">QEMU에서 한 구성을 부팅</text>
+  <rect class="user" x="420" y="156" width="510" height="56" rx="8"/>
+  <text class="t h" x="436" y="180">직렬 포트에서 판정</text>
+  <text class="t s" x="436" y="200">콘솔 드라이버가 있는 이미지</text>
+  <path class="line" d="M 340 184 H 418" marker-end="url(#arrow)"/>
+  <rect class="user" x="420" y="224" width="510" height="56" rx="8"/>
+  <text class="t h" x="436" y="248">게스트 메모리의 부트 로그에서 판정</text>
+  <text class="t s" x="436" y="268">콘솔 없는 이미지, K0_BOOT_MEMLOG</text>
+  <path class="line" d="M 340 252 H 418" marker-end="url(#arrow)"/>
+  <rect class="box" x="30" y="312" width="310" height="64" rx="8"/>
+  <text class="m" x="46" y="338">tools/boot-matrix.sh</text>
+  <text class="t s" x="46" y="360">지원하는 구성을 전부 부팅</text>
+  <rect class="user" x="420" y="312" width="510" height="64" rx="8"/>
+  <text class="t h" x="436" y="338">구성마다 부팅하고 결과 확인</text>
+  <text class="t s" x="436" y="360">16 KiB, 고정, UEFI 로더 이미지도 빌드함. CI가 실행함</text>
+  <path class="line" d="M 340 344 H 418" marker-end="url(#arrow)"/>
+</svg>

@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 580" width="960" height="580" role="img" aria-labelledby="title desc">
+  <title id="title">How K0 fits together</title>
+  <desc id="desc">A boot loader or the UEFI loader starts the kernel at EL1. Above it at EL0, the root task and other tasks make requests to the kernel through system calls.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="579" rx="10"/>
+  <rect class="ext" x="30" y="30" width="280" height="70" rx="8"/>
+  <text class="t h" x="46" y="58">Boot loader</text>
+  <text class="t s" x="46" y="82">Linux arm64 Image protocol</text>
+  <rect class="ext" x="340" y="30" width="250" height="70" rx="8"/>
+  <text class="t h" x="356" y="54">UEFI firmware</text>
+  <text class="t s" x="356" y="74">Provides a device tree or</text>
+  <text class="t s" x="356" y="90">ACPI static tables</text>
+  <rect class="box" x="650" y="30" width="280" height="70" rx="8"/>
+  <text class="t h" x="666" y="54">UEFI loader</text>
+  <text class="t s" x="666" y="78">loader/, embeds the kernel image</text>
+  <path class="line" d="M 590 65 H 648" marker-end="url(#arrow)"/>
+  <path class="line" d="M 170 100 V 188" marker-end="url(#arrow)"/>
+  <path class="line" d="M 790 100 V 188" marker-end="url(#arrow)"/>
+  <text class="t s" x="182" y="138">Enters at EL1 or EL2, MMU off</text>
+  <text class="t s" x="182" y="156">x0 = device tree address</text>
+  <text class="t s" x="778" y="138" text-anchor="end">Enters with the same contract</text>
+  <rect class="kernel" x="30" y="190" width="900" height="190" rx="8"/>
+  <text class="t h" x="46" y="218">K0 kernel (EL1)</text>
+  <rect class="box" x="46" y="236" width="280" height="56" rx="8"/>
+  <text class="t" x="62" y="260">Capabilities</text>
+  <text class="t s" x="62" y="280">copy, move, revoke, delete</text>
+  <rect class="box" x="340" y="236" width="280" height="56" rx="8"/>
+  <text class="t" x="356" y="260">Address spaces</text>
+  <text class="t s" x="356" y="280">one memory map per task</text>
+  <rect class="box" x="634" y="236" width="280" height="56" rx="8"/>
+  <text class="t" x="650" y="260">Running tasks</text>
+  <text class="t s" x="650" y="280">round robin, timer preemption</text>
+  <rect class="box" x="46" y="304" width="280" height="56" rx="8"/>
+  <text class="t" x="62" y="328">Synchronous messages</text>
+  <text class="t s" x="62" y="348">IPC through endpoints</text>
+  <rect class="box" x="340" y="304" width="280" height="56" rx="8"/>
+  <text class="t" x="356" y="328">Fault isolation</text>
+  <text class="t s" x="356" y="348">only the crashed task stops</text>
+  <rect class="box" x="634" y="304" width="280" height="56" rx="8"/>
+  <text class="t" x="650" y="328">Memory protection</text>
+  <text class="t s" x="650" y="348">W^X, zeroed before reuse</text>
+  <path class="line" d="M 480 438 V 382" marker-end="url(#arrow)"/>
+  <text class="t s" x="494" y="416">system calls</text>
+  <rect class="user" x="30" y="440" width="900" height="120" rx="8"/>
+  <text class="t h" x="46" y="466">EL0 (user space)</text>
+  <rect class="box" x="46" y="480" width="430" height="64" rx="8"/>
+  <text class="t" x="62" y="505">Root task</text>
+  <text class="t s" x="62" y="528">First program, gets every key from boot</text>
+  <rect class="box" x="484" y="480" width="430" height="64" rx="8"/>
+  <text class="t" x="500" y="505">Other tasks</text>
+  <text class="t s" x="500" y="528">Tied to a key ring and an address space</text>
+</svg>

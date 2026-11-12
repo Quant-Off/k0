@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" width="960" height="620" role="img" aria-labelledby="title desc">
+  <title id="title">Boot hardening layers</title>
+  <desc id="desc">The protections of the hardening note, grouped by its sections: PAC key derivation, PAC, BTI, PAN, closing EL0 exposure, root task integrity and panics, marked as active today, groundwork or not enabled.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="619" rx="10"/>
+  <rect class="box" x="30" y="20" width="435" height="136" rx="8"/>
+  <text class="t h" x="46" y="48">Boot entropy and PAC key derivation</text>
+  <text class="t s" x="46" y="74">inputs: DTB rng-seed and kaslr-seed, CNTPCT_EL0, RNDR</text>
+  <text class="t s" x="46" y="96">SHA-256 in counter mode gives 10 key words</text>
+  <text class="t s" x="46" y="118">key words wiped from the boot stack</text>
+  <text class="t s" x="46" y="140">the seed bytes stay in the read-only DTB</text>
+  <rect class="ext" x="495" y="20" width="435" height="136" rx="8"/>
+  <text class="t h" x="511" y="48">Pointer authentication (PAC)</text>
+  <text class="t s" x="511" y="74">keys loaded, EnIA EnIB EnDA EnDB set in SCTLR_EL1</text>
+  <text class="t s" x="511" y="96">no instruction uses the keys yet: protects nothing</text>
+  <text class="t s" x="511" y="118">-Z branch-protection is unstable in Rust</text>
+  <text class="t s" x="511" y="140">the hardware is ready for the compiler</text>
+  <rect class="warn" x="30" y="168" width="435" height="136" rx="8"/>
+  <text class="t h" x="46" y="196">Branch target identification (BTI)</text>
+  <text class="t s" x="46" y="222">detected and reported in the boot log</text>
+  <text class="t s" x="46" y="244">not enabled: the stable compiler emits no landing pads</text>
+  <text class="t s" x="46" y="266">enabling it now would break the kernel</text>
+  <rect class="user" x="495" y="168" width="435" height="136" rx="8"/>
+  <text class="t h" x="511" y="196">Privileged access never (PAN)</text>
+  <text class="t s" x="511" y="222">FEAT_PAN: SCTLR_EL1.SPAN cleared, PSTATE.PAN set</text>
+  <text class="t s" x="511" y="244">EL1 access through EL0-accessible mappings faults</text>
+  <text class="t s" x="511" y="266">K0 reaches user frames only through its EL1 alias</text>
+  <text class="t s" x="511" y="288">real protection today</text>
+  <rect class="user" x="30" y="316" width="435" height="136" rx="8"/>
+  <text class="t h" x="46" y="344">Closing what EL0 can observe</text>
+  <text class="t s" x="46" y="370">E0PD1: upper-half access faults without a walk</text>
+  <text class="t s" x="46" y="392">CNTKCTL_EL1, MDSCR_EL1, PMUSERENR_EL0 reset</text>
+  <text class="t s" x="46" y="414">CPACR_EL1 = 0: FP/SIMD traps; TPIDR registers zeroed</text>
+  <text class="t s" x="46" y="436">DEBUG_PUTC: only printable ASCII and newline</text>
+  <rect class="user" x="495" y="316" width="435" height="136" rx="8"/>
+  <text class="t h" x="511" y="344">Root task integrity</text>
+  <text class="t s" x="511" y="370">build.rs: ELF checks, no writable and executable segment</text>
+  <text class="t s" x="511" y="392">SHA-256 of the image baked into read-only data</text>
+  <text class="t s" x="511" y="414">verify_root_task hashes again at every boot</text>
+  <text class="t s" x="511" y="436">a corruption check, not an authenticity check</text>
+  <rect class="user" x="30" y="464" width="435" height="136" rx="8"/>
+  <text class="t h" x="46" y="492">Panics</text>
+  <text class="t s" x="46" y="518">panic handler: mask interrupts, park the core</text>
+  <text class="t s" x="46" y="540">release builds print nothing</text>
+  <text class="t s" x="46" y="562">k0_arch::fatal prints k0: FATAL and halts the core</text>
+  <text class="t s" x="46" y="584">enter_user masks all exceptions before the restore</text>
+  <rect class="bg" x="495" y="464" width="435" height="136" rx="8"/>
+  <text class="t h" x="511" y="492">Legend</text>
+  <rect class="user" x="511" y="508" width="22" height="14" rx="8"/>
+  <text class="t s" x="545" y="520">active today</text>
+  <rect class="ext" x="511" y="530" width="22" height="14" rx="8"/>
+  <text class="t s" x="545" y="542">groundwork, protects nothing yet</text>
+  <rect class="warn" x="511" y="552" width="22" height="14" rx="8"/>
+  <text class="t s" x="545" y="564">detected, not enabled</text>
+  <rect class="box" x="511" y="574" width="22" height="14" rx="8"/>
+  <text class="t s" x="545" y="586">input to the PAC keys</text>
+</svg>

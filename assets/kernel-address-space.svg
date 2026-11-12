@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" width="960" height="600" role="img" aria-labelledby="title desc">
+  <title id="title">The kernel's view of memory</title>
+  <desc id="desc">TTBR0_EL1 holds the identity map during boot. TTBR1_EL1 holds the RAM alias, the kernel image at a fixed address and the device window, with the permission of each region.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="599" rx="10"/>
+  <text class="t h" x="30" y="38">TTBR0_EL1, lower half</text>
+  <text class="t h" x="340" y="38">TTBR1_EL1, upper half</text>
+  <rect class="kernel" x="30" y="60" width="280" height="110" rx="8"/>
+  <text class="t s" x="46" y="86">During boot</text>
+  <text class="t h" x="46" y="110">Identity map</text>
+  <text class="t s" x="46" y="134">virtual address = physical address</text>
+  <text class="t s" x="46" y="156">needed as the MMU turns on</text>
+  <line class="line" x1="170" y1="172" x2="170" y2="208" marker-end="url(#arrow)"/>
+  <text class="t s" x="182" y="196">later</text>
+  <rect class="user" x="30" y="212" width="280" height="90" rx="8"/>
+  <text class="t h" x="46" y="238">Root task's tables</text>
+  <text class="t s" x="46" y="262">the identity map disappears</text>
+  <rect class="ext" x="340" y="60" width="590" height="78" rx="8"/>
+  <text class="t h" x="356" y="86">Device window</text>
+  <text class="t s" x="356" y="108">above the image, device registers one page at a time</text>
+  <text class="t s" x="356" y="128">Device: EL1 read and write, no execute</text>
+  <rect class="kernel" x="340" y="150" width="590" height="222" rx="8"/>
+  <text class="t h" x="356" y="176">Kernel image</text>
+  <text class="t s" x="500" y="176">fixed address</text>
+  <text class="m" x="640" y="176">0xFFFF_8000_0000_0000</text>
+  <rect class="box" x="356" y="192" width="558" height="34" rx="8"/>
+  <text class="m" x="370" y="214">Text</text>
+  <text class="t" x="450" y="214">kernel code</text>
+  <text class="t s" x="720" y="214">EL1 read, execute</text>
+  <rect class="box" x="356" y="234" width="558" height="34" rx="8"/>
+  <text class="m" x="370" y="256">Ro</text>
+  <text class="t" x="450" y="256">read-only data</text>
+  <text class="t s" x="720" y="256">EL1 read</text>
+  <rect class="box" x="356" y="276" width="558" height="34" rx="8"/>
+  <text class="m" x="370" y="298">Rw</text>
+  <text class="t" x="450" y="298">data, .bss, stacks</text>
+  <text class="t s" x="720" y="298">EL1 read and write</text>
+  <rect class="warn" x="356" y="318" width="558" height="34" rx="8"/>
+  <text class="t" x="370" y="340">guard granule below the boot stack: unmapped</text>
+  <rect class="kernel" x="340" y="384" width="590" height="126" rx="8"/>
+  <text class="t h" x="356" y="410">RAM alias</text>
+  <text class="m" x="490" y="410">VA = PA + 0xFFFF_0000_0000_0000</text>
+  <text class="t s" x="356" y="434">the RAM the kernel touches, ends below the image</text>
+  <text class="t s" x="356" y="454">boot frame window, objects made by RETYPE: Rw</text>
+  <text class="t s" x="356" y="474">DTB: Ro</text>
+  <text class="t s" x="356" y="494">supported RAM: physical addresses below 2^47</text>
+  <rect class="box" x="30" y="526" width="900" height="56" rx="8"/>
+  <text class="t" x="46" y="550">Every kernel mapping: no EL0 access, UXN set, PXN set except Text</text>
+  <text class="t s" x="46" y="571">SCTLR_EL1.WXN is set when the MMU turns on: no execution from a writable page</text>
+</svg>

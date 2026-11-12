@@ -6,9 +6,12 @@ English | [한국어](../kr/README.md)
 
 </div>
 
-These notes explain how each part of K0 works, why it is built that way, how it is tested, and what is still missing. They describe the code of the current `main` branch (unreleased, crate version 0.1.0), which includes task isolation. The released `v0.1.0` tag does not. If a note and the code disagree, the code is what runs. Please open an issue so the note can be fixed.
+These notes explain how each part of K0 works, why it is built that way, how it is tested, and what is still missing. They describe the code of the current `main` branch (unreleased, crate version 0.1.0), which includes task isolation. If a note and the code disagree, the code is what runs. Please open an issue so the note can be fixed.
 
-Read them in this order the first time. It follows the order in which the kernel does things at boot.
+> [!NOTE]
+> The released `v0.1.0` tag does not include task isolation.
+
+Read them in the order of the following table the first time. This order follows the order in which the kernel does things at boot.
 
 | Note | Subject |
 | --- | --- |
@@ -23,4 +26,4 @@ Read them in this order the first time. It follows the order in which the kernel
 | [scheduling.md](scheduling.md) | TCBs and their bound CNode and address space, task creation and teardown, the round-robin scheduler, and timer preemption |
 | [ipc.md](ipc.md) | Endpoints and badges, `SEND`, `RECV`, `CALL` and `REPLY_RECV`, the single-use reply right, and what happens to waiting tasks when an endpoint is deleted |
 
-Every note ends with a "Known gaps" section. The open security advisories are listed in [SECURITY.md](../../SECURITY.md).
+Every note ends with a "**Known gaps**" section. The open security advisories are listed in [SECURITY.md](../../SECURITY.md).

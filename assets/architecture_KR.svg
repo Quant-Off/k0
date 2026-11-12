@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 580" width="960" height="580" role="img" aria-labelledby="title desc">
+  <title id="title">K0의 구성</title>
+  <desc id="desc">부트로더 또는 UEFI 로더가 EL1의 커널을 시작하고, 커널 위 EL0에서 루트 태스크와 다른 태스크가 시스템 콜로 커널에 요청합니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="579" rx="10"/>
+  <rect class="ext" x="30" y="30" width="280" height="70" rx="8"/>
+  <text class="t h" x="46" y="58">부트로더</text>
+  <text class="t s" x="46" y="82">Linux arm64 Image 규약</text>
+  <rect class="ext" x="340" y="30" width="250" height="70" rx="8"/>
+  <text class="t h" x="356" y="54">UEFI 펌웨어</text>
+  <text class="t s" x="356" y="74">디바이스 트리 또는</text>
+  <text class="t s" x="356" y="90">ACPI 정적 테이블 제공</text>
+  <rect class="box" x="650" y="30" width="280" height="70" rx="8"/>
+  <text class="t h" x="666" y="54">UEFI 로더</text>
+  <text class="t s" x="666" y="78">loader/, 커널 이미지를 품음</text>
+  <path class="line" d="M 590 65 H 648" marker-end="url(#arrow)"/>
+  <path class="line" d="M 170 100 V 188" marker-end="url(#arrow)"/>
+  <path class="line" d="M 790 100 V 188" marker-end="url(#arrow)"/>
+  <text class="t s" x="182" y="138">MMU 끈 채 EL1 또는 EL2로 진입</text>
+  <text class="t s" x="182" y="156">x0 = 디바이스 트리 주소</text>
+  <text class="t s" x="778" y="138" text-anchor="end">같은 약속으로 진입</text>
+  <rect class="kernel" x="30" y="190" width="900" height="190" rx="8"/>
+  <text class="t h" x="46" y="218">K0 커널 (EL1)</text>
+  <rect class="box" x="46" y="236" width="280" height="56" rx="8"/>
+  <text class="t" x="62" y="260">케이퍼빌리티</text>
+  <text class="t s" x="62" y="280">복사, 이동, 회수, 삭제</text>
+  <rect class="box" x="340" y="236" width="280" height="56" rx="8"/>
+  <text class="t" x="356" y="260">주소 공간</text>
+  <text class="t s" x="356" y="280">태스크마다 따로 메모리 지도</text>
+  <rect class="box" x="634" y="236" width="280" height="56" rx="8"/>
+  <text class="t" x="650" y="260">태스크 실행</text>
+  <text class="t s" x="650" y="280">라운드 로빈, 타이머 선점</text>
+  <rect class="box" x="46" y="304" width="280" height="56" rx="8"/>
+  <text class="t" x="62" y="328">동기 메시지</text>
+  <text class="t s" x="62" y="348">엔드포인트로 주고받는 IPC</text>
+  <rect class="box" x="340" y="304" width="280" height="56" rx="8"/>
+  <text class="t" x="356" y="328">폴트 격리</text>
+  <text class="t s" x="356" y="348">죽은 태스크만 멈춤</text>
+  <rect class="box" x="634" y="304" width="280" height="56" rx="8"/>
+  <text class="t" x="650" y="328">메모리 보호</text>
+  <text class="t s" x="650" y="348">W^X, 재사용 전 0으로 소거</text>
+  <path class="line" d="M 480 438 V 382" marker-end="url(#arrow)"/>
+  <text class="t s" x="494" y="416">시스템 콜</text>
+  <rect class="user" x="30" y="440" width="900" height="120" rx="8"/>
+  <text class="t h" x="46" y="466">EL0 (사용자 공간)</text>
+  <rect class="box" x="46" y="480" width="430" height="64" rx="8"/>
+  <text class="t" x="62" y="505">루트 태스크</text>
+  <text class="t s" x="62" y="528">첫 프로그램, 부팅 때 나눈 열쇠를 전부 받음</text>
+  <rect class="box" x="484" y="480" width="430" height="64" rx="8"/>
+  <text class="t" x="500" y="505">다른 태스크</text>
+  <text class="t s" x="500" y="528">자기 열쇠고리와 주소 공간에 묶임</text>
+</svg>

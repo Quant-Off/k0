@@ -8,43 +8,65 @@ English | [한국어](../kr/hardening_KR.md)
 
 This note covers the CPU security features K0 turns on at boot, what each one protects today and what it does not yet protect, and how the embedded root task image is checked. The code is in `crates/k0-arch/src/hardening.rs`, `crates/k0-boot/src/entropy.rs`, `crates/k0-boot/src/roottask.rs`, `crates/k0-boot/build.rs` and the boot path in `kernel/src/main.rs`.
 
-Some of these features are groundwork, not working protection yet. The sections below say which is which.
+The following figure groups the protections the way the sections of this note do.
+
+![The parts of boot hardening: PAC key derivation, PAC, BTI, PAN, closing EL0 exposure, root task integrity, and panics with fatal stops, marked as working today, groundwork, or not enabled](../../assets/hardening-layers.svg)
+
+> [!NOTE]
+> Some of these features are groundwork, not working protection yet. Each section says which is which.
 
 ## Boot entropy and PAC key derivation
 
-`derive_pac_keys` produces the ten 64-bit words that make up the PAC keys: an instruction key pair A and B, a data key pair A and B, and the generic key, two words each. It mixes three inputs:
+`derive_pac_keys` produces the ten 64-bit words that make up the PAC keys: an instruction key pair A and B, a data key pair A and B, and the generic key, two words each. It mixes the following three inputs:
 
-- the bytes of `rng-seed` and `kaslr-seed` from the DTB's `/chosen` node (up to 72 bytes, possibly none). Under UEFI the UEFI loader adds 32 bytes from `EFI_RNG_PROTOCOL` to `rng-seed` when the firmware has it, and these stay readable in the DTB in memory (see [uefi.md](uefi.md)),
-- the system counter `CNTPCT_EL0`, and
-- one value from the `RNDR` random number instruction, if the CPU implements FEAT_RNG and the instruction succeeds.
+- **DTB seed**: the bytes of `rng-seed` and `kaslr-seed` from the DTB's `/chosen` node (up to 72 bytes, possibly none). Under UEFI the UEFI loader adds 32 bytes from `EFI_RNG_PROTOCOL` to `rng-seed` when the firmware has it, and these stay readable in the DTB in memory (see [uefi.md](uefi.md)).
+- **System counter**: `CNTPCT_EL0`.
+- **Random number instruction**: one value from the `RNDR` instruction, if the CPU implements FEAT_RNG and the instruction succeeds.
 
-The derivation is SHA-256 in counter mode. Each 32-byte block hashes a fixed domain string (`k0-pac-boot-key-v1`), a one-byte block counter, the length of the DTB entropy as a little-endian 64-bit value, the DTB entropy itself, and the other inputs as little-endian words. The length prefix keeps DTB bytes from being confused with the words that follow them. Three blocks give the ten words.
+The derivation is SHA-256 in counter mode. Each 32-byte block hashes the following, in this order:
+
+1. a fixed domain string (`k0-pac-boot-key-v1`)
+2. a one-byte block counter
+3. the length of the DTB entropy as a little-endian 64-bit value
+4. the DTB entropy itself
+5. the other inputs as little-endian words
+
+The length prefix keeps DTB bytes from being confused with the words that follow them. Three blocks give the ten words.
 
 After `hardening::enable` has loaded the keys into system registers, `kernel_main` overwrites the ten words on the boot stack with volatile stores followed by a compiler fence. The boot stack becomes the system call stack later, so no copy of the keys is left there. This does not wipe the seed itself: the `rng-seed` and `kaslr-seed` bytes stay in the DTB, which remains mapped read-only.
 
-Because the inputs are hashed together, a hostile or predictable input cannot cancel out the entropy of another input. The result is still no better than the best input. If the DTB provides no seed and the CPU has no `RNDR`, the only input is the counter, and the boot log says `k0: WARNING pac key entropy low (cntpct only)`.
+Because the inputs are hashed together, a hostile or predictable input cannot cancel out the entropy of another input.
+
+> [!WARNING]
+> The result is still no better than the best input. If the DTB provides no seed and the CPU has no `RNDR`, the only input is the counter, and the boot log says `k0: WARNING pac key entropy low (cntpct only)`.
 
 ## Pointer authentication (PAC)
 
 If the CPU implements address authentication, `hardening::enable` writes the four address keys and, if generic authentication exists, the generic key. It then sets `EnIA`, `EnIB`, `EnDA` and `EnDB` in `SCTLR_EL1`. When the kernel entered at EL2, `boot.S` already set `HCR_EL2.APK` and `HCR_EL2.API`, so key access and PAC instructions at EL1 do not trap to EL2.
 
-**What this protects today: nothing yet.** PAC only helps when the code signs and checks pointers. The `-Z branch-protection` option that makes the Rust compiler sign return addresses is unstable, and K0 builds with the stable 1.89 toolchain. No instruction in the kernel or the root task uses the keys. The hardware is ready for the day the compiler can emit those instructions.
+> [!NOTE]
+> PAC protects nothing yet. It only helps when the code signs and checks pointers, and no instruction in the kernel or the root task uses the keys.
+
+The `-Z branch-protection` option that makes the Rust compiler sign return addresses is unstable, and K0 builds with the stable 1.89 toolchain. The hardware is ready for the day the compiler can emit those instructions.
 
 ## Branch target identification (BTI)
 
-BTI is detected and reported in the boot log, but it is not enabled. Turning on the guarded page bit would make every indirect branch fault unless it lands on a `BTI` instruction, and the stable compiler does not emit those landing pads. Enabling BTI now would break the kernel.
+BTI is detected and reported in the boot log, but it is not enabled. Turning on the guarded page bit would make every indirect branch fault unless it lands on a `BTI` instruction, and the stable compiler does not emit those landing pads.
+
+> [!NOTE]
+> BTI is not enabled yet. Enabling BTI now would break the kernel.
 
 ## Privileged access never (PAN)
 
 If the CPU implements FEAT_PAN, the kernel clears `SCTLR_EL1.SPAN`, so that the CPU sets `PSTATE.PAN` on every exception entry to EL1, and sets `PSTATE.PAN` immediately with a raw instruction encoding. With PAN set, any EL1 load or store through a mapping that EL0 can access faults.
 
-This is real protection today. It turns a whole class of kernel bugs, dereferencing a pointer supplied by user space, into a fault instead of a silent read or write. K0 never needs such access: it reaches user frames only through its own EL1-only alias (see [user-address-space.md](user-address-space.md)). With FEAT_PAN2, the boot self-check uses `AT S1E1RP` to confirm that PAN really blocks an EL1 read of user text.
+This is **real protection today**. It turns a whole class of kernel bugs, dereferencing a pointer supplied by user space, into a fault instead of a silent read or write. K0 never needs such access: it reaches user frames only through its own EL1-only alias (see [user-address-space.md](user-address-space.md)). With FEAT_PAN2, the boot self-check uses `AT S1E1RP` to confirm that PAN really blocks an EL1 read of user text.
 
 ## Closing what EL0 can observe
 
 `TCR_EL1.E0PD1` is set when the CPU implements FEAT_E0PD, so an EL0 access to the upper (kernel) half faults without a translation walk and EL0 cannot probe the kernel layout by timing (see [memory.md](memory.md)). The default QEMU CPU does not implement it.
 
-The bootloader may leave registers in states that let user space observe or control more than it should. K0 resets them to known values instead of trusting them.
+The bootloader may leave registers in states that let user space observe or control more than it should. K0 resets them to known values instead of trusting them. In the following table, you can see the settings and their effect for EL0.
 
 | Setting | Effect for EL0 |
 | --- | --- |
@@ -60,23 +82,31 @@ The EL0 thread pointer registers `TPIDR_EL0` and `TPIDRRO_EL0` are part of each 
 
 `DEBUG_PUTC` requires the `Console` capability and replaces every byte that is neither printable ASCII nor a newline with `?`. A task cannot send terminal escape sequences to whoever reads the console (in an image built with a console driver) or the boot log.
 
-The filter does not mark who wrote a line. Kernel output and task output share the boot log, and in an image built with a console driver also the console, so a task with a `Console` capability can print a newline followed by text that starts with `k0:`. A reader of the console or the log, including `tools/qemu-boot-test.sh`, cannot treat a `k0:` line that appears after `k0: entering root task (el0)` as written by the kernel. This includes the `k0: console drivers [...]` line: only its first occurrence in the log, or the image file, identifies a build. Task output is recorded in the boot log only up to a quota, so it cannot push kernel lines out of the log, but it is not marked there either. Give the `Console` capability only to tasks whose output may be mixed with the kernel's.
+The filter does not mark who wrote a line. Kernel output and task output share the boot log, and in an image built with a console driver also the console.
+
+> [!WARNING]
+> A task with a `Console` capability can print a newline followed by text that starts with `k0:`. A reader of the console or the log, including `tools/qemu-boot-test.sh`, cannot treat a `k0:` line that appears after `k0: entering root task (el0)` as written by the kernel.
+
+This includes the `k0: console drivers [...]` line: only its first occurrence in the log, or the image file, identifies a build. Task output is recorded in the boot log only up to a quota, so it cannot push kernel lines out of the log, but it is not marked there either. Give the `Console` capability **only to tasks whose output may be mixed with the kernel's**.
 
 ## Root task integrity
 
 The kernel contains no ELF loader. `crates/k0-boot/build.rs` builds the root task on the build host, parses its ELF file there, and converts it into a flat image plus a short list of segments. During the conversion it enforces:
 
-- a little-endian AArch64 ELF64 executable with in-bounds headers and segments,
-- no segment that is both writable and executable,
-- 16 KiB alignment for every segment, which fits both granules, with segments sorted and not overlapping,
-- an entry point inside an executable segment,
-- at most four segments and at most 1 MiB of flat image.
+- a little-endian AArch64 ELF64 executable with in-bounds headers and segments
+- no segment that is both writable and executable
+- 16 KiB alignment for every segment, which fits both granules, with segments sorted and not overlapping
+- an entry point inside an executable segment
+- at most four segments and at most 1 MiB of flat image
 
 Any violation fails the build. Before it hashes anything, the build script also checks the vendored `sha2` crate against two FIPS 180-4 test vectors. It then bakes the image, the segment list and the image's SHA-256 hash into the kernel's read-only data.
 
 At every boot, `verify_root_task` hashes the embedded image again and compares the result with the baked-in hash. On a mismatch, the boot stops. The first bytes of the hash appear in the boot log for comparison with the build output.
 
-**This is a corruption check, not an authenticity check.** The image, the reference hash and the code that compares them all live in the same kernel image. Anyone who can modify the kernel image can change all three. Signing the root task with an asymmetric key would not change that while the public key also lives in the kernel image. Protection against a modified kernel image belongs to the boot chain, which has to verify the whole image. The check does catch build pipeline mistakes, damage on the loading path, and a tampered image blob when the rest of the kernel is intact. The plan is to add Ed25519 verification when the root task is shipped separately from the kernel, so that only the public key stays in the kernel.
+> [!NOTE]
+> This is a corruption check, not an authenticity check. The image, the reference hash and the code that compares them all live in the same kernel image.
+
+Anyone who can modify the kernel image can change all three. Signing the root task with an asymmetric key would not change that while the public key also lives in the kernel image. Protection against a modified kernel image belongs to the boot chain, which has to verify the whole image. The check does catch build pipeline mistakes, damage on the loading path, and a tampered image blob when the rest of the kernel is intact. The plan is to add Ed25519 verification when the root task is shipped separately from the kernel, so that only the public key stays in the kernel.
 
 ## Panics
 
@@ -93,9 +123,9 @@ The panic handler masks all interrupts and parks the core. Debug builds print th
 
 ## Known gaps
 
-- PAC keys are loaded, but no code uses them yet, so return addresses are not protected. The key words are wiped from the boot stack, but the seed bytes stay in the read-only DTB mapping.
-- `k0_arch::fatal` and the panic handler stop the whole core. They are the intended response to a corrupt kernel structure, but they also mean one such bug is a denial of service for every task.
-- The same PAC keys serve EL0 and EL1 and every task. Once code starts signing pointers, a task could forge pointers the kernel accepts. Per-task or per-level keys are not implemented.
-- BTI is not enabled.
-- The root task check proves integrity against accidents and limited tampering, not authenticity.
-- No real board has been tried. CI uses QEMU only. Manual runs on 2026-11-11 and 2026-11-12 used QEMU with HVF on an ARM Mac.
+- **PAC unused**: PAC keys are loaded, but no code uses them yet, so return addresses are not protected. The key words are wiped from the boot stack, but the seed bytes stay in the read-only DTB mapping.
+- **Whole core stops**: `k0_arch::fatal` and the panic handler stop the whole core. They are the intended response to a corrupt kernel structure, but they also mean one such bug is a denial of service for every task.
+- **Shared PAC keys**: the same PAC keys serve EL0 and EL1 and every task. Once code starts signing pointers, a task could forge pointers the kernel accepts. Per-task or per-level keys are not implemented.
+- **BTI**: BTI is not enabled.
+- **Root task check**: the root task check proves integrity against accidents and limited tampering, not authenticity.
+- **Real boards**: no real board has been tried. CI uses QEMU only. Manual runs on 2026-11-11 and 2026-11-12 used QEMU with HVF on an ARM Mac.

@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" role="img" aria-labelledby="title desc">
+  <title id="title">DTB에서 플랫폼까지</title>
+  <desc id="desc">DTB 블롭이 dtb_span, parse, discover, 메모리 맵 대조, 하드웨어 식별 확인을 거쳐 검증된 플랫폼이 되거나 거부되는 과정입니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="559" rx="10"/>
+
+  <rect class="ext" x="30" y="56" width="204" height="160" rx="8"/>
+  <text class="t h" x="46" y="86">DTB 블롭</text>
+  <text class="t s" x="46" y="108">부트로더가 넘김</text>
+  <text class="t s" x="46" y="132">flattened 디바이스 트리</text>
+  <text class="t s" x="46" y="154">적대적 입력으로 취급</text>
+  <rect class="kernel" x="262" y="56" width="204" height="160" rx="8"/>
+  <text class="m" x="278" y="86">dtb_span</text>
+  <text class="t s" x="278" y="108">파싱 전</text>
+  <text class="t s" x="278" y="132">null, 비정렬 포인터 거부</text>
+  <text class="t s" x="278" y="154">매직 0xd00dfeed</text>
+  <text class="t s" x="278" y="176">크기 40 B ~ 2 MiB</text>
+  <rect class="kernel" x="494" y="56" width="204" height="160" rx="8"/>
+  <text class="m" x="510" y="86">parse</text>
+  <text class="t s" x="510" y="108">메모리 파서의 한계</text>
+  <text class="t s" x="510" y="132">전체 크기 2 MiB</text>
+  <text class="t s" x="510" y="154">깊이 32, 엔트로피 72 B</text>
+  <text class="t s" x="510" y="176">메모리 리전 8</text>
+  <text class="t s" x="510" y="198">예약 리전 32</text>
+  <rect class="kernel" x="726" y="56" width="204" height="160" rx="8"/>
+  <text class="m" x="742" y="86">discover</text>
+  <text class="t s" x="742" y="108">세 가지 디바이스만</text>
+  <text class="t s" x="742" y="132">콘솔 (stdout-path)</text>
+  <text class="t s" x="742" y="154">인터럽트 컨트롤러</text>
+  <text class="t s" x="742" y="176">타이머 인터럽트 번호</text>
+  <path class="line" d="M 232 136 H 260" marker-end="url(#arrow)"/>
+  <path class="line" d="M 464 136 H 492" marker-end="url(#arrow)"/>
+  <path class="line" d="M 696 136 H 724" marker-end="url(#arrow)"/>
+  <path class="line" d="M 828 216 V 258" marker-end="url(#arrow)"/>
+  <rect class="kernel" x="726" y="260" width="204" height="130" rx="8"/>
+  <text class="m" x="742" y="290">Platform::validate</text>
+  <text class="t s" x="742" y="312">메모리 맵과 대조</text>
+  <text class="t s" x="742" y="336">RAM은 2^47 아래</text>
+  <text class="t s" x="742" y="358">디바이스 구간 겹침 없음</text>
+  <text class="t s" x="742" y="380">물리 주소 폭 아래</text>
+  <rect class="kernel" x="494" y="260" width="204" height="130" rx="8"/>
+  <text class="t h" x="510" y="290">하드웨어 확인</text>
+  <text class="t s" x="510" y="312">DTB와 일치해야 함</text>
+  <text class="t s" x="510" y="336">GIC 식별 레지스터</text>
+  <text class="t s" x="510" y="358">PL011 식별 레지스터</text>
+  <text class="t s" x="510" y="380">임시 프로브 매핑으로 읽음</text>
+  <rect class="user" x="262" y="260" width="204" height="130" rx="8"/>
+  <text class="m" x="278" y="290">Platform</text>
+  <text class="t s" x="278" y="312">불변인 기술서 하나</text>
+  <text class="m" x="278" y="340">k0: platform ...</text>
+  <path class="line" d="M 724 325 H 700" marker-end="url(#arrow)"/>
+  <path class="line" d="M 492 325 H 468" marker-end="url(#arrow)"/>
+  <rect class="ext" x="30" y="430" width="440" height="100" rx="8"/>
+  <text class="t h" x="46" y="460">콘솔 없이 계속</text>
+  <text class="m" x="46" y="484">k0: no console (...)</text>
+  <text class="t s" x="46" y="508">콘솔이 없거나 확인에 실패한 경우</text>
+  <rect class="warn" x="494" y="430" width="436" height="100" rx="8"/>
+  <text class="t h" x="510" y="460">부팅 거부, 코어 파킹</text>
+  <text class="m" x="510" y="484">k0: dtb rejected: ...</text>
+  <text class="t s" x="510" y="508">DTB 위반, 대조 또는 식별 불일치</text>
+  <path class="line" d="M 800 390 V 428" marker-end="url(#arrow)"/>
+  <path class="line" d="M 640 390 V 428" marker-end="url(#arrow)"/>
+  <path class="off" d="M 520 390 L 440 428" marker-end="url(#arrow)"/>
+</svg>

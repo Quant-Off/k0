@@ -6,25 +6,44 @@ English | [한국어](../kr/scheduling_KR.md)
 
 </div>
 
-This note describes how K0 represents a task, how user space creates, starts and tears down tasks, and how the round-robin scheduler switches between them. The code is in `crates/k0-task/src/lib.rs`, `crates/k0-sched/src/lib.rs`, `teardown` in `crates/k0-ipc/src/lib.rs`, and `sys_tcb_configure`, `sys_tcb_resume`, `kill_current` and `finish` in `kernel/src/syscall.rs`. The note describes the current `main` branch (unreleased).
+This note describes the following:
+
+- how K0 represents a task
+- how user space creates, starts and tears down tasks
+- how the round-robin scheduler switches between tasks
+
+The code is in the following places:
+
+- `crates/k0-task/src/lib.rs`
+- `crates/k0-sched/src/lib.rs`
+- `teardown` in `crates/k0-ipc/src/lib.rs`
+- `sys_tcb_configure`, `sys_tcb_resume`, `kill_current` and `finish` in `kernel/src/syscall.rs`
+
+The note describes the current `main` branch (unreleased).
 
 ## The task control block
 
-A task control block (TCB) holds:
+A **task control block** (TCB) holds the following:
 
-- the task's saved user context: 31 general-purpose registers, the stack pointer, the return address, the saved processor state, and the two EL0 thread pointer registers,
-- the physical address of the task's top-level page table (`ttbr0_pa`), a copy of the address space root that is valid only while the task's embedded slots are bound,
-- the task's state,
-- `next` and `prev`, the links to its neighbours in whatever queue the task is in,
-- the single-use reply right (`reply_to`) and its reverse link (`reply_from`), described in [ipc.md](ipc.md),
-- `blocked_on`, the endpoint the task is queued at, and `ipc_badge`, the badge of the message it is waiting to send, and
-- three embedded capability slots. Slot 1 holds the task's `CNode` capability and slot 2 its `AddrSpace` capability. Slot 0 is unused.
+- **Saved user context**: 31 general-purpose registers, the stack pointer, the return address, the saved processor state, and the two EL0 thread pointer registers.
+- **Top-level page table address** (`ttbr0_pa`): a copy of the address space root that is valid only while the task's embedded slots are bound.
+- **State**: the current state of the task.
+- **Queue links**: `next` and `prev`, the links to its neighbours in whatever queue the task is in.
+- **Reply right**: the single-use reply right (`reply_to`) and its reverse link (`reply_from`), described in [ipc.md](ipc.md).
+- **IPC wait information**: `blocked_on`, the endpoint the task is queued at, and `ipc_badge`, the badge of the message it is waiting to send.
+- **Three embedded capability slots**: slot 1 holds the task's `CNode` capability and slot 2 its `AddrSpace` capability. Slot 0 is unused.
 
-The embedded slots are what bind a task to its capability space and its address space. System calls resolve slot numbers only in the CNode named by slot 1 (see [capabilities.md](capabilities.md)), and the task runs in the address space named by slot 2. Both are copies, that is children in the derivation list, of the capabilities given to `TCB_CONFIGURE`, and they are marked as bound to the task. When either one is removed, the task is torn down (see [Teardown](#teardown)).
+The **embedded slots** are what bind a task to its capability space and its address space. System calls resolve slot numbers only in the CNode named by slot 1 (see [capabilities.md](capabilities.md)), and the task runs in the address space named by slot 2. Both are copies, that is children in the derivation list, of the capabilities given to `TCB_CONFIGURE`, and they are marked as bound to the task. When either one is removed, the task is torn down (see [Teardown](#teardown)).
 
-Every TCB, including the root task's, is an ordinary object at the start of a granule-sized frame. The root task's TCB lives in the 2 MiB boot frame window and is reached through a `Tcb` capability in the root CNode. Every other TCB is a frame that user space retyped from untyped memory. The kernel reaches a TCB only through its own alias, and it is never mapped at EL0. Compile-time assertions keep the TCB within a granule, so that the TCB can be found again by rounding an embedded slot's address down to the granule.
+Every TCB, including the root task's, is an ordinary object at the start of a granule-sized frame. The root task's TCB lives in the 2 MiB boot frame window and is reached through a `Tcb` capability in the root CNode. Every other TCB is a frame that user space retyped from untyped memory.
+
+The kernel reaches a TCB only through its own alias, and it is never mapped at EL0. Compile-time assertions keep the TCB within a granule, so that the TCB can be found again by rounding an embedded slot's address down to the granule.
 
 ## States
+
+The following figure shows the task states and the transitions between them. The meaning of each state is in the table after it.
+
+![Inactive becomes Stopped through TCB_CONFIGURE and Ready through TCB_RESUME, round robin moves a task between Running and Ready, a task blocks in IPC and becomes Ready when released, and teardown makes it Dead from any state](../../assets/scheduling-states.svg)
 
 | State | Meaning |
 | --- | --- |
@@ -40,18 +59,21 @@ Every TCB, including the root task's, is an ordinary object at the start of a gr
 
 ## Creating a task
 
-**`TCB_CONFIGURE`** takes six arguments: the `Tcb` slot, an entry address, a stack top, an `AddrSpace` slot, a `CNode` slot and one argument value that the new task receives in `x0`. All slots are looked up in the caller's own CNode. The kernel checks that:
+`TCB_CONFIGURE` takes six arguments: the `Tcb` slot, an entry address, a stack top, an `AddrSpace` slot, a `CNode` slot and one argument value that the new task receives in `x0`. All slots are looked up in the caller's own CNode. The kernel checks that:
 
 - the entry address is 4-byte aligned, above the first granule and inside the 48-bit user range,
 - the stack top is 16-byte aligned, above the first granule and inside the user range,
 - the capabilities are of the right kinds (`Tcb`, `AddrSpace`, `CNode`), and
 - the TCB is in the `Inactive` state, so each TCB can be configured only once and a running task can never be reconfigured. The state is read through a raw pointer before any mutable reference to the TCB is formed.
 
-The two bindings are written together. Both capabilities are validated first, and then copies are written into slots 1 and 2 in one step, so a TCB that is bound to only one of the two cannot exist. If any check fails, both embedded slots stay empty and the TCB stays `Inactive`.
+> [!IMPORTANT]
+> The two bindings are written together. Both capabilities are validated first, and then copies are written into slots 1 and 2 in one step, so a TCB that is bound to only one of the two cannot exist.
+
+If any check fails, both embedded slots stay empty and the TCB stays `Inactive`.
 
 The kernel then zeroes the saved context and sets the entry address, the stack pointer, `x0` and `ttbr0_pa`. It sets the saved processor state itself, to EL0 with interrupts unmasked. User space never supplies processor state, so it cannot ask to return to EL1 or to run with interrupts masked. The thread pointer registers start at zero, so the new task does not inherit the creator's values. The TCB moves to `Stopped`.
 
-**`TCB_RESUME`** accepts only a `Stopped` TCB and puts it in the ready queue. A TCB that is already queued, running, blocked or dead is refused, so the same TCB can never sit in a queue twice.
+`TCB_RESUME` accepts only a `Stopped` TCB and puts it in the ready queue. A TCB that is already queued, running, blocked or dead is refused, so the same TCB can never sit in a queue twice.
 
 ## The ready queue
 
@@ -59,7 +81,7 @@ The scheduler keeps three values: the current task, and the head and tail of the
 
 The queue is doubly linked so that a task can be removed from anywhere in it in constant time. That matters because a task can be torn down while it is ready, and the kernel must not walk the queue to find it. Removal checks that the links agree with the queue's head and tail. If they do not, the queue is corrupt and the kernel halts with `k0: FATAL ready queue corrupt`.
 
-The same `next` and `prev` fields also link a blocked task into an endpoint queue, which has the same structure. The state machine keeps these uses apart: a task is either ready, or blocked in one endpoint, or running, never two at once.
+The same `next` and `prev` fields also link a blocked task into an endpoint queue, which has the same structure. The state machine keeps these uses apart. A task is either ready, or blocked in one endpoint, or running, never two at once.
 
 ## Switching tasks
 
@@ -70,7 +92,7 @@ When an exception arrives from EL0, the vector code saves all user registers int
 
 Tasks can run in different address spaces, so `TTBR0_EL1` really changes between them. If an address space is destroyed while it is installed, the kernel first switches `TTBR0_EL1` to an empty table.
 
-Three operations use this switch.
+Three operations use this switch, as shown in the following table.
 
 | Operation | Used by | What happens to the current task |
 | --- | --- | --- |
@@ -80,21 +102,27 @@ Three operations use this switch.
 
 ## Preemption
 
-The timer fires once per second. When it fires while EL0 is running, the IRQ path acknowledges it, re-arms the timer, prints `k0: tick N` (on the console in an image built with a console driver; only the first 4 tick lines are logged) and calls `k0_preempt`, which calls `rotate`. A task that never yields therefore loses the CPU after at most one second.
+The timer fires once per second. When it fires while EL0 is running, the IRQ path acknowledges it, re-arms the timer, prints `k0: tick N` and calls `k0_preempt`, which calls `rotate`. The `k0: tick N` line goes to the console in an image built with a console driver, and only the first 4 tick lines are logged. A task that never yields therefore **loses the CPU after at most one second**.
 
-The kernel itself is never preempted. Exception entry masks interrupts, and the kernel keeps them masked while it handles a system call or fault. A timer interrupt that arrives at EL1 is possible only during boot, before the handoff, and it only counts the tick.
+> [!IMPORTANT]
+> The kernel itself is never preempted. Exception entry masks interrupts, and the kernel keeps them masked while it handles a system call or fault.
+
+A timer interrupt that arrives at EL1 is possible only during boot, before the handoff, and it only counts the tick.
 
 ## Teardown
 
-Teardown makes a task `Dead` and removes every kernel pointer that refers to it. It runs when:
+Teardown makes a task `Dead` and removes every kernel pointer that refers to it. It runs in the following cases:
 
-- the task calls `EXIT`,
-- the task takes an EL0 fault,
-- the task makes an unknown system call,
-- the original capability of its TCB is deleted (by `CAP_DELETE`, or by `CAP_REVOKE` on a capability it descends from, such as the untyped it was retyped from), or
-- a capability bound to the task is removed, that is its CNode or address space capability was deleted or revoked, or the original object behind it was finalized.
+- the task calls `EXIT`
+- the task takes an EL0 fault
+- the task makes an unknown system call
+- the original capability of its TCB is deleted (by `CAP_DELETE`, or by `CAP_REVOKE` on a capability it descends from, such as the untyped it was retyped from)
+- a capability bound to the task is removed, that is its CNode or address space capability was deleted or revoked, or the original object behind it was finalized
 
-`teardown` decides by the task's state only, never by whether a pointer happens to be set:
+> [!IMPORTANT]
+> `teardown` decides by the task's state only, never by whether a pointer happens to be set.
+
+The following table shows what teardown does in each state.
 
 | State | What teardown does |
 | --- | --- |
@@ -113,8 +141,11 @@ A dead task's frame is not freed by teardown. It stays a `Dead` TCB, and `TCB_CO
 
 ## When there is nothing left to run
 
-- If the current task died during a kernel entry and no task is ready, `finish` prints `k0: all tasks exited` and parks the core.
-- If the current task blocks in IPC and no task is ready, `block_and_switch` reports it, and the kernel prints `k0: all tasks blocked` and parks. No other event can wake a task today, because notification objects do not exist yet. This is advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md). Task isolation does not change this: a confined task that is the last one to block can still park the whole system. Isolation protects confidentiality and integrity between tasks, not availability.
+- **The current task died**: if the current task died during a kernel entry and no task is ready, `finish` prints `k0: all tasks exited` and parks the core.
+- **The current task blocked**: if the current task blocks in IPC and no task is ready, `block_and_switch` reports it, and the kernel prints `k0: all tasks blocked` and parks. No other event can wake a task today, because notification objects do not exist yet.
+
+> [!WARNING]
+> The case where every task is blocked is advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md). Task isolation does not change this: a confined task that is the last one to block can still park the whole system. Isolation protects confidentiality and integrity between tasks, not availability.
 
 Parking is a `wfe` loop inside the kernel, which runs with interrupts masked.
 
@@ -133,11 +164,13 @@ The scheduler and the system call paths read system registers, so they are teste
 
 ## Known gaps
 
-- Scheduling is plain round robin with a fixed one-second slice. There are no priorities and no budgets.
-- There is no idle state. When the root task has finished its self-tests it keeps calling `YIELD`, so the CPU does not sleep. When no task can run, the kernel parks instead of waiting for an event.
-- If every task is blocked, the kernel parks the core, and a confined task can cause this by blocking last (GHSA-q99x-2wrv-358p). Task isolation does not cover availability.
-- There are no timeouts. A blocked task wakes only when its IPC partner acts or when the endpoint is deleted.
-- One core only.
-- A dead TCB is not reclaimed by teardown. Its frame becomes reusable only when its capability is deleted or its untyped is revoked and retyped.
-- There are no hardware address space identifiers, so every switch between address spaces flushes the whole TLB.
-- A task that dies cannot be restarted. A new task needs a new TCB.
+> [!NOTE]
+> Priorities, budgets, timeouts and an idle state do not exist yet. There is one core only.
+
+- **Scheduling**: plain round robin with a fixed one-second slice.
+- **Behaviour without an idle state**: when the root task has finished its self-tests it keeps calling `YIELD`, so the CPU does not sleep. When no task can run, the kernel parks instead of waiting for an event.
+- **Availability**: if every task is blocked, the kernel parks the core, and a confined task can cause this by blocking last (GHSA-q99x-2wrv-358p). Task isolation does not cover availability.
+- **Blocked tasks**: a blocked task wakes only when its IPC partner acts or when the endpoint is deleted.
+- **Dead TCB**: it is not reclaimed by teardown. Its frame becomes reusable only when its capability is deleted or its untyped is revoked and retyped.
+- **Address space identifiers**: there are no hardware address space identifiers, so every switch between address spaces flushes the whole TLB.
+- **Dead task**: it cannot be restarted. A new task needs a new TCB.

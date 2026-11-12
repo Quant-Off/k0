@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 534" width="960" height="534" role="img" aria-labelledby="title desc">
+  <title id="title">Handling path for each kind of exception</title>
+  <desc id="desc">A system call from EL0 goes through k0_syscall and finish, a fault at EL0 stops only that task, an interrupt goes to k0_preempt, and an exception in the kernel prints a diagnosis and parks.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="533" rx="10"/>
+  <text class="t h" x="30" y="38">What happens</text>
+  <text class="t h" x="238" y="38">First step</text>
+  <text class="t h" x="446" y="38">Handling</text>
+  <text class="t h" x="706" y="38">Result</text>
+  <rect class="box" x="30" y="62" width="176" height="86" rx="8"/>
+  <text class="t h" x="46" y="88">System call</text>
+  <text class="t s" x="46" y="112">SVC from EL0</text>
+  <rect class="kernel" x="238" y="62" width="176" height="86" rx="8"/>
+  <text class="m" x="254" y="88">el0_sync</text>
+  <text class="t s" x="254" y="112">Decided by ESR_EL1</text>
+  <rect class="kernel" x="446" y="62" width="228" height="86" rx="8"/>
+  <text class="m" x="462" y="88">k0_syscall</text>
+  <text class="t s" x="462" y="112">Number x8, args x0 to x5</text>
+  <rect class="user" x="706" y="62" width="224" height="86" rx="8"/>
+  <text class="m" x="722" y="88">finish</text>
+  <text class="t s" x="722" y="112">Write x0 and return</text>
+  <line class="line" x1="206" y1="105" x2="236" y2="105" marker-end="url(#arrow)"/>
+  <line class="line" x1="414" y1="105" x2="444" y2="105" marker-end="url(#arrow)"/>
+  <line class="line" x1="674" y1="105" x2="704" y2="105" marker-end="url(#arrow)"/>
+  <rect class="box" x="30" y="172" width="176" height="86" rx="8"/>
+  <text class="t h" x="46" y="198">Fault</text>
+  <text class="t s" x="46" y="222">EL0, not an SVC</text>
+  <rect class="kernel" x="238" y="172" width="176" height="86" rx="8"/>
+  <text class="m" x="254" y="198">el0_sync</text>
+  <text class="t s" x="254" y="222">Everything else</text>
+  <rect class="kernel" x="446" y="172" width="228" height="86" rx="8"/>
+  <text class="m" x="462" y="198">k0_fault</text>
+  <text class="t s" x="462" y="222">Prints one diagnostic line</text>
+  <text class="m" x="462" y="242">kill_current</text>
+  <rect class="warn" x="706" y="172" width="224" height="86" rx="8"/>
+  <text class="t h" x="722" y="198">Only that task stops</text>
+  <text class="t s" x="722" y="222">Dead, then the next task</text>
+  <line class="line" x1="206" y1="215" x2="236" y2="215" marker-end="url(#arrow)"/>
+  <line class="line" x1="414" y1="215" x2="444" y2="215" marker-end="url(#arrow)"/>
+  <line class="line" x1="674" y1="215" x2="704" y2="215" marker-end="url(#arrow)"/>
+  <rect class="box" x="30" y="282" width="176" height="110" rx="8"/>
+  <text class="t h" x="46" y="308">Interrupt</text>
+  <text class="t s" x="46" y="332">IRQ from EL0</text>
+  <rect class="kernel" x="238" y="282" width="176" height="110" rx="8"/>
+  <text class="t h" x="254" y="308">Saved</text>
+  <text class="t s" x="254" y="332">Like a system call</text>
+  <rect class="kernel" x="446" y="282" width="228" height="110" rx="8"/>
+  <text class="t h" x="462" y="308">Acknowledge</text>
+  <text class="t s" x="462" y="332">Timer: re-arm 1 s, tick</text>
+  <text class="m" x="462" y="352">k0_preempt</text>
+  <line class="line" x1="206" y1="337" x2="236" y2="337" marker-end="url(#arrow)"/>
+  <line class="line" x1="414" y1="337" x2="444" y2="337" marker-end="url(#arrow)"/>
+  <rect class="box" x="30" y="416" width="176" height="86" rx="8"/>
+  <text class="t h" x="46" y="442">In the kernel</text>
+  <text class="t s" x="46" y="466">EL1, not an IRQ</text>
+  <rect class="warn" x="238" y="416" width="176" height="86" rx="8"/>
+  <text class="t h" x="254" y="442">Fatal vector</text>
+  <text class="t s" x="254" y="466">Stack not trusted</text>
+  <rect class="kernel" x="446" y="416" width="228" height="86" rx="8"/>
+  <text class="t s" x="462" y="442">Switch to own 8 KiB stack</text>
+  <text class="m" x="462" y="462">exception_fatal</text>
+  <rect class="warn" x="706" y="416" width="224" height="86" rx="8"/>
+  <text class="t h" x="722" y="442">Prints, then parks</text>
+  <text class="t s" x="722" y="466">No recovery</text>
+  <line class="line" x1="206" y1="459" x2="236" y2="459" marker-end="url(#arrow)"/>
+  <line class="line" x1="414" y1="459" x2="444" y2="459" marker-end="url(#arrow)"/>
+  <line class="line" x1="674" y1="459" x2="704" y2="459" marker-end="url(#arrow)"/>
+  <rect class="user" x="706" y="282" width="224" height="52" rx="8"/>
+  <text class="t" x="722" y="304">To the next ready task</text>
+  <text class="t s" x="722" y="324">Rotates</text>
+  <rect class="warn" x="706" y="340" width="224" height="52" rx="8"/>
+  <text class="t" x="722" y="362">Other numbers, FIQ</text>
+  <text class="t s" x="722" y="382">Prints UNEXPECTED, parks</text>
+  <line class="line" x1="674" y1="308" x2="704" y2="308" marker-end="url(#arrow)"/>
+  <line class="line" x1="674" y1="366" x2="704" y2="366" marker-end="url(#arrow)"/>
+</svg>

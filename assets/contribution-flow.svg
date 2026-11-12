@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 372" width="960" height="372" role="img" aria-labelledby="title desc">
+  <title id="title">The path of a change until it is merged</title>
+  <desc id="desc">Build, host tests, QEMU boot test and boot matrix come first, then the pull request, CI and the CLA check, and finally review by a maintainer.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="371" rx="10"/>
+
+  <text class="t h" x="30" y="38">Before the pull request</text>
+  <text class="t h" x="160" y="222">After the pull request</text>
+  <rect class="box" x="30" y="60" width="200" height="112" rx="8"/>
+  <text class="t h" x="46" y="88">Build</text>
+  <text class="m" x="46" y="114">cargo build</text>
+  <rect class="box" x="263" y="60" width="200" height="112" rx="8"/>
+  <text class="t h" x="279" y="88">Host tests</text>
+  <text class="m" x="279" y="114">host-test.sh</text>
+  <text class="t s" x="279" y="136">Unit tests, DTB fuzzing</text>
+  <rect class="box" x="496" y="60" width="200" height="112" rx="8"/>
+  <text class="t h" x="512" y="88">QEMU boot test</text>
+  <text class="m" x="512" y="114">qemu-boot-test.sh</text>
+  <text class="t s" x="512" y="136">Checks the boot log</text>
+  <rect class="box" x="729" y="60" width="200" height="112" rx="8"/>
+  <text class="t h" x="745" y="88">Boot matrix</text>
+  <text class="m" x="745" y="110">boot-matrix.sh</text>
+  <text class="t s" x="745" y="132">If you change the boot path,</text>
+  <text class="t s" x="745" y="148">a driver, device tree code</text>
+  <text class="t s" x="745" y="164">or the UEFI loader</text>
+  <path class="line" d="M 230 116 H 261" marker-end="url(#arrow)"/>
+  <path class="line" d="M 463 116 H 494" marker-end="url(#arrow)"/>
+  <path class="line" d="M 696 116 H 727" marker-end="url(#arrow)"/>
+  <rect class="box" x="30" y="240" width="200" height="112" rx="8"/>
+  <text class="t h" x="46" y="268">Pull request</text>
+  <text class="t s" x="46" y="294">Say what, why and how</text>
+  <text class="t s" x="46" y="314">you tested</text>
+  <rect class="box" x="263" y="240" width="200" height="112" rx="8"/>
+  <text class="t h" x="279" y="268">CI</text>
+  <text class="t s" x="279" y="294">Image builds, host tests,</text>
+  <text class="t s" x="279" y="314">boot matrix</text>
+  <rect class="box" x="496" y="240" width="200" height="112" rx="8"/>
+  <text class="t h" x="512" y="268">CLA check</text>
+  <text class="m" x="512" y="294">CLA signatures</text>
+  <text class="t s" x="512" y="316">A bot checks signatures</text>
+  <rect class="user" x="729" y="240" width="200" height="112" rx="8"/>
+  <text class="t h" x="745" y="268">Maintainer review</text>
+  <text class="t s" x="745" y="294">Every change, before merge</text>
+  <path class="line" d="M 230 296 H 261" marker-end="url(#arrow)"/>
+  <path class="line" d="M 463 296 H 494" marker-end="url(#arrow)"/>
+  <path class="line" d="M 696 296 H 727" marker-end="url(#arrow)"/>
+  <path class="line" d="M 829 174 V 198 H 130 V 238" marker-end="url(#arrow)"/>
+</svg>

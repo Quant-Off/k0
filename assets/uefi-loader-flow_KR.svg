@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 602" width="960" height="602" role="img" aria-labelledby="title desc">
+  <title id="title">UEFI 로더가 실행하는 순서</title>
+  <desc id="desc">로더는 내장 커널을 확인하고, 디바이스 트리를 찾고, 블록 하나를 할당하고, 커널용 DTB를 만들고 검사한 뒤, 부트 서비스를 끝내고 캐시를 비우고 MMU를 끄고 커널로 점프합니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="601" rx="10"/>
+  <rect class="box" x="30" y="64" width="270" height="96" rx="8"/>
+  <text class="t h" x="46" y="90">1. 시작 줄 출력</text>
+  <text class="t s" x="46" y="114">진입 레벨, 커널 크기, SHA-256</text>
+  <rect class="kernel" x="345" y="64" width="270" height="96" rx="8"/>
+  <text class="t h" x="361" y="90">2. 내장 커널 확인</text>
+  <text class="t s" x="361" y="114">헤더, 해시, CPU 그래뉼</text>
+  <rect class="ext" x="660" y="64" width="270" height="96" rx="8"/>
+  <text class="t h" x="676" y="90">3. 디바이스 트리 찾기</text>
+  <text class="t s" x="676" y="114">없으면 ACPI 정적 테이블</text>
+  <rect class="ext" x="30" y="190" width="270" height="96" rx="8"/>
+  <text class="t h" x="46" y="216">4. 엔트로피 요청</text>
+  <text class="t s" x="46" y="240">EFI_RNG_PROTOCOL, 32바이트</text>
+  <rect class="box" x="345" y="190" width="270" height="96" rx="8"/>
+  <text class="t h" x="361" y="216">5. 블록 하나 할당</text>
+  <text class="t s" x="361" y="240">DTB 버퍼, 이미지, 윈도우</text>
+  <rect class="kernel" x="660" y="190" width="270" height="96" rx="8"/>
+  <text class="t h" x="676" y="216">6. 커널용 DTB 준비</text>
+  <text class="t s" x="676" y="240">메모리 맵 계획, 재작성, 검사</text>
+  <rect class="box" x="30" y="316" width="270" height="96" rx="8"/>
+  <text class="t h" x="46" y="342">7. 콘솔에 보고</text>
+  <text class="t s" x="46" y="366">플랫폼 줄, 메모리 요약, 주소</text>
+  <rect class="ext" x="345" y="316" width="270" height="96" rx="8"/>
+  <text class="t h" x="361" y="342">8. 부트 서비스 종료</text>
+  <text class="t s" x="361" y="366">ExitBootServices, 최대 4번</text>
+  <rect class="box" x="660" y="316" width="270" height="96" rx="8"/>
+  <text class="t h" x="676" y="342">9. 넘기기</text>
+  <text class="t s" x="676" y="366">ExitBootServices 성공 뒤</text>
+  <rect class="box" x="30" y="442" width="270" height="96" rx="8"/>
+  <text class="t h" x="46" y="468">예외 마스크</text>
+  <text class="t s" x="46" y="492">모든 예외</text>
+  <rect class="box" x="345" y="442" width="270" height="96" rx="8"/>
+  <text class="t h" x="361" y="468">캐시 정리</text>
+  <text class="t s" x="361" y="492">데이터 캐시 비우기</text>
+  <text class="t s" x="361" y="512">명령 캐시 무효화</text>
+  <rect class="kernel" x="660" y="442" width="270" height="96" rx="8"/>
+  <text class="t h" x="676" y="468">트램펄린으로 점프</text>
+  <text class="t s" x="676" y="492">MMU·데이터 캐시 끄기</text>
+  <text class="t s" x="676" y="512">x0 = DTB 주소로 커널에 분기</text>
+  <line class="line" x1="300" y1="112" x2="343" y2="112" marker-end="url(#arrow)"/>
+  <line class="line" x1="615" y1="112" x2="658" y2="112" marker-end="url(#arrow)"/>
+  <path class="line" d="M 795 160 V 175 H 165 V 188" marker-end="url(#arrow)"/>
+  <line class="line" x1="300" y1="238" x2="343" y2="238" marker-end="url(#arrow)"/>
+  <line class="line" x1="615" y1="238" x2="658" y2="238" marker-end="url(#arrow)"/>
+  <path class="line" d="M 795 286 V 301 H 165 V 314" marker-end="url(#arrow)"/>
+  <line class="line" x1="300" y1="364" x2="343" y2="364" marker-end="url(#arrow)"/>
+  <line class="line" x1="615" y1="364" x2="658" y2="364" marker-end="url(#arrow)"/>
+  <path class="line" d="M 795 412 V 427 H 165 V 440" marker-end="url(#arrow)"/>
+  <line class="line" x1="300" y1="490" x2="343" y2="490" marker-end="url(#arrow)"/>
+  <line class="line" x1="615" y1="490" x2="658" y2="490" marker-end="url(#arrow)"/>
+  <rect class="warn" x="30" y="556" width="900" height="26" rx="8"/>
+  <text class="t s" x="46" y="574">ExitBootServices 전의 실패는 거부입니다. 로더는 k0-loader: refused: &lt;사유&gt;를 출력하고 펌웨어로 돌아갑니다.</text>
+</svg>

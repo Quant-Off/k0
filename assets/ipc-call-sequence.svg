@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520" role="img" aria-labelledby="title desc">
+  <title id="title">Sequence of CALL and REPLY_RECV</title>
+  <desc id="desc">When the server is already waiting in RECV, the CALL of the client delivers the message and the badge to the server and blocks the client in BlockedReply, and REPLY_RECV of the server wakes the client with the one-time reply right.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="519" rx="10"/>
+
+  <line class="off" x1="150" y1="94" x2="150" y2="490"/>
+  <line class="off" x1="480" y1="94" x2="480" y2="490"/>
+  <line class="off" x1="810" y1="94" x2="810" y2="490"/>
+  <rect class="user" x="60" y="40" width="180" height="44" rx="8"/>
+  <text class="t h" x="150" y="68" text-anchor="middle">Client</text>
+  <rect class="kernel" x="390" y="40" width="180" height="44" rx="8"/>
+  <text class="t h" x="480" y="68" text-anchor="middle">Endpoint (kernel)</text>
+  <rect class="user" x="720" y="40" width="180" height="44" rx="8"/>
+  <text class="t h" x="810" y="68" text-anchor="middle">Server</text>
+  <line class="line" x1="808" y1="130" x2="482" y2="130" marker-end="url(#arrow)"/>
+  <text class="t s" x="645" y="122" text-anchor="middle">RECV</text>
+  <rect class="box" x="690" y="145" width="240" height="38" rx="8"/>
+  <text class="t s" x="810" y="169" text-anchor="middle">blocks, waits in the queue</text>
+  <line class="line" x1="152" y1="215" x2="478" y2="215" marker-end="url(#arrow)"/>
+  <text class="t s" x="315" y="207" text-anchor="middle">CALL  MR0..MR3</text>
+  <rect class="box" x="30" y="230" width="240" height="38" rx="8"/>
+  <text class="t s" x="150" y="254" text-anchor="middle">BlockedReply, always blocks</text>
+  <line class="line" x1="482" y1="265" x2="808" y2="265" marker-end="url(#arrow)"/>
+  <text class="t s" x="645" y="257" text-anchor="middle">x1 = badge, x2..x5 = message</text>
+  <rect class="box" x="690" y="280" width="240" height="38" rx="8"/>
+  <text class="t s" x="810" y="304" text-anchor="middle">records the caller in reply_to</text>
+  <line class="line" x1="808" y1="380" x2="482" y2="380" marker-end="url(#arrow)"/>
+  <text class="t s" x="645" y="372" text-anchor="middle">REPLY_RECV  x2..x5</text>
+  <rect class="box" x="680" y="395" width="260" height="38" rx="8"/>
+  <text class="t s" x="810" y="419" text-anchor="middle">reply right used once, then RECV</text>
+  <line class="line" x1="478" y1="430" x2="152" y2="430" marker-end="url(#arrow)"/>
+  <text class="t s" x="315" y="422" text-anchor="middle">reply  x2..x5, x1 = 0</text>
+  <rect class="box" x="30" y="445" width="240" height="38" rx="8"/>
+  <text class="t s" x="150" y="469" text-anchor="middle">Ready</text>
+  <text class="t s" x="30" y="508">This is the case where the server waits in RECV first.</text>
+</svg>

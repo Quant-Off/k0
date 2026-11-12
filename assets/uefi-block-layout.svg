@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 330" width="960" height="330" role="img" aria-labelledby="title desc">
+  <title id="title">Layout of the block the loader allocates</title>
+  <desc id="desc">One block holds the DTB buffer, the kernel image and room of 2 MiB plus one unit for the boot window, in this order.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="329" rx="10"/>
+  <text class="t h" x="30" y="38">One block (allocated below the address limit the root cell widths allow)</text>
+  <rect class="box" x="30" y="56" width="900" height="130" rx="8"/>
+  <rect class="box" x="46" y="72" width="250" height="98" rx="8"/>
+  <text class="t h" x="62" y="98">DTB buffer</text>
+  <text class="t s" x="62" y="122">The kernel's DTB, step 6</text>
+  <rect class="kernel" x="312" y="72" width="310" height="98" rx="8"/>
+  <text class="t h" x="328" y="98">Kernel image</text>
+  <text class="t s" x="328" y="122">The Image is copied in,</text>
+  <text class="t s" x="328" y="142">the rest of the image area is zeroed</text>
+  <rect class="user" x="638" y="72" width="276" height="98" rx="8"/>
+  <text class="t h" x="654" y="98">2 MiB plus one unit</text>
+  <text class="t s" x="654" y="122">One unit is 16 KiB</text>
+  <text class="t s" x="654" y="142">Room for the kernel's boot window</text>
+  <rect class="box" x="30" y="210" width="900" height="90" rx="8"/>
+  <text class="t" x="46" y="240">Image, DTB and window sit in one block, so they lie in one declared memory region by construction.</text>
+  <text class="t s" x="46" y="274">If the planner finds that firmware reservations or devices touch the block, it is freed and allocated again lower (at most 4 times).</text>
+</svg>

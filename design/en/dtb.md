@@ -6,34 +6,55 @@ English | [한국어](../kr/dtb_KR.md)
 
 </div>
 
-The bootloader passes K0 a flattened device tree (DTB) that describes the machine: how much RAM exists and where, which ranges the firmware has reserved, some boot entropy, and now also where the console, the interrupt controller and the timer interrupt are. K0 treats this blob as hostile input. This note explains why, what the parsers read, and how they are tested. The memory parser is `crates/k0-boot/src/fdt.rs`, the shared structure walker is `crates/k0-boot/src/fdt/walk.rs`, and device discovery is `crates/k0-boot/src/platform.rs`. Under UEFI, the DTB is not the firmware's own: the UEFI loader writes it from the firmware DTB and the UEFI memory map (see [uefi.md](uefi.md)), and runs these same parsers on it before the jump.
+The bootloader passes K0 a flattened device tree (DTB) that describes the machine. It says how much RAM exists and where, which ranges the firmware has reserved, and some boot entropy. It now also says where the console, the interrupt controller and the timer interrupt are. K0 treats this blob as **hostile input**. This note explains why, what the parsers read, and how they are tested.
+
+The following table lists the file of each component.
+
+| Component | File |
+| --- | --- |
+| Memory parser | `crates/k0-boot/src/fdt.rs` |
+| Shared structure walker | `crates/k0-boot/src/fdt/walk.rs` |
+| Device discovery | `crates/k0-boot/src/platform.rs` |
+
+Under UEFI, the DTB is not the firmware's own: the UEFI loader writes it from the firmware DTB and the UEFI memory map (see [uefi.md](uefi.md)), and runs these same parsers on it before the jump.
+
+The following figure shows how the DTB becomes a validated platform.
+
+![A DTB blob passes dtb_span, parse, discover, the memory map check and the hardware identity checks to become a validated platform, or is refused](../../assets/dtb-discovery.svg)
 
 ## Why the DTB is not trusted
 
-On many platforms the DTB does not come from the same place as the kernel image. It may be a separate file next to a signed kernel, an overlay applied by firmware, or a blob that a bootloader edits before it jumps. A genuine kernel can therefore receive a wrong or hostile DTB. K0 assumes it might.
+On many platforms the DTB does not come from the same place as the kernel image. It may be a separate file next to a signed kernel, an overlay applied by firmware, or a blob that a bootloader edits before it jumps. A genuine kernel can therefore receive a wrong or hostile DTB. **K0 assumes it might**.
 
-Under UEFI there is a concrete case. On QEMU with EDK2 the firmware's DTB declares all 512 MiB as RAM, although firmware runtime regions lie inside, and the kernel's checks alone would accept it: they compare memory with the devices in the same DTB, and the DTB is the only source of the memory map. The kernel cannot know better, because only the UEFI memory map says which ranges are free. So under UEFI the memory description does not come from the firmware DTB. The loader replaces it with one planned from the UEFI memory map, and that map is the independent source that the kernel itself lacks. The firmware DTB still supplies the devices, the reservations and the entropy, and the loader runs the parser, discovery and checks below on the result.
+Under UEFI there is a concrete case. On QEMU with EDK2 the firmware's DTB declares all 512 MiB as RAM, although firmware runtime regions lie inside. The kernel's checks alone would accept it: they compare memory with the devices in the same DTB, and the DTB is the only source of the memory map. The kernel cannot know better, because only the UEFI memory map says which ranges are free.
 
-The parsers follow one principle. Values from the DTB may make the kernel refuse to boot or give it fewer resources, but they must never grant more authority than the hardware really offers.
+So under UEFI the memory description does not come from the firmware DTB. The loader replaces it with one planned from the UEFI memory map, and that map is the independent source that the kernel itself lacks. The firmware DTB still supplies the devices, the reservations and the entropy, and the loader runs the parser, discovery and checks below on the result.
 
-- **Reserved ranges only remove memory.** A hostile reservation can at worst shrink the memory handed to user space.
-- **Entropy is only one input among several.** The bytes from `/chosen` are mixed with other sources through SHA-256, so hostile entropy cannot weaken the PAC keys. A missing seed does lower their quality, and the kernel says so in the boot log (see [hardening.md](hardening.md)).
-- **Memory nodes grant memory, so they are checked hardest.** Every memory region becomes untyped memory that user space can map. A region that claimed to be RAM but covered a device would hand EL0 direct access to that device. After parsing, the kernel compares every memory region with the device ranges it found in the same DTB (see below) and stops the boot on any overlap. It also stops the boot if a RAM region reaches 2^47 or a device range extends beyond the CPU's physical address width (`k0_mm::pa_bits`), because such a region could not be mapped. The CNode bootstrap also rejects memory regions that overlap each other, so no frame can be retyped twice.
-- **Device addresses come from the DTB, so they are checked the hardest.** A wrong DTB can point the console at another device. The kernel does not map a device page until the descriptor has passed the memory map check, it verifies the hardware identification registers where they exist, its console waits are bounded in time, and a pinned build can fix the expected platform (see "The platform descriptor").
+The parsers follow one principle.
+
+> [!IMPORTANT]
+> Values from the DTB may make the kernel refuse to boot or give it fewer resources, but they must never grant more authority than the hardware really offers.
+
+The following items apply this principle.
+
+- **Reserved ranges**: they only remove memory. A hostile reservation can at worst shrink the memory handed to user space.
+- **Entropy**: it is only one input among several. The bytes from `/chosen` are mixed with other sources through SHA-256, so hostile entropy cannot weaken the PAC keys. A missing seed does lower their quality, and the kernel says so in the boot log (see [hardening.md](hardening.md)).
+- **Memory nodes**: they grant memory, so they are checked hardest. Every memory region becomes untyped memory that user space can map. A region that claimed to be RAM but covered a device would hand EL0 direct access to that device. After parsing, the kernel compares every memory region with the device ranges it found in the same DTB (see below) and stops the boot on any overlap. It also stops the boot if a RAM region reaches 2^47 or a device range extends beyond the CPU's physical address width (`k0_mm::pa_bits`), because such a region could not be mapped. The CNode bootstrap also rejects memory regions that overlap each other, so no frame can be retyped twice.
+- **Device addresses**: they come from the DTB, so they are checked the hardest. A wrong DTB can point the console at another device. The kernel does not map a device page until the descriptor has passed the memory map check, it verifies the hardware identification registers where they exist, its console waits are bounded in time, and a pinned build can fix the expected platform (see "The platform descriptor").
 
 ## Two stages
 
 The blob has to be mapped before the kernel can read it with the MMU on, and the full parse needs relocated data that only works after the jump to the higher half (see [boot.md](boot.md)). `kernel_init` therefore does not touch the DTB at all, and all parsing happens in `kernel_main`.
 
-**`dtb_span`, before the parse.** `map_dtb` in `kernel/src/main.rs` first rejects a null or non-8-byte-aligned pointer and maps one header's worth of the DTB read-only through the kernel alias. `dtb_span` reads only the first eight bytes. The magic must be `0xd00dfeed`. The total size must be between 40 bytes (one header) and 2 MiB. The upper bound limits how many page tables the DTB mapping can consume. The kernel then maps the whole blob read-only.
+**Before the parse** (`dtb_span`): `map_dtb` in `kernel/src/main.rs` first rejects a null or non-8-byte-aligned pointer and maps one header's worth of the DTB read-only through the kernel alias. `dtb_span` reads only the first eight bytes. The magic must be `0xd00dfeed`. The total size must be between 40 bytes (one header) and 2 MiB. The upper bound limits how many page tables the DTB mapping can consume. The kernel then maps the whole blob read-only.
 
-**`parse`, `discover`, after the mapping.** Both read through the kernel alias but report physical addresses. `parse` runs `dtb_span` again at the alias address and rejects the blob if its physical range overlaps the kernel image. Then it builds a byte slice of exactly the total size and hands it to `parse_blob`. From that point on, every access is a bounds-checked slice access in safe Rust, and every offset computation uses checked arithmetic. A malformed blob can make the parser return an error, but it cannot make it read outside the slice. `discover` reads the same blob the same way (see "The platform descriptor").
+**After the mapping** (`parse` and `discover`): Both read through the kernel alias but report physical addresses. `parse` runs `dtb_span` again at the alias address and rejects the blob if its physical range overlaps the kernel image. Then it builds a byte slice of exactly the total size and hands it to `parse_blob`. From that point on, **every access is a bounds-checked slice access** in safe Rust, and every offset computation uses checked arithmetic. A malformed blob can make the parser return an error, but it cannot make it read outside the slice. `discover` reads the same blob the same way (see "The platform descriptor").
 
 ## What the memory parser reads
 
 The header must announce version 17 or later and be backward compatible with version 17. The structure block must start on a 4-byte boundary and have a size that is a multiple of 4. The structure block and the strings block must both end inside the blob. The walker also rejects a property that appears twice in a node when the kernel interprets that property.
 
-`parse` reads exactly these items and skips everything else:
+`parse` reads exactly these items and skips everything else. The following table lists the items by source.
 
 | Source | Item |
 | --- | --- |
@@ -45,7 +66,7 @@ The header must announce version 17 or later and be backward compatible with ver
 
 Nodes with these names at other depths are ignored. A node called `memory` inside `/soc` is not RAM. Reserved-memory children that give only a size and no `reg` are dynamic allocations that the firmware has not pinned to an address, so they are ignored too.
 
-Fixed limits keep the parser's own state small and static:
+Fixed limits keep the parser's own state small and static. The following table lists them.
 
 | Limit | Value |
 | --- | --- |
@@ -57,7 +78,7 @@ Fixed limits keep the parser's own state small and static:
 
 ## What counts as an error
 
-Every violation returns a `BootError`, and the kernel then prints `k0: dtb rejected: ...` and parks. The errors include:
+Every violation returns a `BootError`, and the kernel then prints `k0: dtb rejected: ...` and parks. The errors include the following:
 
 - a bad magic, alignment, size, version or header offset,
 - an unknown token, an end-node token at depth 0, a property outside any node, a root node with a name, a node name without a terminating zero byte, or a structure block that ends before the end token,
@@ -74,32 +95,54 @@ Every violation returns a `BootError`, and the kernel then prints `k0: dtb rejec
 
 Besides memory, the kernel finds exactly three devices in the DTB and nothing else (`discover` in `crates/k0-boot/src/platform.rs`):
 
-- **The console.** Only the node named by `/chosen/stdout-path` (an absolute path, or an alias that resolves to one). The kernel never guesses "the first UART". The node must be enabled, and its `compatible` must name a PL011 (`arm,pl011`), an SBSA UART (`arm,sbsa-uart`) or a 16550-family UART (`ns16550a`, `ns16550`, `snps,dw-apb-uart`, `brcm,bcm2835-aux-uart`). Any other UART, a missing or unresolvable `stdout-path`, or a node the kernel cannot translate to a CPU physical address gives a boot with no console. That is not an error. The kernel prints `k0: no console (...)` with the reason, and the boot log buffer is the only record (see [boot.md](boot.md)). Every image does this discovery and validation, also an image built without a console driver, which then maps nothing and prints `k0: no console (driver not built in)`. Such an image refuses a device tree whose console fails the checks like any other. The register range the driver touches must lie inside the declared `reg` and inside one granule.
-- **The interrupt controller.** The node that the timer node's interrupt parent points to (`arm,armv8-timer` or `arm,armv7-timer`, exactly one enabled node). It must be a GICv3 (`arm,gic-v3`) or a GICv2 (`arm,gic-400`, `arm,cortex-a15-gic`, `arm,cortex-a7-gic`) with the expected cell counts and frame alignment. Up to four GICv3 redistributor ranges are accepted. A duplicate phandle, a disabled node, an `interrupt-map`, or a GICv2 without per-CPU banked interfaces (`cpu-offset`) is refused.
-- **The EL1 virtual timer interrupt number.** Taken from the timer node's `interrupts` (the `virt` entry when `interrupt-names` exists, else the third entry) as a PPI number plus 16. A timer node that declares a timer erratum (`fsl,erratum-a008585`, `hisilicon,erratum-161010101` or `allwinner,erratum-unknown1`) is refused, because the kernel has no workaround code.
+- **The console**: only the node named by `/chosen/stdout-path` (an absolute path, or an alias that resolves to one). The node must be enabled, and its `compatible` must name a PL011 (`arm,pl011`), an SBSA UART (`arm,sbsa-uart`) or a 16550-family UART (`ns16550a`, `ns16550`, `snps,dw-apb-uart`, `brcm,bcm2835-aux-uart`). Any other UART, a missing or unresolvable `stdout-path`, or a node the kernel cannot translate to a CPU physical address gives a boot with no console. That is not an error. The kernel prints `k0: no console (...)` with the reason, and the boot log buffer is the only record (see [boot.md](boot.md)). Every image does this discovery and validation, also an image built without a console driver, which then maps nothing and prints `k0: no console (driver not built in)`. Such an image refuses a device tree whose console fails the checks like any other. The register range the driver touches must lie inside the declared `reg` and inside one granule.
+- **The interrupt controller**: the node that the timer node's interrupt parent points to (`arm,armv8-timer` or `arm,armv7-timer`, exactly one enabled node). It must be a GICv3 (`arm,gic-v3`) or a GICv2 (`arm,gic-400`, `arm,cortex-a15-gic`, `arm,cortex-a7-gic`) with the expected cell counts and frame alignment. Up to four GICv3 redistributor ranges are accepted. A duplicate phandle, a disabled node, an `interrupt-map`, or a GICv2 without per-CPU banked interfaces (`cpu-offset`) is refused.
+- **The EL1 virtual timer interrupt number**: taken from the timer node's `interrupts` (the `virt` entry when `interrupt-names` exists, else the third entry) as a PPI number plus 16. A timer node that declares a timer erratum (`fsl,erratum-a008585`, `hisilicon,erratum-161010101` or `allwinner,erratum-unknown1`) is refused, because the kernel has no workaround code.
+
+> [!IMPORTANT]
+> The kernel never guesses "the first UART". The console is only the node named by `/chosen/stdout-path`.
 
 Register addresses are translated through the `ranges` of the parent buses to CPU physical addresses. A bus without `ranges` cannot be translated.
 
-The result is one immutable `Platform` value. The kernel prints it as the single line `k0: platform con=... gic=... tmr=...`, in a fixed format. Before any device page is mapped, `Platform::validate` checks it against the memory map: RAM must lie below 2^47, the kernel image and the DTB must lie inside declared memory, no device range (widened to whole granules) may overlap memory or a reserved range, the device ranges must not overlap each other, every device must lie below the CPU's physical address width, and the console registers must not cross a granule. Then the hardware has to agree with the DTB. The GIC driver checks the GIC identification registers, and the PL011 identification registers are checked before the first write when the DTB says `arm,pl011` and declares the whole 4 KiB register frame. The check reads them through the temporary probe mapping, before the permanent mapping is made, so a device that fails it is not left mapped. Some consoles are not checked (a shorter declared range, an SBSA UART and a 16550: the first two because the registers are not guaranteed to be there, the 16550 because it has none, and the 16550 driver has never run on any machine). An image without a PL011 driver does not run the check at all, because it never touches the device. A mismatch makes the kernel refuse or, for the console, continue without one.
+The result is one immutable `Platform` value. The kernel prints it as the single line `k0: platform con=... gic=... tmr=...`, in a fixed format. Before any device page is mapped, `Platform::validate` checks it against the memory map. The checks are the following:
+
+- RAM must lie below 2^47.
+- The kernel image and the DTB must lie inside declared memory.
+- No device range (widened to whole granules) may overlap memory or a reserved range.
+- The device ranges must not overlap each other.
+- Every device must lie below the CPU's physical address width.
+- The console registers must not cross a granule.
+
+Then the hardware has to agree with the DTB. The checks are the following:
+
+- **GIC**: the GIC driver checks the GIC identification registers.
+- **PL011**: the PL011 identification registers are checked before the first write when the DTB says `arm,pl011` and declares the whole 4 KiB register frame. The check reads them through the temporary probe mapping, before the permanent mapping is made, so a device that fails it is not left mapped.
+- **Consoles that are not checked**: a shorter declared range, an SBSA UART and a 16550 are not checked. The first two are not guaranteed to have the registers, and the 16550 has none. The 16550 driver has never run on any machine.
+- **Image without a PL011 driver**: it never touches the device, so it does not run the check at all.
+
+A mismatch makes the kernel refuse or, for the console, continue without one.
 
 ### Pinned mode
 
-The platform line, the entry exception level and the RAM range form the string `<platform line> el=<n> ram=<lo>-<hi>`. If `K0_PIN` was set at build time to the text after `k0: platform ` from a boot log of the target, the image refuses to boot when this string differs. It catches a wrong board or a swapped DTB. It does not defend against a hostile boot chain, because the compared values are derived from the DTB.
+The platform line, the entry exception level and the RAM range form the string `<platform line> el=<n> ram=<lo>-<hi>`. If `K0_PIN` was set at build time to the text after `k0: platform ` from a boot log of the target, the image refuses to boot when this string differs. It catches a wrong board or a swapped DTB. It **does not defend against a hostile boot chain**, because the compared values are derived from the DTB.
 
 ## How it is tested
 
-The parser is pure logic over a byte slice, so it is tested on the host.
+The parser is pure logic over a byte slice, so it is tested on the host. The tests consist of the following:
 
-- **Unit tests** (`crates/k0-boot/src/fdt/tests.rs`, and `crates/k0-boot/src/platform/tests.rs` for device discovery) cover each rule above, including the header checks run in place through a raw pointer, the overlap check against the kernel image, and the read-through-an-alias path.
-- **A model.** A test-only builder (`fdt/builder.rs`) writes DTBs from a small description of a board and computes what the parser should return. Many unit tests compare the memory parser's output with this model, not with hand-written values.
-- **A deterministic mutation fuzzer** (`fdt/fuzz.rs`). Each case generates a random board, wraps it in random unrelated nodes, properties and `NOP` tokens, and checks the parse against the model. Then it applies up to four mutations, such as bit flips, header field rewrites, truncation, splicing and token insertion, and parses the result twice: once as a slice and once through the raw-pointer entry point backed by a 2 MiB zero-filled buffer. Any panic fails the test. Any accepted result must respect every limit in the table above. The fuzzer needs no extra crates and runs fully offline, but it has no coverage feedback.
-- **A second mutation fuzzer for discovery** (`fuzz_discover_with_mutated_trees` in `platform/tests.rs`). It starts from four trees (QEMU virt with a GICv3 and with a GICv2, and trees shaped like a Raspberry Pi 4 and an RK3399 board), applies the same mutations and runs `discover` on the result. Any panic fails the test. Every accepted descriptor must keep its invariants: no empty or overflowing range, a timer interrupt number from 16 to 31, console registers inside the declared range, and a platform line that formats.
+- **Unit tests** (`crates/k0-boot/src/fdt/tests.rs`, and `crates/k0-boot/src/platform/tests.rs` for device discovery): they cover each rule above, including the header checks run in place through a raw pointer, the overlap check against the kernel image, and the read-through-an-alias path.
+- **A model**: a test-only builder (`fdt/builder.rs`) writes DTBs from a small description of a board and computes what the parser should return. Many unit tests compare the memory parser's output with this model, not with hand-written values.
+- **A deterministic mutation fuzzer** (`fdt/fuzz.rs`): each case generates a random board, wraps it in random unrelated nodes, properties and `NOP` tokens, and checks the parse against the model. Then it applies up to four mutations, such as bit flips, header field rewrites, truncation, splicing and token insertion, and parses the result twice: once as a slice and once through the raw-pointer entry point backed by a 2 MiB zero-filled buffer. Any panic fails the test. Any accepted result must respect every limit in the table above. The fuzzer needs no extra crates and runs fully offline, but it has no coverage feedback.
+- **A second mutation fuzzer for discovery** (`fuzz_discover_with_mutated_trees` in `platform/tests.rs`): it starts from four trees (QEMU virt with a GICv3 and with a GICv2, and trees shaped like a Raspberry Pi 4 and an RK3399 board), applies the same mutations and runs `discover` on the result. Any panic fails the test. Every accepted descriptor must keep its invariants: no empty or overflowing range, a timer interrupt number from 16 to 31, console registers inside the declared range, and a platform line that formats.
 
-The default test run executes 20,000 cases of each of the two fuzzers above. CI runs five million cases of each every week and takes the base seed from the run number. The base seed is hashed before use, so two different base seeds give unrelated streams of cases. On 2026-11-11, after the walker was rewritten and discovery was added, eight campaigns of five million cases each, with eight base seeds, found no failure in either fuzzer. No campaign has found a parser failure so far. The one failure a campaign reported was in the test model itself, which had not known that a `(0, 0)` pair ends the memory reservation block. When the parser became stricter, the generator was changed with it, so it no longer writes trees that the parser now refuses.
+The default test run executes 20,000 cases of each of the two fuzzers above. CI runs five million cases of each every week and takes the base seed from the run number. The base seed is hashed before use, so two different base seeds give unrelated streams of cases. On 2026-11-11, after the walker was rewritten and discovery was added, eight campaigns of five million cases each, with eight base seeds, found no failure in either fuzzer. **No campaign has found a parser failure so far**. The one failure a campaign reported was in the test model itself, which had not known that a `(0, 0)` pair ends the memory reservation block. When the parser became stricter, the generator was changed with it, so it no longer writes trees that the parser now refuses.
 
 The loader's own logic (`crates/k0-efi`) has three more fuzzers of the same kind: `fuzz_plan_with_random_maps`, `fuzz_rewrite_with_mutated_trees` and `fuzz_prepare_end_to_end` (see [uefi.md](uefi.md)). The last one makes a firmware DTB and a memory map, runs the loader's whole preparation, and checks the result with the kernel's parser and discovery. They take the same `K0_FUZZ_ITERS`, `K0_FUZZ_SEED` and `K0_FUZZ_CASE`. Their defaults are 20,000, 20,000 and 5,000 cases, the weekly CI run does five million of each, and campaigns of five million cases each passed on 2026-11-12.
 
 ## Known gaps
+
+> [!NOTE]
+> Discovery is exercised on QEMU virt, `xlnx-versal-virt` and the host tests. No real board DTB has been run.
 
 - Under UEFI the memory map is no longer the DTB's own claim: the loader plans it from the UEFI memory map, and the firmware's own memory nodes are dropped. The gaps below that talk about the DTB's own memory map describe the case without the loader. The firmware that supplies the UEFI memory map is trusted to be wrong at worst, not hostile (see [uefi.md](uefi.md)).
 - The memory parser itself does not know the CPU's physical address width. The check against it is in `Platform::validate`, with the limit passed in from `kernel/src/main.rs`. See advisory GHSA-hj3f-38h9-hrpj in [SECURITY.md](../../SECURITY.md) for the status of the earlier memory-map finding. A DTB controlled by an attacker can still stop the boot, which is the intended fail-secure result.
@@ -107,4 +150,3 @@ The loader's own logic (`crates/k0-efi`) has three more fuzzers of the same kind
 - The overlap checks know only the devices the kernel itself found. A DTB that describes some other device range as RAM is not caught, because the kernel has no independent list of devices.
 - A wrong DTB can still point the console at a different device that passes the checks. The 16550 family and the SBSA UART have no identification check, so nothing confirms that the hardware is one of them. An image without a console driver does not write to the device, but it does not read its identity either. Pinned mode narrows this but compares DTB-derived values.
 - Isolation covers confidentiality and integrity, not availability. A hostile DTB can always stop the boot.
-- Discovery is exercised on QEMU virt, `xlnx-versal-virt` and the host tests. No real board DTB has been run.

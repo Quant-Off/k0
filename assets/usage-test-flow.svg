@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 412" width="960" height="412" role="img" aria-labelledby="title desc">
+  <title id="title">How the test tools relate</title>
+  <desc id="desc">tools/host-test.sh runs unit tests and fuzzing on your computer, tools/qemu-boot-test.sh boots one configuration and judges it from the serial port or from the boot log in guest memory, and tools/boot-matrix.sh boots every supported configuration.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="411" rx="10"/>
+
+  <text class="t h" x="30" y="38">Tool</text>
+  <text class="t h" x="420" y="38">What it does and how it judges</text>
+  <rect class="box" x="30" y="60" width="310" height="64" rx="8"/>
+  <text class="m" x="46" y="86">tools/host-test.sh</text>
+  <text class="t s" x="46" y="108">Runs on your computer</text>
+  <rect class="user" x="420" y="60" width="510" height="64" rx="8"/>
+  <text class="t h" x="436" y="86">Unit tests and device tree fuzzing</text>
+  <text class="t s" x="436" y="108">Small tests run as ordinary programs</text>
+  <path class="line" d="M 340 92 H 418" marker-end="url(#arrow)"/>
+  <rect class="kernel" x="30" y="156" width="310" height="124" rx="8"/>
+  <text class="m" x="46" y="182">tools/qemu-boot-test.sh</text>
+  <text class="t s" x="46" y="204">Boots one configuration in QEMU</text>
+  <rect class="user" x="420" y="156" width="510" height="56" rx="8"/>
+  <text class="t h" x="436" y="180">Judged from the serial port</text>
+  <text class="t s" x="436" y="200">Image with a console driver</text>
+  <path class="line" d="M 340 184 H 418" marker-end="url(#arrow)"/>
+  <rect class="user" x="420" y="224" width="510" height="56" rx="8"/>
+  <text class="t h" x="436" y="248">Judged from the boot log in guest memory</text>
+  <text class="t s" x="436" y="268">Image without console, K0_BOOT_MEMLOG</text>
+  <path class="line" d="M 340 252 H 418" marker-end="url(#arrow)"/>
+  <rect class="box" x="30" y="312" width="310" height="64" rx="8"/>
+  <text class="m" x="46" y="338">tools/boot-matrix.sh</text>
+  <text class="t s" x="46" y="360">Boots every supported configuration</text>
+  <rect class="user" x="420" y="312" width="510" height="64" rx="8"/>
+  <text class="t h" x="436" y="338">Boots each configuration, checks the result</text>
+  <text class="t s" x="436" y="360">Also builds 16 KiB, pinned and UEFI loader images. CI runs it</text>
+  <path class="line" d="M 340 344 H 418" marker-end="url(#arrow)"/>
+</svg>

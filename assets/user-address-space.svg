@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 572" width="960" height="572" role="img" aria-labelledby="title desc">
+  <title id="title">The user address space of a task</title>
+  <desc id="desc">The frames a task can map and with which rights, the layout built at boot, what EL0 can never reach, and W^X per physical frame.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="571" rx="10"/>
+  <text class="t h" x="30" y="38">What a task can map with MAP</text>
+  <text class="t s" x="46" y="70">permission</text>
+  <text class="t s" x="130" y="70">rights needed</text>
+  <text class="t s" x="270" y="70">mapping</text>
+  <text class="t s" x="360" y="70">EL0</text>
+  <rect class="user" x="30" y="82" width="450" height="40" rx="8"/>
+  <text class="m" x="46" y="108">RO</text>
+  <text class="t" x="130" y="108">R</text>
+  <text class="m" x="270" y="108">RoUser</text>
+  <text class="t s" x="360" y="108">read</text>
+  <rect class="user" x="30" y="130" width="450" height="40" rx="8"/>
+  <text class="m" x="46" y="156">RW</text>
+  <text class="t" x="130" y="156">R and W</text>
+  <text class="m" x="270" y="156">RwUser</text>
+  <text class="t s" x="360" y="156">read, write</text>
+  <rect class="user" x="30" y="178" width="450" height="40" rx="8"/>
+  <text class="m" x="46" y="204">RX</text>
+  <text class="t" x="130" y="204">R and X</text>
+  <text class="m" x="270" y="204">TextUser</text>
+  <text class="t s" x="360" y="204">read, execute</text>
+  <rect class="kernel" x="30" y="234" width="450" height="150" rx="8"/>
+  <text class="t h" x="46" y="260">W^X per physical frame</text>
+  <text class="t s" x="46" y="284">a writable frame has no capability that allows RX</text>
+  <text class="t s" x="46" y="304">an executable frame has no capability that allows RW</text>
+  <text class="t s" x="46" y="324">RETYPE frames get R and W, never X</text>
+  <text class="t s" x="46" y="344">X only on the root task's own text frames, without W</text>
+  <text class="t" x="46" y="372">new executable code cannot be loaded after boot</text>
+  <rect class="warn" x="30" y="396" width="450" height="160" rx="8"/>
+  <text class="t h" x="46" y="422">What EL0 can never reach</text>
+  <text class="t s" x="46" y="448">kernel objects are never visible: BAD_CAP</text>
+  <text class="t s" x="46" y="472">kernel text and the upper half: access faults</text>
+  <text class="t s" x="46" y="496">the first granule: never mapped, so null faults</text>
+  <text class="t s" x="46" y="520">beyond the 48-bit user half: BAD_VA</text>
+  <text class="t s" x="46" y="544">the kernel never executes user memory: PXN</text>
+  <text class="t h" x="510" y="38">Layout built by spawn_root</text>
+  <rect class="warn" x="510" y="56" width="420" height="46" rx="8"/>
+  <text class="t" x="526" y="76">Beyond the 48-bit user half</text>
+  <text class="m" x="526" y="94">BAD_VA</text>
+  <rect class="user" x="510" y="112" width="420" height="70" rx="8"/>
+  <text class="t h" x="526" y="136">Stack, RwUser</text>
+  <text class="t s" x="526" y="158">64 KiB just below</text>
+  <text class="m" x="680" y="158">0x1000_0000</text>
+  <rect class="warn" x="510" y="192" width="420" height="46" rx="8"/>
+  <text class="t" x="526" y="212">Guard granule below the stack</text>
+  <text class="t s" x="526" y="230">left unmapped</text>
+  <rect class="user" x="510" y="248" width="420" height="70" rx="8"/>
+  <text class="t h" x="526" y="272">bootinfo page, RoUser</text>
+  <text class="t s" x="526" y="294">read-only at</text>
+  <text class="m" x="630" y="294">0x0F00_0000</text>
+  <rect class="user" x="510" y="328" width="420" height="104" rx="8"/>
+  <text class="t h" x="526" y="352">Root task image segments</text>
+  <text class="t s" x="526" y="374">mapped from build-time metadata</text>
+  <text class="t s" x="526" y="394">code TextUser, read-only data RoUser</text>
+  <text class="t s" x="526" y="414">data RwUser, each on a granule boundary</text>
+  <rect class="warn" x="510" y="442" width="420" height="70" rx="8"/>
+  <text class="t h" x="526" y="466">First granule</text>
+  <text class="t s" x="526" y="488">never mapped: a null pointer dereference always faults</text>
+</svg>

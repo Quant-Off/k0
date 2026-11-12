@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" width="960" height="600" role="img" aria-labelledby="title desc">
+  <title id="title">커널이 보는 메모리</title>
+  <desc id="desc">부팅 중 TTBR0_EL1은 identity 매핑을 담습니다. TTBR1_EL1은 RAM 별칭, 고정 주소의 커널 이미지, 디바이스 창과 각 영역의 권한을 담습니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="599" rx="10"/>
+  <text class="t h" x="30" y="38">TTBR0_EL1, 아래쪽 절반</text>
+  <text class="t h" x="340" y="38">TTBR1_EL1, 위쪽 절반</text>
+  <rect class="kernel" x="30" y="60" width="280" height="110" rx="8"/>
+  <text class="t s" x="46" y="86">부팅 중</text>
+  <text class="t h" x="46" y="110">identity 매핑</text>
+  <text class="t s" x="46" y="134">가상 주소 = 물리 주소</text>
+  <text class="t s" x="46" y="156">MMU가 켜질 때 커널이 계속 실행되게 함</text>
+  <line class="line" x1="170" y1="172" x2="170" y2="208" marker-end="url(#arrow)"/>
+  <text class="t s" x="182" y="196">이후</text>
+  <rect class="user" x="30" y="212" width="280" height="90" rx="8"/>
+  <text class="t h" x="46" y="238">루트 태스크의 테이블</text>
+  <text class="t s" x="46" y="262">identity 매핑은 사라짐</text>
+  <rect class="ext" x="340" y="60" width="590" height="78" rx="8"/>
+  <text class="t h" x="356" y="86">디바이스 창</text>
+  <text class="t s" x="356" y="108">이미지 위쪽, 디바이스 레지스터를 한 페이지씩 매핑</text>
+  <text class="t s" x="356" y="128">Device: EL1 읽기와 쓰기, 실행 불가</text>
+  <rect class="kernel" x="340" y="150" width="590" height="222" rx="8"/>
+  <text class="t h" x="356" y="176">커널 이미지</text>
+  <text class="t s" x="500" y="176">고정 주소</text>
+  <text class="m" x="640" y="176">0xFFFF_8000_0000_0000</text>
+  <rect class="box" x="356" y="192" width="558" height="34" rx="8"/>
+  <text class="m" x="370" y="214">Text</text>
+  <text class="t" x="450" y="214">커널 코드</text>
+  <text class="t s" x="720" y="214">EL1 읽기, 실행</text>
+  <rect class="box" x="356" y="234" width="558" height="34" rx="8"/>
+  <text class="m" x="370" y="256">Ro</text>
+  <text class="t" x="450" y="256">읽기 전용 데이터</text>
+  <text class="t s" x="720" y="256">EL1 읽기</text>
+  <rect class="box" x="356" y="276" width="558" height="34" rx="8"/>
+  <text class="m" x="370" y="298">Rw</text>
+  <text class="t" x="450" y="298">데이터, .bss, 스택</text>
+  <text class="t s" x="720" y="298">EL1 읽기와 쓰기</text>
+  <rect class="warn" x="356" y="318" width="558" height="34" rx="8"/>
+  <text class="t" x="370" y="340">부트 스택 아래의 가드 그래뉼: 매핑 없음</text>
+  <rect class="kernel" x="340" y="384" width="590" height="126" rx="8"/>
+  <text class="t h" x="356" y="410">RAM 별칭</text>
+  <text class="m" x="490" y="410">VA = PA + 0xFFFF_0000_0000_0000</text>
+  <text class="t s" x="356" y="434">커널이 건드리는 RAM, 이미지 아래에서 끝남</text>
+  <text class="t s" x="356" y="454">부트 프레임 윈도우, RETYPE으로 만든 오브젝트: Rw</text>
+  <text class="t s" x="356" y="474">DTB: Ro</text>
+  <text class="t s" x="356" y="494">지원하는 RAM: 물리 주소 2^47 미만</text>
+  <rect class="box" x="30" y="526" width="900" height="56" rx="8"/>
+  <text class="t" x="46" y="550">모든 커널 매핑: EL0 접근 없음, UXN 설정, Text를 제외하고 PXN 설정</text>
+  <text class="t s" x="46" y="571">SCTLR_EL1.WXN은 MMU가 켜질 때 설정: 쓰기 가능한 페이지에서는 실행하지 않음</text>
+</svg>

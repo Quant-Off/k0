@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 372" width="960" height="372" role="img" aria-labelledby="title desc">
+  <title id="title">변경이 병합되기까지의 경로</title>
+  <desc id="desc">빌드, 호스트 테스트, QEMU 부팅 테스트, 부팅 매트릭스를 거쳐 풀 리퀘스트를 열고, CI와 CLA 검사를 통과한 뒤 메인테이너가 리뷰합니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="371" rx="10"/>
+
+  <text class="t h" x="30" y="38">풀 리퀘스트 전</text>
+  <text class="t h" x="160" y="222">풀 리퀘스트 후</text>
+  <rect class="box" x="30" y="60" width="200" height="112" rx="8"/>
+  <text class="t h" x="46" y="88">빌드</text>
+  <text class="m" x="46" y="114">cargo build</text>
+  <rect class="box" x="263" y="60" width="200" height="112" rx="8"/>
+  <text class="t h" x="279" y="88">호스트 테스트</text>
+  <text class="m" x="279" y="114">host-test.sh</text>
+  <text class="t s" x="279" y="136">단위 테스트, DTB 퍼징</text>
+  <rect class="box" x="496" y="60" width="200" height="112" rx="8"/>
+  <text class="t h" x="512" y="88">QEMU 부팅 테스트</text>
+  <text class="m" x="512" y="114">qemu-boot-test.sh</text>
+  <text class="t s" x="512" y="136">부팅 로그 확인</text>
+  <rect class="box" x="729" y="60" width="200" height="112" rx="8"/>
+  <text class="t h" x="745" y="88">부팅 매트릭스</text>
+  <text class="m" x="745" y="110">boot-matrix.sh</text>
+  <text class="t s" x="745" y="132">부팅 경로, 드라이버,</text>
+  <text class="t s" x="745" y="148">디바이스 트리 코드,</text>
+  <text class="t s" x="745" y="164">UEFI 로더를 바꿨다면</text>
+  <path class="line" d="M 230 116 H 261" marker-end="url(#arrow)"/>
+  <path class="line" d="M 463 116 H 494" marker-end="url(#arrow)"/>
+  <path class="line" d="M 696 116 H 727" marker-end="url(#arrow)"/>
+  <rect class="box" x="30" y="240" width="200" height="112" rx="8"/>
+  <text class="t h" x="46" y="268">풀 리퀘스트</text>
+  <text class="t s" x="46" y="294">무엇을, 왜 바꿨는지와</text>
+  <text class="t s" x="46" y="314">테스트 방법을 적음</text>
+  <rect class="box" x="263" y="240" width="200" height="112" rx="8"/>
+  <text class="t h" x="279" y="268">CI</text>
+  <text class="t s" x="279" y="294">이미지 빌드, 호스트 테스트,</text>
+  <text class="t s" x="279" y="314">부팅 매트릭스</text>
+  <rect class="box" x="496" y="240" width="200" height="112" rx="8"/>
+  <text class="t h" x="512" y="268">CLA 검사</text>
+  <text class="m" x="512" y="294">CLA signatures</text>
+  <text class="t s" x="512" y="316">봇이 서명 확인</text>
+  <rect class="user" x="729" y="240" width="200" height="112" rx="8"/>
+  <text class="t h" x="745" y="268">메인테이너 리뷰</text>
+  <text class="t s" x="745" y="294">모든 변경, 병합 전</text>
+  <path class="line" d="M 230 296 H 261" marker-end="url(#arrow)"/>
+  <path class="line" d="M 463 296 H 494" marker-end="url(#arrow)"/>
+  <path class="line" d="M 696 296 H 727" marker-end="url(#arrow)"/>
+  <path class="line" d="M 829 174 V 198 H 130 V 238" marker-end="url(#arrow)"/>
+</svg>

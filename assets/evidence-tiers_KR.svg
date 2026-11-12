@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 260" width="960" height="260" role="img" aria-labelledby="title desc">
+  <title id="title">증거 단계</title>
+  <desc id="desc">1단계와 2단계만 지원한다고 말할 수 있고, 3단계는 약속상 기대하지만 부팅한 적이 없습니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="259" rx="10"/>
+  <text class="t h" x="30" y="34">지원한다고 말할 수 있음</text>
+  <path class="line" d="M 30 46 H 620"/>
+  <text class="t h" x="650" y="34">지원한다고 말할 수 없음</text>
+  <path class="line" d="M 650 46 H 930"/>
+  <rect class="user" x="30" y="66" width="280" height="170" rx="8"/>
+  <text class="t h" x="46" y="94">1단계, 자동 확인</text>
+  <text class="t" x="46" y="124">CI가 QEMU 7.2로 실행</text>
+  <text class="t s" x="46" y="150">QEMU 머신, CPU 모델, UEFI 로더</text>
+  <text class="m" x="46" y="176">tools/boot-matrix.sh</text>
+  <rect class="user" x="340" y="66" width="280" height="170" rx="8"/>
+  <text class="t h" x="356" y="94">2단계, 손으로 실행</text>
+  <text class="t" x="356" y="124">Apple M5 Pro, QEMU 11.1.3 HVF</text>
+  <text class="t s" x="356" y="150">실제 Apple 코어(하이퍼바이저 게스트)</text>
+  <text class="t s" x="356" y="176">UEFI Secure Boot 시험 포함</text>
+  <rect class="ext" x="650" y="66" width="280" height="170" rx="8"/>
+  <text class="t h" x="666" y="94">3단계, 부팅한 적 없음</text>
+  <text class="t" x="666" y="124">약속상 될 것으로 기대</text>
+  <text class="t s" x="666" y="150">실제 보드, KVM, Firecracker</text>
+  <text class="t s" x="666" y="176">Cloud Hypervisor, crosvm 등</text>
+</svg>

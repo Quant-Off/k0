@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" role="img" aria-labelledby="title desc">
+  <title id="title">From DTB to platform</title>
+  <desc id="desc">How a DTB blob passes dtb_span, parse, discover, the memory map check and the hardware identity checks to become a validated platform, or is refused.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="559" rx="10"/>
+
+  <rect class="ext" x="30" y="56" width="204" height="160" rx="8"/>
+  <text class="t h" x="46" y="86">DTB blob</text>
+  <text class="t s" x="46" y="108">Passed by the bootloader</text>
+  <text class="t s" x="46" y="132">Flattened device tree</text>
+  <text class="t s" x="46" y="154">Treated as hostile input</text>
+  <rect class="kernel" x="262" y="56" width="204" height="160" rx="8"/>
+  <text class="m" x="278" y="86">dtb_span</text>
+  <text class="t s" x="278" y="108">Before the parse</text>
+  <text class="t s" x="278" y="132">Null, misaligned: refused</text>
+  <text class="t s" x="278" y="154">Magic 0xd00dfeed</text>
+  <text class="t s" x="278" y="176">Size 40 B to 2 MiB</text>
+  <rect class="kernel" x="494" y="56" width="204" height="160" rx="8"/>
+  <text class="m" x="510" y="86">parse</text>
+  <text class="t s" x="510" y="108">Memory parser limits</text>
+  <text class="t s" x="510" y="132">Total size 2 MiB</text>
+  <text class="t s" x="510" y="154">Depth 32, entropy 72 B</text>
+  <text class="t s" x="510" y="176">Memory regions 8</text>
+  <text class="t s" x="510" y="198">Reserved regions 32</text>
+  <rect class="kernel" x="726" y="56" width="204" height="160" rx="8"/>
+  <text class="m" x="742" y="86">discover</text>
+  <text class="t s" x="742" y="108">Exactly three devices</text>
+  <text class="t s" x="742" y="132">Console (stdout-path)</text>
+  <text class="t s" x="742" y="154">Interrupt controller</text>
+  <text class="t s" x="742" y="176">Timer interrupt number</text>
+  <path class="line" d="M 232 136 H 260" marker-end="url(#arrow)"/>
+  <path class="line" d="M 464 136 H 492" marker-end="url(#arrow)"/>
+  <path class="line" d="M 696 136 H 724" marker-end="url(#arrow)"/>
+  <path class="line" d="M 828 216 V 258" marker-end="url(#arrow)"/>
+  <rect class="kernel" x="726" y="260" width="204" height="130" rx="8"/>
+  <text class="m" x="742" y="290">Platform::validate</text>
+  <text class="t s" x="742" y="312">Check against memory map</text>
+  <text class="t s" x="742" y="336">RAM below 2^47</text>
+  <text class="t s" x="742" y="358">No overlapping devices</text>
+  <text class="t s" x="742" y="380">Below phys. address width</text>
+  <rect class="kernel" x="494" y="260" width="204" height="130" rx="8"/>
+  <text class="t h" x="510" y="290">Hardware check</text>
+  <text class="t s" x="510" y="312">Must agree with the DTB</text>
+  <text class="t s" x="510" y="336">GIC identification regs</text>
+  <text class="t s" x="510" y="358">PL011 identification regs</text>
+  <text class="t s" x="510" y="380">Read via temp. probe map</text>
+  <rect class="user" x="262" y="260" width="204" height="130" rx="8"/>
+  <text class="m" x="278" y="290">Platform</text>
+  <text class="t s" x="278" y="312">One immutable descriptor</text>
+  <text class="m" x="278" y="340">k0: platform ...</text>
+  <path class="line" d="M 724 325 H 700" marker-end="url(#arrow)"/>
+  <path class="line" d="M 492 325 H 468" marker-end="url(#arrow)"/>
+  <rect class="ext" x="30" y="430" width="440" height="100" rx="8"/>
+  <text class="t h" x="46" y="460">Continue without console</text>
+  <text class="m" x="46" y="484">k0: no console (...)</text>
+  <text class="t s" x="46" y="508">Console missing or fails its check</text>
+  <rect class="warn" x="494" y="430" width="436" height="100" rx="8"/>
+  <text class="t h" x="510" y="460">Refuse to boot, park</text>
+  <text class="m" x="510" y="484">k0: dtb rejected: ...</text>
+  <text class="t s" x="510" y="508">DTB violation, check or ID mismatch</text>
+  <path class="line" d="M 800 390 V 428" marker-end="url(#arrow)"/>
+  <path class="line" d="M 640 390 V 428" marker-end="url(#arrow)"/>
+  <path class="off" d="M 520 390 L 440 428" marker-end="url(#arrow)"/>
+</svg>

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 330" width="960" height="330" role="img" aria-labelledby="title desc">
+  <title id="title">로더가 할당하는 블록의 배치</title>
+  <desc id="desc">블록 하나에 DTB 버퍼, 커널 이미지, 2 MiB와 한 단위의 부트 윈도우 자리가 차례로 놓입니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="329" rx="10"/>
+  <text class="t h" x="30" y="38">하나의 블록 (루트 셀 폭이 허용하는 주소 한계 아래에 할당)</text>
+  <rect class="box" x="30" y="56" width="900" height="130" rx="8"/>
+  <rect class="box" x="46" y="72" width="250" height="98" rx="8"/>
+  <text class="t h" x="62" y="98">DTB 버퍼</text>
+  <text class="t s" x="62" y="122">6단계에서 커널용 DTB를 만듦</text>
+  <rect class="kernel" x="312" y="72" width="310" height="98" rx="8"/>
+  <text class="t h" x="328" y="98">커널 이미지</text>
+  <text class="t s" x="328" y="122">Image를 복사하고</text>
+  <text class="t s" x="328" y="142">이미지 영역의 나머지는 0</text>
+  <rect class="user" x="638" y="72" width="276" height="98" rx="8"/>
+  <text class="t h" x="654" y="98">2 MiB와 한 단위</text>
+  <text class="t s" x="654" y="122">한 단위는 16 KiB</text>
+  <text class="t s" x="654" y="142">커널의 부트 윈도우 자리</text>
+  <rect class="box" x="30" y="210" width="900" height="90" rx="8"/>
+  <text class="t" x="46" y="240">이미지, DTB, 윈도우가 한 블록에 있으므로 선언된 메모리 리전 하나 안에 있다는 것이 구성상 보장됩니다.</text>
+  <text class="t s" x="46" y="274">계획이 펌웨어 예약이나 디바이스가 블록에 걸린다고 판정하면 블록을 풀고 더 낮은 곳에 다시 할당합니다 (최대 4번).</text>
+</svg>

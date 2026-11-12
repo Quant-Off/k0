@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" width="960" height="620" role="img" aria-labelledby="title desc">
+  <title id="title">부트 하드닝의 구성</title>
+  <desc id="desc">하드닝 노트의 절 구분에 따른 보호: PAC 키 파생, PAC, BTI, PAN, EL0 노출 차단, 루트 태스크 무결성, 패닉. 현재 동작, 기반 작업, 켜지 않음으로 구분.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="619" rx="10"/>
+  <rect class="box" x="30" y="20" width="435" height="136" rx="8"/>
+  <text class="t h" x="46" y="48">부팅 엔트로피와 PAC 키 파생</text>
+  <text class="t s" x="46" y="74">입력: DTB의 rng-seed·kaslr-seed, CNTPCT_EL0, RNDR</text>
+  <text class="t s" x="46" y="96">카운터 모드 SHA-256으로 키 워드 10개 생성</text>
+  <text class="t s" x="46" y="118">키 워드는 부트 스택에서 지움</text>
+  <text class="t s" x="46" y="140">시드 바이트는 읽기 전용 DTB에 남음</text>
+  <rect class="ext" x="495" y="20" width="435" height="136" rx="8"/>
+  <text class="t h" x="511" y="48">포인터 인증(PAC)</text>
+  <text class="t s" x="511" y="74">키 적재, SCTLR_EL1의 EnIA EnIB EnDA EnDB 설정</text>
+  <text class="t s" x="511" y="96">키를 사용하는 명령이 아직 없음: 보호하는 것 없음</text>
+  <text class="t s" x="511" y="118">-Z branch-protection은 Rust에서 unstable</text>
+  <text class="t s" x="511" y="140">컴파일러가 지원할 때를 위해 하드웨어만 준비</text>
+  <rect class="warn" x="30" y="168" width="435" height="136" rx="8"/>
+  <text class="t h" x="46" y="196">분기 타겟 식별(BTI)</text>
+  <text class="t s" x="46" y="222">감지하여 부팅 로그에 보고</text>
+  <text class="t s" x="46" y="244">켜지 않음: stable 컴파일러는 랜딩 패드를 내보내지 않음</text>
+  <text class="t s" x="46" y="266">지금 켜면 커널이 깨짐</text>
+  <rect class="user" x="495" y="168" width="435" height="136" rx="8"/>
+  <text class="t h" x="511" y="196">Privileged access never(PAN)</text>
+  <text class="t s" x="511" y="222">FEAT_PAN: SCTLR_EL1.SPAN 해제, PSTATE.PAN 설정</text>
+  <text class="t s" x="511" y="244">EL0가 접근할 수 있는 매핑을 통한 EL1 접근은 폴트</text>
+  <text class="t s" x="511" y="266">K0는 사용자 프레임을 EL1 별칭으로만 접근</text>
+  <text class="t s" x="511" y="288">현재 실제로 동작하는 보호</text>
+  <rect class="user" x="30" y="316" width="435" height="136" rx="8"/>
+  <text class="t h" x="46" y="344">EL0가 관찰할 수 있는 것 닫기</text>
+  <text class="t s" x="46" y="370">E0PD1: 상위 절반 접근은 워크 없이 폴트</text>
+  <text class="t s" x="46" y="392">CNTKCTL_EL1, MDSCR_EL1, PMUSERENR_EL0 재설정</text>
+  <text class="t s" x="46" y="414">CPACR_EL1 = 0: FP/SIMD 트랩, TPIDR 레지스터는 0</text>
+  <text class="t s" x="46" y="436">DEBUG_PUTC: 출력 가능한 ASCII와 개행만 통과</text>
+  <rect class="user" x="495" y="316" width="435" height="136" rx="8"/>
+  <text class="t h" x="511" y="344">루트 태스크 무결성</text>
+  <text class="t s" x="511" y="370">build.rs: ELF 검사, 쓰기와 실행을 겸한 세그먼트 없음</text>
+  <text class="t s" x="511" y="392">이미지의 SHA-256을 읽기 전용 데이터에 구워 넣음</text>
+  <text class="t s" x="511" y="414">verify_root_task가 부팅마다 다시 해시</text>
+  <text class="t s" x="511" y="436">손상 검사이며 진위 검증이 아님</text>
+  <rect class="user" x="30" y="464" width="435" height="136" rx="8"/>
+  <text class="t h" x="46" y="492">패닉</text>
+  <text class="t s" x="46" y="518">패닉 핸들러: 인터럽트 마스크, 코어 파킹</text>
+  <text class="t s" x="46" y="540">릴리즈 빌드는 아무것도 출력하지 않음</text>
+  <text class="t s" x="46" y="562">k0_arch::fatal은 k0: FATAL을 출력하고 코어 정지</text>
+  <text class="t s" x="46" y="584">enter_user는 복원 전에 모든 예외를 마스크</text>
+  <rect class="bg" x="495" y="464" width="435" height="136" rx="8"/>
+  <text class="t h" x="511" y="492">범례</text>
+  <rect class="user" x="511" y="508" width="22" height="14" rx="8"/>
+  <text class="t s" x="545" y="520">현재 동작</text>
+  <rect class="ext" x="511" y="530" width="22" height="14" rx="8"/>
+  <text class="t s" x="545" y="542">기반 작업, 아직 보호하는 것 없음</text>
+  <rect class="warn" x="511" y="552" width="22" height="14" rx="8"/>
+  <text class="t s" x="545" y="564">감지만 하고 켜지 않음</text>
+  <rect class="box" x="511" y="574" width="22" height="14" rx="8"/>
+  <text class="t s" x="545" y="586">PAC 키의 입력</text>
+</svg>
