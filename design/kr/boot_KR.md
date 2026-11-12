@@ -22,7 +22,7 @@ K0는 범용 이미지 하나입니다. Linux arm64 Image로 적재됩니다. �
 
 ### 그래뉼
 
-기본 그래뉼은 4 KiB입니다. 빌드 옵션 `cargo build -p k0-kernel --no-default-features --features granule-16k`로 16 KiB 이미지를 만듭니다. 그래뉼은 이미지를 빌드할 때 정하며 실행 중에는 고를 수 없습니다. `kernel/build.rs`가 그래뉼, Image 플래그, 고정 가상 주소를 `kernel/kernel.ld` 앞에 붙여 링커에 넘기므로 섹션과 가드 페이지의 정렬이 그래뉼을 따릅니다. 선택한 그래뉼을 지원하지 않는 CPU에서는 `k0_mm::enable_paging`이 실패하고 커널이 부팅을 거부합니다(`k0: mmu enable failed`). 그래뉼 격자에 맞지 않는 적재 주소도 같은 방식으로 거부합니다. 16 KiB 이미지는 QEMU `-cpu max`에서, 그리고 직접 HVF 위의 Apple 코어에서 부팅해 보았습니다(아래 증거 절 참고).
+기본 그래뉼은 4 KiB입니다. 빌드 옵션 `--no-default-features --features granule-16k`로 16 KiB 이미지를 만듭니다. 예를 들면 `cargo build -p k0-kernel --offline --no-default-features --features granule-16k,console --target-dir target/g16`입니다. 이 빌드는 `--no-default-features`를 쓰므로 입력과 출력 feature는 `default`에 넣지 않으며, 모든 명령이 이를 명시해야 합니다("선택적 콘솔 출력" 참고). 그래뉼은 이미지를 빌드할 때 정하며 실행 중에는 고를 수 없습니다. `kernel/build.rs`가 그래뉼, Image 플래그, 고정 가상 주소를 `kernel/kernel.ld` 앞에 붙여 링커에 넘기므로 섹션과 가드 페이지의 정렬이 그래뉼을 따릅니다. 선택한 그래뉼을 지원하지 않는 CPU에서는 `k0_mm::enable_paging`이 실패하고 커널이 부팅을 거부합니다(`k0: mmu enable failed`). 그래뉼 격자에 맞지 않는 적재 주소도 같은 방식으로 거부합니다. 16 KiB 이미지는 QEMU `-cpu max`에서, 그리고 직접 HVF 위의 Apple 코어에서 부팅해 보았습니다(아래 증거 절 참고).
 
 ## 페이즈 0: `boot.S`
 
@@ -51,7 +51,7 @@ K0는 범용 이미지 하나입니다. Linux arm64 Image로 적재됩니다. �
 
 ## `kernel_main`: 점프 이후
 
-프로그램 카운터와 스택 포인터는 이제 higher-half에 있고, 재배치된 데이터가 유효하며, 일반적인 Rust가 동작합니다. 아래 단계의 순서가 곧 보안 논거이므로 `kernel_main`은 하나의 직선 시퀀스입니다. 점프 이전에는 `Mmu`와 `Vectors` 같은 typestate 토큰이 한 단계가 다른 단계보다 먼저 일어났음을 증명합니다. 이 토큰은 점프를 넘을 수 없으므로, 점프 이후에는 코드의 순서가 그 보장을 대신합니다. 실패하면 모두 이유를 출력하고 코어를 파킹합니다. 처음에는 콘솔을 아직 모르므로, 앞쪽 줄은 콘솔이 붙을 때 재생됩니다.
+프로그램 카운터와 스택 포인터는 이제 higher-half에 있고, 재배치된 데이터가 유효하며, 일반적인 Rust가 동작합니다. 아래 단계의 순서가 곧 보안 논거이므로 `kernel_main`은 하나의 직선 시퀀스입니다. 점프 이전에는 `Mmu`와 `Vectors` 같은 typestate 토큰이 한 단계가 다른 단계보다 먼저 일어났음을 증명합니다. 이 토큰은 점프를 넘을 수 없으므로, 점프 이후에는 코드의 순서가 그 보장을 대신합니다. 실패하면 모두 이유를 출력하고 코어를 파킹합니다. 처음에는 콘솔을 아직 모르므로, 앞쪽 줄은, 그 콘솔의 드라이버를 넣어 빌드한 이미지라면, 콘솔이 붙을 때 재생됩니다.
 
 | 로그 줄 | 단계 |
 | --- | --- |
@@ -59,7 +59,8 @@ K0는 범용 이미지 하나입니다. Linux arm64 Image로 적재됩니다. �
 | `k0: w^x checks pass (granule 4K, wxn)` | 주소 변환 명령으로 text는 읽을 수 있고 쓸 수 없으며, 읽기 전용 데이터는 쓸 수 없고, 스택 가드 페이지는 매핑되지 않았으며, 스택은 쓸 수 있고, 이미지에 선형 별칭이 없음을 확인합니다. 16 KiB 빌드에서는 그래뉼이 16K로 표시됩니다. |
 | `k0: dtb rejected: ...` (실패할 때만) | `map_dtb`가 별칭을 통해 DTB를 읽기 전용으로 매핑합니다. 포인터(null이 아니고 8바이트 정렬)와, 매직과 전체 크기만 읽는 `dtb_span`을 검사합니다. |
 | `k0: memory ...` | 별칭을 통해 DTB를 파싱합니다. 파서는 [dtb_KR.md](dtb_KR.md)에서 다룹니다. |
-| `k0: platform ...` | `bring_up_platform`이 DTB에서 콘솔, 인터럽트 컨트롤러, 타이머 인터럽트를 찾아 불변인 플랫폼 기술서 하나를 만듭니다. 디바이스 페이지를 매핑하기 전에 기술서를 메모리 맵과 대조합니다. RAM은 2^47 아래여야 하고, 커널 이미지와 DTB는 선언된 메모리 안에 있어야 하며, 그래뉼 단위로 넓힌 디바이스 구간은 메모리나 예약 구간과 겹치거나 CPU의 물리 주소 폭(`k0_mm::pa_bits`)을 넘으면 안 됩니다. 고정 모드에서는 이어서 이 줄을 기대값과 비교합니다. 그 뒤에야 콘솔을 매핑하고 연결하며, 이때 버퍼에 쌓인 로그가 재생됩니다. 플랫폼이 거부되더라도 콘솔만으로 대조를 통과하면(그리고 이미지가 고정 모드가 아니면) 사유가 보이도록 콘솔을 먼저 연결합니다. 콘솔이 없으면 `k0: no console (...)`이 이유를 알려 줍니다. [dtb_KR.md](dtb_KR.md)를 참고하세요. |
+| `k0: console drivers [...]` | 플랫폼 기동의 첫 줄이며, 나중에 플랫폼이 거부되더라도 출력됩니다. 이 이미지에 들어 있는 콘솔 드라이버를 알려 줍니다("선택적 콘솔 출력" 참고). |
+| `k0: platform ...` | `bring_up_platform`이 DTB에서 콘솔, 인터럽트 컨트롤러, 타이머 인터럽트를 찾아 불변인 플랫폼 기술서 하나를 만듭니다. 디바이스 페이지를 매핑하기 전에 기술서를 메모리 맵과 대조합니다. RAM은 2^47 아래여야 하고, 커널 이미지와 DTB는 선언된 메모리 안에 있어야 하며, 그래뉼 단위로 넓힌 디바이스 구간은 메모리나 예약 구간과 겹치거나 CPU의 물리 주소 폭(`k0_mm::pa_bits`)을 넘으면 안 됩니다. 고정 모드에서는 이어서 이 줄을 기대값과 비교합니다. 그 뒤에야 콘솔을 연결합니다. 이 종류의 콘솔 드라이버가 있는 이미지는 콘솔을 매핑하고 연결하며, 이때 버퍼에 쌓인 로그가 재생됩니다. 드라이버가 없는 이미지는 아무것도 매핑하지 않고 `k0: no console (driver not built in)`을 출력합니다. 플랫폼이 거부되더라도 콘솔만으로 대조를 통과하면(그리고 이미지가 고정 모드가 아니고 드라이버가 있으면) 사유가 보이도록 콘솔을 먼저 연결합니다. 콘솔이 없으면 `k0: no console (...)`이 이유를 알려 줍니다. [dtb_KR.md](dtb_KR.md)를 참고하세요. |
 | `k0: root task integrity ok (...)` | 내장 루트 태스크 이미지를 다시 해시하고 빌드 시점에 고정된 해시와 비교합니다. |
 | `k0: entropy ...`, `k0: pac=... bti=... pan=...` | PAC 키를 파생해 적재하고 키 워드를 부트 스택에서 지우며, PAN을 켜고, 카운터·디버그·PMU에 대한 EL0 접근을 끕니다. [hardening_KR.md](hardening_KR.md)를 참고하세요. |
 | `k0: irq on (timer 1s)` | `setup_irq`가 필요한 인터럽트 컨트롤러 페이지만 매핑합니다. GICv3는 리디스트리뷰터 프레임을 하나씩 들여다보며 부트 CPU의 프레임을 찾은 뒤, 그 프레임과 SGI 프레임만 매핑합니다. 드라이버는 GIC 식별 레지스터가 DTB의 설명과 맞는지 확인합니다. EL1 가상 타이머는 플랫폼 기술서의 인터럽트 번호로 설정합니다. IRQ와 SError의 마스크를 해제합니다. |
@@ -68,6 +69,7 @@ K0는 범용 이미지 하나입니다. Linux arm64 Image로 적재됩니다. �
 | `k0: untyped ...`, `k0: root cnode ready (N caps, N untyped, N image frames, N slots)` | 루트 CNode(윈도우 안의 오브젝트이며 슬롯은 `ROOT_CNODE_SLOTS` = 512개, 로그에도 그렇게 나옵니다)를 채웁니다. 슬롯 1은 루트 TCB, 2는 루트 주소 공간, 3은 콘솔, 4는 루트 CNode 자신이고, 이어서 비어 있는 물리 범위마다 untyped 케이퍼빌리티, 루트 태스크 이미지의 매핑된 그래뉼마다 Frame 케이퍼빌리티 하나(text는 R과 X, 읽기 전용 데이터는 R, 데이터는 R과 W)가 들어갑니다. 마지막으로 루트 태스크를 다른 태스크와 똑같이 자신의 CNode와 주소 공간에 묶습니다. 두 케이퍼빌리티의 복사본이 TCB에 들어갑니다. [capabilities_KR.md](capabilities_KR.md)를 참고하세요. |
 | `k0: bootinfo page ready` | 케이퍼빌리티 목록을 읽기 전용 bootinfo 페이지에 씁니다. 헤더와 슬롯마다 하나의 디스크립터이며, 이미지 Frame마다 VA, 크기, 권한이 들어갑니다. |
 | `k0: user w^x checks pass` | `TTBR0`가 사용자 테이블을 가리키고, identity 매핑은 사라졌으며, 사용자 매핑을 EL0와 EL1 양쪽에서 검사합니다. |
+| `k0: device pages [...] of 0x1000 bytes` | 커널이 매핑한 채로 두는 모든 디바이스 페이지입니다. 이 줄 뒤에 커널은 더 이상 디바이스를 매핑하지 않습니다. |
 | `k0: entering root task (el0)` | `k0_sched::handoff`가 EL0로 진입합니다. |
 
 ### 부트 프레임 윈도우 고르기
@@ -80,11 +82,59 @@ K0는 범용 이미지 하나입니다. Linux arm64 Image로 적재됩니다. �
 
 ## 부트 로그
 
-커널이 출력하는 모든 줄은 커널 메모리의 16 KiB 버퍼(`K0_BOOT_LOG`)에도 들어갑니다. 콘솔을 알기 전의 출력은 콘솔이 붙을 때 재생되므로, 범용 이미지에서도 부팅 순서대로의 기록이 남습니다. 콘솔이 없으면 이 로그가 유일한 기록입니다. `tools/boot-log.py <커널 ELF> <적재 주소> <QEMU 모니터 소켓>`이 게스트 메모리에서 이 로그를 읽습니다. 로그는 앞에서부터 채우고 넘치는 것은 버립니다. 사용자 태스크가 Console 케이퍼빌리티로 내는 출력은 정해진 몫까지만 기록하므로 커널 진단을 밀어내지 못합니다. 콘솔과 로그 어느 쪽에도 태스크가 쓴 줄이라는 표시는 없습니다([hardening_KR.md](hardening_KR.md) 참고).
+커널이 출력하는 모든 줄은 커널 메모리의 16 KiB 버퍼(`K0_BOOT_LOG`)에도 들어갑니다. 콘솔을 알기 전의 출력은 콘솔이 붙을 때 재생되므로, 범용 이미지에서도 부팅 순서대로의 기록이 남습니다. 콘솔이 없으면 이 로그가 유일한 기록이며, 콘솔 드라이버 없이 빌드한 이미지에는 콘솔이 없습니다. 16 KiB 중 사용자 태스크 출력이 쓸 수 있는 것은 6 KiB이고, 타이머 tick 줄은 처음 4개만 기록합니다. `tools/boot-log.py <커널 ELF> <적재 주소> <QEMU 모니터 소켓>`이 게스트 메모리에서 이 로그를 읽습니다. 로그는 앞에서부터 채우고 넘치는 것은 버립니다. 사용자 태스크가 Console 케이퍼빌리티로 내는 출력은 정해진 몫까지만 기록하므로 커널 진단을 밀어내지 못합니다. 콘솔과 로그 어느 쪽에도 태스크가 쓴 줄이라는 표시는 없습니다([hardening_KR.md](hardening_KR.md) 참고).
+
+## 선택적 콘솔 출력
+
+입력과 출력은 `k0-kernel`의 Cargo feature로 고르며, 아무것도 지정하지 않은 빌드에는 없습니다(옵트인).
+
+| Feature | 추가하는 것 |
+| --- | --- |
+| `console-pl011` | PL011과 SBSA UART(같은 레지스터를 씁니다)의 송신 드라이버 |
+| `console-16550` | 16550 계열의 송신 드라이버 |
+| `console` | 둘 다 |
+
+`default`는 `["granule-4k"]` 그대로입니다. feature는 I/O를 더하기만 하며 `default`에 넣지 않습니다. 16 KiB 이미지는 `--no-default-features`로 빌드하므로, 넣어 두면 조용히 빠지기 때문입니다. 그래서 스크립트, `cargo virt` 별칭(`run -p k0-kernel --features console`), CI가 feature를 명시합니다. 그냥 `cargo run -p k0-kernel`은 콘솔 없는 이미지를 부팅하고, `tools/qemu-virt-runner.sh`는 이때 `runner: this kernel has no console driver and prints nothing here (build with --features console to see output)`을 출력합니다. 고정 빌드도 필요한 feature를 명시합니다. 예를 들면 `K0_PIN='...' cargo build -p k0-kernel --features console --offline --target-dir target/pin`입니다. 모든 feature 조합이 같은 ELF 경로에 쓰므로, `target/quiet` 같은 별도의 `--target-dir`을 쓰면 콘솔 없는 이미지가 콘솔 있는 이미지를 덮어쓰지 않습니다.
+
+입력이나 터미널을 위한 feature는 없습니다. 그런 코드가 없기 때문입니다.
+
+**컴파일에서 빠지는 것.** 콘솔 feature 없이 빌드한 이미지에는 UART 드라이버 코드(`crates/k0-arch/src/earlycon/uart.rs`)가 없고, 콘솔 디바이스 페이지를 매핑하지 않으며, UART에 아무것도 쓰지 않습니다. 모든 커널 줄과 EL0의 모든 줄은 커널 메모리의 부트 로그로만 갑니다. 커널은 `k0: no console (driver not built in)`을 출력합니다. 드라이버 하나만 넣은 이미지는 다른 종류의 콘솔을 똑같이 취급합니다.
+
+**남는 것.** 모든 이미지에서 커널은 여전히 디바이스 트리의 콘솔 노드를 찾아 검증합니다. 디바이스 트리에 대한 판단, `K0_PIN` 줄, UEFI 로더의 자가 검사가 모두 같습니다. 따라서 콘솔을 쓰지 않을 이미지도 콘솔 검증에 실패하는 디바이스 트리는 거부합니다. `DEBUG_PUTC` 시스템 콜과 `Console` 케이퍼빌리티도 남고, EL0 출력은 여전히 부트 로그에 닿습니다. 부트 로그는 모든 이미지에 있습니다. UEFI 로더는 내장한 커널을 어떻게 빌드했든, 부트 서비스를 종료하기 전에는 자기 줄을 펌웨어 콘솔로 출력합니다.
+
+**드라이버 결정은 디바이스 페이지를 매핑하기 전에 합니다.** `kernel/src/main.rs`의 `attach_console`은 디바이스 페이지를 매핑하는 함수를 부르기 전에 콘솔의 종류와 이미지에 들어 있는 드라이버를 살펴봅니다. 드라이버가 없는 종류는 여기서 버려지며 그 페이지는 매핑되지 않습니다.
+
+**식별 확인은 프로브 매핑을 거칩니다.** 디바이스 트리 노드가 `arm,pl011`이라고 하고 4 KiB 프레임 전체를 선언하면, 식별 레지스터를 임시 프로브 매핑으로 읽고, 프로브 매핑을 지운 뒤에야 영구 매핑을 만듭니다. 확인에 실패한 디바이스(`k0: console is not a pl011, ignored`)는 매핑된 채로 남지 않습니다. SBSA UART와 16550은 여전히 확인할 수 없습니다.
+
+**두 줄이 I/O를 눈에 보이게 합니다.**
+
+- `k0: console drivers [pl011 16550]`(또는 `[pl011]`, `[16550]`, `[none]`)은 플랫폼 기동의 첫 줄입니다. 줄 전체가 이미지 안의 하나의 문자열이므로, `grep -a 'k0: console drivers' <이미지 파일>`로 부팅하지 않고도 이미지가 어떤 I/O로 빌드되었는지 알 수 있습니다. `tools/build-loader.sh`는 이를 `build-loader: embedding a kernel with: k0: console drivers [...]`로 출력해, 아무도 모르는 사이에 조용한 커널을 내장하는 일이 없게 합니다. 이 줄은 증거가 아니라 표지입니다.
+- `k0: device pages [0x8000000 0x800f000 ...] of 0x1000 bytes`는 커널이 사용자 공간에 진입하기 직전에 출력됩니다. 디바이스 페이지를 매핑하는 단 하나의 함수에서 나오며, 커널이 매핑한 채로 두는 모든 디바이스 페이지를 나열합니다. 이 줄 뒤에 커널은 더 이상 디바이스를 매핑하지 않습니다.
+
+**증거.** 아래 행은 `tools/boot-matrix.sh`에 있습니다. 콘솔 이미지는 모두 feature를 명시해 빌드합니다.
+
+- `console-symbols`는 정적 행입니다. 디버그 이미지에서 `llvm-nm`이 보여 주는 드라이버 심볼이 feature의 설명과 정확히 같아야 하고, 각 이미지 파일에는 자기 `k0: console drivers` 줄만 정확히 하나 있어야 합니다.
+- `quiet`과 `quiet-16k`는 콘솔 없는 이미지를 부팅합니다. 자가 테스트 전체를 게스트 메모리의 부트 로그에서 판정하고(`K0_BOOT_MEMLOG=0x40080000`, QEMU virt의 적재 주소), `K0_BOOT_SERIAL=empty`로 직렬 포트에서 단 한 바이트도 나오지 않았음을 요구하며, `K0_BOOT_CONSOLE_PAGE=unmapped`로 `k0: platform` 줄의 콘솔 주소가 `k0: device pages` 목록에 없음을 요구합니다.
+- `console-pl011-only`는 PL011 드라이버만 넣은 이미지를 부팅합니다. `console-16550-only`는 16550 드라이버만 넣은 이미지를 부팅합니다. QEMU virt에는 PL011이 있으므로 이 이미지에는 그 드라이버가 없어 조용합니다.
+- `pl011-identity`는 콘솔 노드가 RTC를 가리키도록 디바이스 트리를 고칩니다. 커널은 `k0: console is not a pl011, ignored`를 출력하고, 아무것도 쓰지 않으며, 그 페이지를 매핑한 채로 두지 않아야 합니다.
+- `serial-check`는 판정 자체를 시험합니다. 콘솔 이미지를 조용한 이미지로 판정하면 직렬 출력 때문에 실패해야 합니다.
+- `hvf-quiet`은 `K0_MATRIX_HVF=1`이 필요한 행에 들어 있습니다.
+
+`tools/qemu-boot-test.sh`는 직렬 로그에 커널 줄이 하나도 없으면 콘솔 feature 없이 빌드한 커널에 대한 힌트도 출력합니다. 적재 주소가 고정되어 있지 않으므로 메모리 판정은 UEFI 로더와 함께 쓸 수 없습니다.
+
+**한계.**
+
+- 비어 있는 직렬 로그는 QEMU virt(PL011)의 직렬 포트로 한 바이트도 나오지 않았다는 것만 보여 줍니다. 레지스터 읽기에 대해서는 아무것도 말하지 않습니다. 그것은 심볼 검사와, 커널 자신의 보고인 디바이스 페이지 목록이 다룹니다.
+- 심볼 검사는 디버그 이미지에서 실행합니다. 콘솔 없는 feature 조합의 릴리즈(LTO) 이미지는 매트릭스가 빌드하거나 부팅하지 않으며, 콘솔 없는 이미지를 UEFI로 부팅해 본 적도 없습니다.
+- 16550 드라이버는 어떤 테스트로도 실행된 적이 없습니다. QEMU virt에 그런 UART가 없기 때문입니다. 코드는 이번에 자기 feature로 옮겼고 리뷰로만 확인했습니다. SBSA UART는 식별 확인 없이 PL011 드라이버를 씁니다. 실제 하드웨어에서 실행한 것은 없습니다.
+- 콘솔 없는 이미지가 줄이는 것은 출력 경로이지 커널이 메모리에 가진 내용이 아닙니다. 부트 로그는 평범한 커널 메모리이며, RAM을 읽거나 디버거를 붙일 수 있는 사람은 누구나 봅니다.
+- `k0: console drivers` 줄은 모든 `k0:` 줄처럼 EL0 출력이 흉내 낼 수 있습니다([hardening_KR.md](hardening_KR.md) 참고). 그 줄의 첫 번째 등장 또는 이미지 파일만이 빌드를 식별합니다.
+
+**기여자 규칙.** 새로운 입력이나 출력 경로는 처음부터 Cargo feature 뒤에 둡니다. feature는 더하기만 하며 `default`에 넣지 않습니다. 지원하는 조합마다 부팅 매트릭스에 행을 두고, 스크립트, `virt` 별칭, CI는 feature를 명시합니다.
 
 ## 신뢰 문제
 
-이제 DTB가 디바이스 주소를 제공하므로, 잘못되었거나 적대적인 DTB는 콘솔을 다른 디바이스로 향하게 할 수 있습니다. 커널은 다섯 가지로 이를 제한합니다. 기술서를 메모리 맵과 대조하고, 식별 레지스터가 있는 곳(GIC, PL011)에서는 이를 확인하며(16550에는 없습니다), 대조를 통과한 뒤에만 디바이스를 매핑하고, 콘솔의 송신 대기에 시간 상한을 두며, 고정 모드로 기대 플랫폼을 못 박을 수 있습니다. 격리는 여전히 기밀성과 무결성을 다루고 가용성은 다루지 않습니다. 내려간 뒤 EL2로 들어오는 트랩은 설계상 머신 전체를 파킹합니다. DTB 포인터 자체는 처음 읽기 전에 검증할 수 없습니다([dtb_KR.md](dtb_KR.md)의 "알려진 공백" 참고).
+이제 DTB가 디바이스 주소를 제공하므로, 잘못되었거나 적대적인 DTB는 콘솔을 다른 디바이스로 향하게 할 수 있습니다. 커널은 다섯 가지로 이를 제한합니다. 기술서를 메모리 맵과 대조하고, 식별 레지스터가 있는 곳(GIC, PL011)에서는 이를 확인하며(16550과 SBSA UART에는 없습니다), 대조를 통과한 뒤에만 디바이스를 매핑하고, 콘솔의 송신 대기에 시간 상한을 두며, 고정 모드로 기대 플랫폼을 못 박을 수 있습니다. 콘솔 드라이버 없이 빌드한 이미지는 콘솔 경로 자체를 없앱니다("선택적 콘솔 출력" 참고). 격리는 여전히 기밀성과 무결성을 다루고 가용성은 다루지 않습니다. 내려간 뒤 EL2로 들어오는 트랩은 설계상 머신 전체를 파킹합니다. DTB 포인터 자체는 처음 읽기 전에 검증할 수 없습니다([dtb_KR.md](dtb_KR.md)의 "알려진 공백" 참고).
 
 ### 고정 모드
 
@@ -94,15 +144,15 @@ K0는 범용 이미지 하나입니다. Linux arm64 Image로 적재됩니다. �
 
 지원한다고 부를 수 있는 것은 1단계와 2단계뿐입니다.
 
-- **1단계, `tools/boot-matrix.sh`가 실행합니다(CI가 QEMU 7.2로 실행하며, 로컬에서는 QEMU 11.1.3으로도 실행). Linux arm64 Image 진입입니다.** GICv3와 GICv2의 QEMU virt를 각각 EL1과 EL2로 진입. CPU 모델 `cortex-a72`, `cortex-a53`, `max`. 두 GIC 버전 모두 `secure=on`. CPU 4개. `max`에서의 16 KiB 이미지와 `cortex-a72`에서의 거부. 하나의 이미지를 다른 세 물리 주소에 적재(헤더의 `text_offset`을 고쳐서)하고, 16 KiB 격자에 맞지 않는 주소는 거부. RAM이 주소 0에 있고 GICv3와 PL011이 다른 곳에 있는 `xlnx-versal-virt`를 EL2로 진입. 고정 이미지가 자기 플랫폼에서는 부팅하고 다른 플랫폼에서는 거부. 이미지가 물리 타이머 레지스터에 접근하지 않음을 확인하는 정적 검사(커널은 하이퍼바이저 게스트에서도 동작하는 EL1 가상 타이머를 씁니다).
+- **1단계, `tools/boot-matrix.sh`가 실행합니다(CI가 QEMU 7.2로 실행하며, 로컬에서는 QEMU 11.1.3으로도 실행). Linux arm64 Image 진입입니다.** GICv3와 GICv2의 QEMU virt를 각각 EL1과 EL2로 진입. CPU 모델 `cortex-a72`, `cortex-a53`, `max`. 두 GIC 버전 모두 `secure=on`. CPU 4개. `max`에서의 16 KiB 이미지와 `cortex-a72`에서의 거부. 하나의 이미지를 다른 세 물리 주소에 적재(헤더의 `text_offset`을 고쳐서)하고, 16 KiB 격자에 맞지 않는 주소는 거부. RAM이 주소 0에 있고 GICv3와 PL011이 다른 곳에 있는 `xlnx-versal-virt`를 EL2로 진입. 고정 이미지가 자기 플랫폼에서는 부팅하고 다른 플랫폼에서는 거부. 이미지가 물리 타이머 레지스터에 접근하지 않음을 확인하는 정적 검사(커널은 하이퍼바이저 게스트에서도 동작하는 EL1 가상 타이머를 씁니다). `console-symbols`, `quiet`, `quiet-16k`, `console-pl011-only`, `console-16550-only`, `pl011-identity`, `serial-check` 행은 "선택적 콘솔 출력"에서 설명합니다.
 - **2단계, 2026-11-11에 직접 실행, Apple M5 Pro, HVF를 쓰는 QEMU 11.1.3**(`K0_MATRIX_HVF=1 tools/boot-matrix.sh`). 4 KiB 이미지의 EL1 진입, 게스트 EL2 진입, 16 KiB 이미지, CPU 4개.
 - **1단계, 같은 스크립트의 UEFI 행(2026-11-12).** 같은 커널 바이너리를 UEFI 로더에 내장해 `acpi=off`인 QEMU virt에서 EDK2로 부팅합니다. GICv3와 GICv2를 EL1과 EL2에서, `max`, CPU 4개, 16 KiB 이미지, 펌웨어 RNG, FAT 드라이브 부팅, 직렬 로그에서 읽는 거부 둘(`cortex-a72`에서의 16 KiB, 내장 커널의 한 바이트 변조). `uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k`, `uefi-acpi-rng` 행은 같은 머신을 ACPI를 켠 채 디바이스 트리 없이 부팅합니다. PE 파일의 정적 검사도 있습니다. CI는 이 행들을 Debian의 `qemu-efi-aarch64` 2022.11이 있는 QEMU 7.2.22에서 실행합니다. 행의 목록은 [uefi_KR.md](uefi_KR.md)에 있습니다.
 - **2단계, UEFI, 2026-11-12에 직접 실행.** Apple M5 Pro의 HVF에서(`K0_MATRIX_HVF=1`) 로더를 거친 4 KiB 이미지의 EL1과 EL2 진입, 16 KiB 이미지, 그리고 실제 로더의 Secure Boot 시험(서명한 로더는 부팅하고, 서명하지 않은 로더, 변조된 로더, 다른 키로 서명한 로더는 펌웨어가 거부).
-- **3단계, 계약상 기대하지만 부팅해 본 적 없음.** 모든 실제 보드, KVM, Firecracker, Cloud Hypervisor, crosvm, 16550 드라이버(실행해 본 적 없음), 하드웨어의 실제 보안 확장이 있는 GIC, `E2H`가 1로 고정된 CPU. UEFI 로더에 대해서는 U-Boot의 EFI 구현, Raspberry Pi UEFI, EDK2 ArmVirtQemu 외의 펌웨어, UEFI에서의 고정 모드, 실제 하드웨어에서의 캐시 비우기도 해당합니다.
+- **3단계, 계약상 기대하지만 부팅해 본 적 없음.** 모든 실제 보드, KVM, Firecracker, Cloud Hypervisor, crosvm, 16550 드라이버(실행해 본 적 없음), SBSA UART, 콘솔 없는 feature 조합의 릴리즈(LTO) 이미지와 UEFI 부팅, 하드웨어의 실제 보안 확장이 있는 GIC, `E2H`가 1로 고정된 CPU. UEFI 로더에 대해서는 U-Boot의 EFI 구현, Raspberry Pi UEFI, EDK2 ArmVirtQemu 외의 펌웨어, UEFI에서의 고정 모드, 실제 하드웨어에서의 캐시 비우기도 해당합니다.
 
 ## 테스트 방법
 
-`tools/qemu-boot-test.sh`는 디버그 커널을 QEMU에서 부팅하고 위의 로그 줄을 순서대로 확인한 뒤 루트 태스크 자가 테스트를 확인합니다. 어느 단계든 실패 줄이 나오면 테스트가 실패합니다. 스크립트는 머신을 환경 변수에서 받습니다. `K0_QEMU_MACHINE`, `K0_QEMU_CPU`, `K0_QEMU_SMP`, `K0_QEMU_MEM`, `K0_QEMU_ACCEL`, `K0_IMAGE_TEXT_OFFSET`, 그리고 `K0_BOOT_REUSE=skip`(루트 태스크가 untyped 재사용 시험을 건너뛰는 메모리 배치를 허용)입니다. `tools/boot-matrix.sh`는 위에 나열한 행을 실행합니다. 거부해야 하는 행은 메모리에 남은 부트 로그에서 사유를 읽어 확인합니다. UEFI 행은 같은 스크립트로 `.efi`를 EDK2에서 부팅합니다(`tools/build-loader.sh`가 다른 행이 쓰는 그 커널을 내장하고, `tools/qemu-boot-test.sh`는 UEFI 실패를 로더의 첫 줄부터 판정합니다). UEFI 거부 셋은 로더가 커널이 실행되기 전에 거부하므로 직렬 로그에서 읽습니다. `tools/pe-check.py`는 로더의 PE 형태와 캐시 및 MMU 명령의 순서를 검사합니다. [uefi_KR.md](uefi_KR.md)를 참고하세요. `kernel_main` 안의 자가 검사도 그 자체로 테스트입니다. 매핑이 잘못되면 실패한 검사의 이름과 함께 부팅이 멈춥니다.
+`tools/qemu-boot-test.sh`는 디버그 커널을 QEMU에서 부팅하고 위의 로그 줄을 순서대로 확인한 뒤 루트 태스크 자가 테스트를 확인합니다. 이 줄들을 직렬 포트에서 읽으므로 이미지는 콘솔 feature로 빌드해야 합니다(`cargo build -p k0-kernel --features console --offline`). 직렬 로그에 커널 줄이 없으면 콘솔 feature 없이 빌드한 커널에 대한 힌트를 출력합니다. 어느 단계든 실패 줄이 나오면 테스트가 실패합니다. 스크립트는 머신을 환경 변수에서 받습니다. `K0_QEMU_MACHINE`, `K0_QEMU_CPU`, `K0_QEMU_SMP`, `K0_QEMU_MEM`, `K0_QEMU_ACCEL`, `K0_IMAGE_TEXT_OFFSET`, `K0_BOOT_REUSE=skip`(루트 태스크가 untyped 재사용 시험을 건너뛰는 메모리 배치를 허용), `K0_BOOT_MEMLOG=<이미지의 물리 적재 주소>`(커널 줄을 직렬 포트 대신 QEMU 모니터로 게스트 메모리의 부트 로그에서 읽음. QEMU virt에서는 `0x40080000`), `K0_BOOT_SERIAL=empty`(이와 함께 쓰면 직렬 포트에서 단 한 바이트도 나오지 않았음을 추가로 요구), `K0_BOOT_CONSOLE_PAGE=mapped|unmapped`(`k0: platform` 줄의 콘솔 주소를 `k0: device pages` 목록과 비교)입니다. `tools/boot-matrix.sh`는 위에 나열한 행을 실행합니다. 거부해야 하는 행은 메모리에 남은 부트 로그에서 사유를 읽어 확인합니다. UEFI 행은 같은 스크립트로 `.efi`를 EDK2에서 부팅합니다(`tools/build-loader.sh`가 다른 행이 쓰는 그 커널을 내장하고, `tools/qemu-boot-test.sh`는 UEFI 실패를 로더의 첫 줄부터 판정합니다). UEFI 거부 둘은 로더가 커널이 실행되기 전에 거부하므로 직렬 로그에서 읽습니다. `tools/pe-check.py`는 로더의 PE 형태와 캐시 및 MMU 명령의 순서를 검사합니다. [uefi_KR.md](uefi_KR.md)를 참고하세요. `kernel_main` 안의 자가 검사도 그 자체로 테스트입니다. 매핑이 잘못되면 실패한 검사의 이름과 함께 부팅이 멈춥니다.
 
 ## 알려진 공백
 
@@ -110,4 +160,5 @@ K0는 범용 이미지 하나입니다. Linux arm64 Image로 적재됩니다. �
 - 커널은 항상 같은 가상 주소에 놓입니다. 주소 무작위화가 없습니다.
 - 릴리즈 빌드는 패닉 때 아무것도 출력하지 않습니다. 의도한 동작이지만, 릴리즈 빌드에서는 패닉이 나도 진단을 얻을 수 없다는 뜻이기도 합니다.
 - 위의 증거는 QEMU와 HVF뿐입니다. K0가 실제 보드에서 부팅한 적은 없습니다.
+- 입력은 없습니다. 출력은 콘솔 드라이버를 넣어 빌드한 이미지에만 있으며, 그 증거의 한계는 "선택적 콘솔 출력"에 있습니다.
 - UEFI에서는 로더의 캐시 비우기와 MMU 끄기를 QEMU로 테스트할 수 없고(캐시가 없습니다), ACPI만 있는 펌웨어는 세 정적 테이블만으로 부팅합니다(부팅해 본 것은 QEMU virt뿐입니다). 로더의 한계는 [uefi_KR.md](uefi_KR.md)에 모두 있습니다.

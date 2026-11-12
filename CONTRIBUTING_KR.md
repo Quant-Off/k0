@@ -48,15 +48,18 @@ K0는 완전히 오프라인으로 빌드됩니다. 서드파티 크레이트는
 ## 빌드
 
 ```sh
-cargo virt                                   # 범용 이미지를 빌드해 QEMU virt에서 부팅
-cargo build -p k0-kernel --offline           # 범용 4 KiB 이미지만 빌드
-cargo build -p k0-kernel --offline --no-default-features --features granule-16k --target-dir target/g16   # 16 KiB 이미지
+cargo virt                                   # 콘솔이 있는 범용 이미지를 빌드해 QEMU virt에서 부팅
+cargo build -p k0-kernel --features console --offline    # 콘솔이 있는 범용 4 KiB 이미지만 빌드
+cargo build -p k0-kernel --offline --no-default-features --features granule-16k,console --target-dir target/g16   # 콘솔이 있는 16 KiB 이미지
+cargo build -p k0-kernel --offline --target-dir target/quiet   # 콘솔 없는 이미지
 tools/build-loader.sh                        # 빌드한 커널을 UEFI 로더에 넣고 .efi 경로를 출력
 ```
 
 `tools/build-loader.sh`는 커널을 먼저 빌드해 두어야 합니다. 실행하는 방법은 [USAGE_KR.md](USAGE_KR.md#uefi로-부팅)의 "UEFI로 부팅"에, 로더의 동작 방식은 [design/kr/uefi_KR.md](design/kr/uefi_KR.md)에 있습니다.
 
-커널은 종료하지 않습니다. 루트 태스크가 자가 테스트를 마치면 계속 양보하고, 커널은 1초마다 `k0: tick N`을 출력합니다. QEMU는 `Ctrl-A X`로 끕니다.
+입력과 출력은 선택 사항이며 Cargo feature(`console-pl011`, `console-16550`, `console`)로 고릅니다. 아무것도 켜지 않은 빌드에는 I/O가 없습니다. `cargo virt`는 `cargo run -p k0-kernel --features console`의 별칭입니다. feature의 설명은 [USAGE_KR.md](USAGE_KR.md#콘솔-feature)에 있습니다.
+
+커널은 종료하지 않습니다. 루트 태스크가 자가 테스트를 마치면 계속 양보하고, 콘솔이 있는 커널은 1초마다 `k0: tick N`을 출력합니다. QEMU는 `Ctrl-A X`로 끕니다.
 
 ## 테스트
 
@@ -64,13 +67,13 @@ tools/build-loader.sh                        # 빌드한 커널을 UEFI 로더�
 
 ```sh
 tools/host-test.sh                           # 호스트 단위 테스트와 DTB 퍼징
-cargo build -p k0-kernel --offline
+cargo build -p k0-kernel --features console --offline
 tools/qemu-boot-test.sh                      # QEMU 부팅과 자가 테스트 확인
 ```
 
 `tools/host-test.sh`는 `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi`의 테스트를 어느 호스트에서나 실행합니다(AArch64 호스트에서 221개, 그 밖에서 161개). `k0-mm` 테스트는 AArch64 인라인 어셈블리를 포함하기 때문에 AArch64 호스트(Apple Silicon 또는 Linux arm64)에서만 실행되며, 스크립트가 4 KiB와 16 KiB 그래뉼 두 구성으로 모두 돌립니다.
 
-`tools/qemu-boot-test.sh`는 디버그 커널을 부팅하고 부팅 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 표식이 하나라도 나오면 실패하고, 루트 태스크가 `root: sched tests pass`를 출력하면 곧바로 QEMU를 종료합니다. 느린 환경에서는 `K0_BOOT_TIMEOUT`(초)을 늘려 주세요.
+`tools/qemu-boot-test.sh`는 디버그 커널을 부팅하고 부팅 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 표식이 하나라도 나오면 실패하고, 루트 태스크가 `root: sched tests pass`를 출력하면 곧바로 QEMU를 종료합니다. 느린 환경에서는 `K0_BOOT_TIMEOUT`(초)을 늘려 주세요. 직렬 포트를 읽기 때문에 콘솔 드라이버가 있는 이미지가 필요합니다. 콘솔 없는 이미지를 시험하려면 [USAGE_KR.md](USAGE_KR.md#콘솔-없는-이미지-시험)의 "콘솔 없는 이미지 시험"에 설명된 `K0_BOOT_MEMLOG`, `K0_BOOT_SERIAL=empty`, `K0_BOOT_CONSOLE_PAGE`를 쓰세요.
 
 기본 QEMU CPU 모델(`cortex-a72`)에는 PAC, PAN, RNDR이 없습니다. 이 경로까지 검증하려면 QEMU의 `max` 모델로 부팅하고 해당 로그 줄을 필수로 지정하세요. 커널 경로 뒤의 인자는 그대로 QEMU에 전달됩니다.
 
@@ -140,6 +143,7 @@ docker run --rm --network none k0-ci tools/boot-matrix.sh
 - **Fail-secure.** 부팅 중 실패는 코어를 파킹하고, 실패한 시스템 콜은 에러를 반환하며 중간 상태를 남기지 않습니다.
 - **커널 밖에서 온 입력은 전부 적대적으로 취급합니다.** DTB와 모든 시스템 콜 인자가 여기에 해당합니다. 검사 산술을 쓰고, 역참조 전에 검증합니다.
 - **W^X를 지킵니다.** 어느 예외 레벨에서든 쓰기 가능하면서 실행 가능한 매핑은 없습니다.
+- **새 입력 또는 출력 경로는 처음부터 Cargo feature 뒤에 둡니다.** feature는 I/O를 더하기만 하며 `default`에 넣지 않습니다. 지원하는 조합마다 부팅 매트릭스(`tools/boot-matrix.sh`)에 행을 두고, 스크립트와 `virt` 별칭과 CI는 feature를 직접 적습니다. feature 없이 빌드한 이미지에는 그 코드가 없어야 하며 장치를 매핑하거나 건드려서도 안 됩니다.
 - 동작을 바꾸면 **테스트를 함께 추가합니다**. 순수 로직은 호스트 단위 테스트로, 시스템 콜 동작은 루트 태스크 자가 테스트로 검증합니다.
 - 이 저장소의 **코드 주석은 한국어**로 씁니다. 기여자는 영어로 써도 되고, 병합할 때 메인테이너가 번역할 수 있습니다.
 
@@ -148,7 +152,7 @@ docker run --rm --network none k0-ci tools/boot-matrix.sh
 - 커밋 하나에는 논리적 변경 하나만 담습니다. 리뷰어가 커밋을 하나씩 따로 읽을 수 있어야 합니다.
 - 제목은 짧고 평이하게 씁니다. 한국어와 영어 모두 괜찮습니다. `feat:`나 `fix:` 같은 접두어는 쓰지 않습니다.
 - 풀 리퀘스트에는 무엇을, 왜 바꿨고, 어떻게 테스트했는지 적고, 관련 이슈가 있으면 연결합니다.
-- CI를 통과해야 합니다. CI는 4 KiB 이미지, 16 KiB 이미지, UEFI 로더를 빌드하고, x86-64와 AArch64에서 호스트 테스트를 돌리고, QEMU로 부팅 매트릭스(`tools/boot-matrix.sh`)를 UEFI 로더를 거치는 행까지 포함해 실행합니다.
+- CI를 통과해야 합니다. CI는 4 KiB 이미지, 16 KiB 이미지, UEFI 로더를 빌드하고, x86-64와 AArch64에서 호스트 테스트를 돌리고, QEMU로 부팅 매트릭스(`tools/boot-matrix.sh`)를 UEFI 로더를 거치는 행과 콘솔 없는 이미지의 행까지 포함해 실행합니다.
 
 ## AI 보조 기여
 

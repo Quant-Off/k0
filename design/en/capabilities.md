@@ -33,7 +33,7 @@ Capabilities are stored as raw words and decoded with validation on every use. A
 | `Endpoint` | by `RETYPE` | a rendezvous point for synchronous IPC |
 | `CNode` | by `RETYPE`, and at boot for the root CNode | an array of slots, used as a capability space and as a destination for copies and moves |
 | `AddrSpace` | by `RETYPE`, and at boot for the root task | an address space: the right to map into it and to run a task in it |
-| `Console` | at boot | the right to write bytes to the debug console |
+| `Console` | at boot | the right to write bytes to the debug output: the boot log, and the console in an image built with a console driver |
 
 ### Rights
 

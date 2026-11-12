@@ -39,7 +39,7 @@ Every user mapping sets `PXN`, so the kernel can never execute user memory. Only
 
 ## Switching `TTBR0`
 
-`install_user_ttbr0` replaces the identity map with the root task's tables and invalidates the TLB. After the handoff the scheduler calls it again whenever the next task's address space root differs from `current_user_root()`. From that point, a physical address used as a pointer is meaningless to the kernel. The console, the GIC, the DTB and all page tables are already reached through the kernel alias, which is why this switch happens late in `kernel_main`.
+`install_user_ttbr0` replaces the identity map with the root task's tables and invalidates the TLB. After the handoff the scheduler calls it again whenever the next task's address space root differs from `current_user_root()`. From that point, a physical address used as a pointer is meaningless to the kernel. The console (in an image built with a driver for it), the GIC, the DTB and all page tables are already reached through the kernel alias, which is why this switch happens late in `kernel_main`.
 
 Right after the switch, `check_user_wx` checks the result with address translation instructions:
 

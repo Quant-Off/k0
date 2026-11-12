@@ -60,6 +60,10 @@ body:
     id: log
     attributes:
       label: Boot log or test output
+      description: >-
+        Say which console features the kernel was built with (the output of
+        `grep -a 'k0: console drivers' <image file>`). An image without console prints nothing
+        to the serial port, so then give the boot log from memory.
       render: text
   - type: checkboxes
     id: not-security

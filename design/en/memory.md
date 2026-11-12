@@ -42,7 +42,7 @@ All kernel mappings follow one rule: nothing is writable and executable at the s
 | `Text` | kernel code | read | yes | none |
 | `Ro` | read-only data, the DTB | read | no | none |
 | `Rw` | data, `.bss`, stacks, frame windows | read and write | no | none |
-| `Device` | console UART, interrupt controller | read and write | no | none |
+| `Device` | console UART (only in an image built with a driver for it), interrupt controller | read and write | no | none |
 
 Every kernel mapping sets `UXN`, and every one except `Text` sets `PXN`. Memory attribute index 0 is normal write-back memory and index 1 is Device-nGnRE.
 

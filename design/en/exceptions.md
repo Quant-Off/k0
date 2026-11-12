@@ -74,7 +74,7 @@ The system call number is in `x8`. Arguments are in `x0` to `x5`, and the result
 
 | Number | Call | Description |
 | --- | --- | --- |
-| 0 | `DEBUG_PUTC` | write one filtered byte to the console, which needs a `Console` capability |
+| 0 | `DEBUG_PUTC` | write one filtered byte to the boot log, and to the console in an image built with a console driver; needs a `Console` capability |
 | 1 | `YIELD` | go to the back of the ready queue |
 | 2 | `EXIT` | terminate the calling task |
 | 3 | `RETYPE` | create a kernel object from untyped memory, into a destination slot the caller names |
@@ -116,7 +116,7 @@ Cleanup comes before the switch because a revoke can destroy the very address sp
 
 The only interrupt the kernel enables is the EL1 virtual timer. Its interrupt number comes from the DTB, and the kernel uses no physical timer. The interrupt controller is GICv2 or GICv3, whichever the DTB says is the timer's interrupt parent; before it writes anything, the driver checks the identification registers against that description and refuses to boot if they differ. See [dtb.md](dtb.md).
 
-An IRQ taken from EL0 is saved the same way as a system call. The handler acknowledges the interrupt. If it was the timer, it re-arms the timer for one second, prints `k0: tick N` and calls `k0_preempt`, which rotates to the next ready task. Spurious interrupt numbers 1020 to 1023 are ignored. Any other interrupt number, or any FIQ, cannot happen by design, so the kernel prints `k0: UNEXPECTED ...` and parks.
+An IRQ taken from EL0 is saved the same way as a system call. The handler acknowledges the interrupt. If it was the timer, it re-arms the timer for one second, prints `k0: tick N` (on the console in an image built with a console driver; only the first 4 tick lines are logged) and calls `k0_preempt`, which rotates to the next ready task. Spurious interrupt numbers 1020 to 1023 are ignored. Any other interrupt number, or any FIQ, cannot happen by design, so the kernel prints `k0: UNEXPECTED ...` and parks.
 
 ## How it is tested
 
@@ -129,4 +129,4 @@ The root task self-tests start tasks that fault in each way that matters and che
 - A faulting task is always killed. Delivering the fault to a handler task over IPC, so that a pager or supervisor can respond, is planned but not implemented.
 - Any exception at EL1 other than an interrupt is fatal. The kernel does not recover from its own faults: the fatal vector path prints a diagnosis and halts the whole system. A kernel invariant violation found by the kernel's own checks stops the system the same way through `k0_arch::fatal`.
 - A task that faults or makes an unknown system call kills only itself, but if it was the last runnable task the whole system parks (`k0: all tasks exited`). If all tasks are blocked, the kernel also parks (GHSA-q99x-2wrv-358p). Isolation does not cover availability.
-- The fault message includes user addresses. That is useful for debugging, but it goes to a console that every task holding a `Console` capability can also write to.
+- The fault message includes user addresses. That is useful for debugging, but it goes to the boot log and, in an image built with a console driver, to the console, and every task holding a `Console` capability can also write to both.

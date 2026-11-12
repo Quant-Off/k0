@@ -46,15 +46,18 @@ The file [ci/Dockerfile](ci/Dockerfile) is a complete, tested recipe for this en
 ## Building
 
 ```sh
-cargo virt                                   # build the generic image and boot it on QEMU virt
-cargo build -p k0-kernel --offline           # build the generic 4 KiB image only
-cargo build -p k0-kernel --offline --no-default-features --features granule-16k --target-dir target/g16   # 16 KiB image
+cargo virt                                   # build the generic image with console and boot it on QEMU virt
+cargo build -p k0-kernel --features console --offline    # build the generic 4 KiB image with console only
+cargo build -p k0-kernel --offline --no-default-features --features granule-16k,console --target-dir target/g16   # 16 KiB image with console
+cargo build -p k0-kernel --offline --target-dir target/quiet   # image without console
 tools/build-loader.sh                        # put the built kernel into the UEFI loader, prints the .efi path
 ```
 
 `tools/build-loader.sh` needs the kernel built first. See "Booting through UEFI" in [USAGE.md](USAGE.md#booting-through-uefi) for how to run it, and [design/en/uefi.md](design/en/uefi.md) for how the loader works.
 
-The kernel never exits. Once the root task finishes its self-tests, it yields forever and the kernel prints `k0: tick N` once a second. Stop QEMU with `Ctrl-A X`.
+Input and output are optional and chosen with Cargo features (`console-pl011`, `console-16550`, `console`). A bare build has no I/O. `cargo virt` is an alias for `cargo run -p k0-kernel --features console`. [USAGE.md](USAGE.md#console-features) explains the features.
+
+The kernel never exits. Once the root task finishes its self-tests, it yields forever and a kernel with console prints `k0: tick N` once a second. Stop QEMU with `Ctrl-A X`.
 
 ## Testing
 
@@ -62,13 +65,13 @@ Run all three before you open a pull request. If you change the boot path, a dri
 
 ```sh
 tools/host-test.sh                           # unit tests and DTB fuzzing on the host
-cargo build -p k0-kernel --offline
+cargo build -p k0-kernel --features console --offline
 tools/qemu-boot-test.sh                      # boot under QEMU and check the self-tests
 ```
 
 `tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap`, `k0-boot` and `k0-efi` on any host (221 tests on an AArch64 host, 161 elsewhere). The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
 
-`tools/qemu-boot-test.sh` boots the debug kernel, checks the boot log line by line in a fixed order, fails on any error marker, and stops QEMU as soon as the root task reports `root: sched tests pass`. Set `K0_BOOT_TIMEOUT` (seconds) on slow machines.
+`tools/qemu-boot-test.sh` boots the debug kernel, checks the boot log line by line in a fixed order, fails on any error marker, and stops QEMU as soon as the root task reports `root: sched tests pass`. Set `K0_BOOT_TIMEOUT` (seconds) on slow machines. It reads the serial port, so it needs an image with a console driver. To test an image without console, use `K0_BOOT_MEMLOG`, `K0_BOOT_SERIAL=empty` and `K0_BOOT_CONSOLE_PAGE`, which are described in "Testing an image without console" in [USAGE.md](USAGE.md#testing-an-image-without-console).
 
 The default QEMU CPU model (`cortex-a72`) has no PAC, PAN or RNDR. To exercise those paths as well, boot on QEMU's `max` model and require the matching log lines. Any arguments after the kernel path are passed to QEMU.
 
@@ -138,6 +141,7 @@ Run this from a clean checkout, because the build context includes everything in
 - **Fail secure.** A failure during boot parks the core. A failing system call returns an error and leaves no partial state behind.
 - **Treat every input from outside the kernel as hostile.** This includes the DTB and every system call argument. Use checked arithmetic and validate before you dereference.
 - **Keep W^X.** No mapping is ever both writable and executable, at either exception level.
+- **Every new input or output path goes behind a Cargo feature from the start.** Features only add I/O and are never put in `default`. Every supported combination gets a row in the boot matrix (`tools/boot-matrix.sh`), and the scripts, the `virt` alias and CI name the features explicitly. An image without the feature must contain none of that code and must not map or touch the device.
 - **Add a test** with every behavior change. Pure logic gets a host unit test. System call behavior gets a root task self-test.
 - **Code comments** in this repository are written in Korean. You may write yours in English. A maintainer may translate them when merging.
 
@@ -146,7 +150,7 @@ Run this from a clean checkout, because the build context includes everything in
 - One logical change per commit. A reviewer should be able to read each commit on its own.
 - Keep the subject line short and plain. Korean or English are both fine. Do not use type prefixes such as `feat:` or `fix:`.
 - In the pull request, say what changed, why, and how you tested it. Link the issue if there is one.
-- CI must pass. It builds the 4 KiB and the 16 KiB image and the UEFI loader, runs the host tests on x86-64 and AArch64, and runs the boot matrix (`tools/boot-matrix.sh`) under QEMU, including the rows that boot through the UEFI loader.
+- CI must pass. It builds the 4 KiB and the 16 KiB image and the UEFI loader, runs the host tests on x86-64 and AArch64, and runs the boot matrix (`tools/boot-matrix.sh`) under QEMU, including the rows that boot through the UEFI loader and the rows for images without console.
 
 ## AI-assisted contributions
 

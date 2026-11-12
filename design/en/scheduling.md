@@ -80,7 +80,7 @@ Three operations use this switch.
 
 ## Preemption
 
-The timer fires once per second. When it fires while EL0 is running, the IRQ path acknowledges it, re-arms the timer, prints `k0: tick N` and calls `k0_preempt`, which calls `rotate`. A task that never yields therefore loses the CPU after at most one second.
+The timer fires once per second. When it fires while EL0 is running, the IRQ path acknowledges it, re-arms the timer, prints `k0: tick N` (on the console in an image built with a console driver; only the first 4 tick lines are logged) and calls `k0_preempt`, which calls `rotate`. A task that never yields therefore loses the CPU after at most one second.
 
 The kernel itself is never preempted. Exception entry masks interrupts, and the kernel keeps them masked while it handles a system call or fault. A timer interrupt that arrives at EL1 is possible only during boot, before the handoff, and it only counts the tick.
 

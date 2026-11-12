@@ -58,9 +58,9 @@ A trap at EL0 is handled as a fault, and the task is terminated (see [exceptions
 
 The EL0 thread pointer registers `TPIDR_EL0` and `TPIDRRO_EL0` are part of each task's saved context. `TCB_CONFIGURE` zeroes them, so a new task starts without the creator's values.
 
-`DEBUG_PUTC` requires the `Console` capability and replaces every byte that is neither printable ASCII nor a newline with `?`. A task cannot send terminal escape sequences to whoever reads the console.
+`DEBUG_PUTC` requires the `Console` capability and replaces every byte that is neither printable ASCII nor a newline with `?`. A task cannot send terminal escape sequences to whoever reads the console (in an image built with a console driver) or the boot log.
 
-The filter does not mark who wrote a line. Kernel output and task output share the console and the boot log, so a task with a `Console` capability can print a newline followed by text that starts with `k0:`. A reader of the console or the log, including `tools/qemu-boot-test.sh`, cannot treat a `k0:` line that appears after `k0: entering root task (el0)` as written by the kernel. Task output is recorded in the boot log only up to a quota, so it cannot push kernel lines out of the log, but it is not marked there either. Give the `Console` capability only to tasks whose output may be mixed with the kernel's.
+The filter does not mark who wrote a line. Kernel output and task output share the boot log, and in an image built with a console driver also the console, so a task with a `Console` capability can print a newline followed by text that starts with `k0:`. A reader of the console or the log, including `tools/qemu-boot-test.sh`, cannot treat a `k0:` line that appears after `k0: entering root task (el0)` as written by the kernel. This includes the `k0: console drivers [...]` line: only its first occurrence in the log, or the image file, identifies a build. Task output is recorded in the boot log only up to a quota, so it cannot push kernel lines out of the log, but it is not marked there either. Give the `Console` capability only to tasks whose output may be mixed with the kernel's.
 
 ## Root task integrity
 

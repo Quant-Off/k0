@@ -23,11 +23,43 @@ Once the toolchain is installed, building needs no internet connection, because 
 cargo virt
 ```
 
-This builds the kernel and starts it in QEMU, and the boot messages appear in your terminal. When the self-tests are done, the kernel keeps running and prints `k0: tick N` once a second. It never exits on its own. To quit QEMU, press `Ctrl-A`, then `X`.
+This builds the kernel with a console driver and starts it in QEMU, and the boot messages appear in your terminal. When the self-tests are done, the kernel keeps running and prints `k0: tick N` once a second. It never exits on its own. To quit QEMU, press `Ctrl-A`, then `X`.
+
+### Console features
+
+Input and output are optional in K0 and are chosen with Cargo features of the kernel crate. A build without any of them has no I/O at all. `cargo virt` is an alias for `cargo run -p k0-kernel --features console`, so it always includes the console.
+
+| Feature | What it adds |
+| --- | --- |
+| `console-pl011` | A transmit driver for the PL011 UART and for the SBSA UART, which uses the same registers |
+| `console-16550` | A transmit driver for the 16550 family of UARTs |
+| `console` | Both drivers |
+
+None of them is in `default`. `default` holds only `granule-4k`. The features only add I/O and are never made default, and the 16 KiB image is built with `--no-default-features`, so every command has to name the features it wants:
+
+```sh
+cargo build -p k0-kernel --features console --offline                                                                      # 4 KiB image with console
+cargo build -p k0-kernel --offline --no-default-features --features granule-16k,console --target-dir target/g16            # 16 KiB image with console
+cargo build -p k0-kernel --offline                                                                                         # image without console
+```
+
+An image built without a console feature contains no UART driver code, never maps the console device page and writes nothing to a UART. Every kernel line and every line from the first program goes only to the boot log in kernel memory (see "Reading the boot log from memory"). The kernel prints `k0: no console (driver not built in)`. An image with one driver treats a console of the other kind the same way. For example, QEMU virt has a PL011, so an image with only `console-16550` stays silent there.
+
+Some things do not change with the features. The kernel still finds and validates the console node of the device tree, so a device tree whose console fails validation is refused even by an image that would never use the console. The `DEBUG_PUTC` system call and the Console capability are still there, and the output of the first program still reaches the boot log. The UEFI loader still prints its own lines through the firmware console. No feature for input or for a terminal exists, because no such code exists.
+
+All feature sets write the same ELF path. To keep a console image, build the other one into its own folder, for example `--target-dir target/quiet`.
+
+To see which I/O an image was built with, without booting it:
+
+```sh
+grep -a 'k0: console drivers' <image file>
+```
+
+The line reads `k0: console drivers [pl011 16550]`, or `[pl011]`, `[16550]` or `[none]`. The kernel prints the same line first when it brings up the platform. It is a label, not proof. A plain `cargo run -p k0-kernel` boots the image without console, and `tools/qemu-virt-runner.sh` then tells you so.
 
 ### Reading the output
 
-Lines that start with `k0:` come from the kernel. Lines that start with `root:` come from the root task, the first program.
+The lines below are what an image with a console driver prints. Lines that start with `k0:` come from the kernel. Lines that start with `root:` come from the root task, the first program.
 
 | Line | Meaning |
 | --- | --- |
@@ -69,25 +101,25 @@ Everything after `--` is still passed to QEMU.
 The kernel uses 4 KiB memory pages by default. The 16 KiB version is a build option and cannot be chosen at run time:
 
 ```sh
-cargo build -p k0-kernel --offline --no-default-features --features granule-16k --target-dir target/g16
+cargo build -p k0-kernel --offline --no-default-features --features granule-16k,console --target-dir target/g16
 K0_QEMU_CPU=max tools/qemu-boot-test.sh target/g16/aarch64-unknown-none-softfloat/debug/k0-kernel
 ```
 
-`--no-default-features` is needed because the 4 KiB feature is on by default, and the build stops if both are on. `--target-dir` keeps the 16 KiB image apart from the normal one. The 16 KiB image refuses to boot on a CPU without 16 KiB page support, for example `cortex-a72`.
+`--no-default-features` is needed because the 4 KiB feature is on by default, and the build stops if both are on. Because of it, the console feature must be named too. `--target-dir` keeps the 16 KiB image apart from the normal one. The 16 KiB image refuses to boot on a CPU without 16 KiB page support, for example `cortex-a72`.
 
 ### Pinned build
 
 To tie an image to one platform, boot the target once, copy the text after `k0: platform ` from its boot log, and build with it in `K0_PIN`:
 
 ```sh
-K0_PIN='<text after "k0: platform ">' cargo build -p k0-kernel --offline --target-dir target/pin
+K0_PIN='<text after "k0: platform ">' cargo build -p k0-kernel --features console --offline --target-dir target/pin
 ```
 
-The pinned image refuses to boot when the discovered platform, the entry level or the RAM range differs. This catches a wrong board or a swapped device tree. It is not a defence against a hostile boot chain, because the comparison uses values taken from the device tree.
+The pinned image refuses to boot when the discovered platform, the entry level or the RAM range differs. A pinned build names the features it wants, like any other build. This catches a wrong board or a swapped device tree. It is not a defence against a hostile boot chain, because the comparison uses values taken from the device tree.
 
 ### Reading the boot log from memory
 
-Every line the kernel prints is also kept in a 16 KiB buffer in memory. If the kernel refuses to boot, or there is no supported console, this buffer is the only record. With QEMU started with `K0_QEMU_MONITOR=<socket path>`, read it with:
+Every line the kernel prints is also kept in a 16 KiB buffer in memory. EL0 output may use 6 KiB of it, and only the first 4 timer tick lines are logged. If the kernel refuses to boot, there is no supported console, or the image was built without a console feature, this buffer is the only record. With QEMU started with `K0_QEMU_MONITOR=<socket path>`, read it with:
 
 ```sh
 tools/boot-log.py <kernel ELF> <load address> <QEMU monitor socket>
@@ -100,7 +132,7 @@ The load address is the physical address where the image was loaded. On QEMU `vi
 UEFI is the standard way for firmware to start a program on many computers. The firmware loads a program file with the ending `.efi` from a disk, runs it, and describes the machine to it. A loader is a small program that does this one job: it prepares the machine and then starts another program. K0 has its own UEFI loader, `crates/k0-efi` and `loader/`. It carries the kernel inside itself, so the one `.efi` file is all the firmware needs. The kernel does not change and boots the same way as without UEFI.
 
 ```sh
-cargo build -p k0-kernel --offline
+cargo build -p k0-kernel --features console --offline
 tools/build-loader.sh
 tools/qemu-virt-runner.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.efi
 ```
@@ -113,7 +145,7 @@ K0_QEMU_MACHINE=virt,gic-version=3 tools/qemu-boot-test.sh target/aarch64-unknow
 
 The loader then prints `k0-loader: device tree built from ACPI tables (MADT, GTDT and SPCR)`. The runner still uses `acpi=off` for a `.efi` file unless you set `K0_QEMU_MACHINE`.
 
-`tools/build-loader.sh` takes an already built kernel and puts it into the loader. Without an argument it uses the debug 4 KiB kernel above. It prints the path of the result, which is the kernel file with `.efi` added. For another kernel, pass its path, for example the 16 KiB build from "16 KiB build". The runner starts QEMU with the EDK2 firmware (a UEFI firmware that QEMU can load) and the machine `virt,gic-version=3,acpi=off`. It looks for the firmware in Homebrew's QEMU and then in `/usr/share/AAVMF/AAVMF_CODE.fd`. To quit QEMU, press `Ctrl-A`, then `X`.
+`tools/build-loader.sh` takes an already built kernel and puts it into the loader. Without an argument it uses the debug 4 KiB kernel above. It prints the path of the result, which is the kernel file with `.efi` added. Before that it prints `build-loader: embedding a kernel with: k0: console drivers [...]`, taken from the kernel image, so that nobody embeds a silent kernel unknowingly. The loader prints its own lines through the firmware console before it exits boot services, whatever the embedded kernel was built with. After that, a kernel without console prints nothing more to the screen. For another kernel, pass its path, for example the 16 KiB build from "16 KiB build". The runner starts QEMU with the EDK2 firmware (a UEFI firmware that QEMU can load) and the machine `virt,gic-version=3,acpi=off`. It looks for the firmware in Homebrew's QEMU and then in `/usr/share/AAVMF/AAVMF_CODE.fd`. To quit QEMU, press `Ctrl-A`, then `X`.
 
 To test it, give the `.efi` file to the boot test:
 
@@ -121,7 +153,7 @@ To test it, give the `.efi` file to the boot test:
 tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.efi
 ```
 
-The boot test starts judging at the loader's first line, because the firmware prints its own messages before it, and some of those contain words like `failed`. Set `K0_BOOT_REUSE=skip` if you change the machine to a memory layout without an untyped region of the right size, as described under "Testing automatically".
+The memory judgement of the boot test (`K0_BOOT_MEMLOG`, see "Testing an image without console") cannot be used with a UEFI loader, because the load address is not fixed. The boot test starts judging at the loader's first line, because the firmware prints its own messages before it, and some of those contain words like `failed`. Set `K0_BOOT_REUSE=skip` if you change the machine to a memory layout without an untyped region of the right size, as described under "Testing automatically".
 
 These variables belong to the UEFI path. The rest of the `K0_QEMU_*` variables work as before.
 
@@ -176,14 +208,38 @@ What was tested: the UEFI rows of `tools/boot-matrix.sh` (see below) run in CI o
 
 ```sh
 tools/host-test.sh                    # unit tests on your computer, plus device tree fuzzing
-cargo build -p k0-kernel --offline    # build the kernel
+cargo build -p k0-kernel --features console --offline    # build the kernel with console
 tools/qemu-boot-test.sh               # boot in QEMU and check every self-test
 tools/boot-matrix.sh                  # boot every supported configuration (builds the 16 KiB, pinned and UEFI loader images too)
 ```
 
 - `tools/host-test.sh` runs the 221 host tests (161 on an x86-64 computer): small tests of single parts of the kernel (unit tests) as ordinary programs on your computer. It also does fuzzing: it feeds the device tree parser and the UEFI loader's planning code random, broken input to find crashes. The 221 are 12 (`k0-abi`), 41 (`k0-cap`), 76 (`k0-boot`), 32 (`k0-efi`) and 30 for each of the two page sizes (`k0-mm`). The memory management tests use ARM instructions, so they run only on an ARM computer (an Apple Silicon Mac or Linux arm64), and the x86-64 count leaves out those 60.
-- `tools/qemu-boot-test.sh` boots the kernel, reads the log line by line in a fixed order, fails on any error line, checks the exact number of intentional fault lines, and stops QEMU when it is done. It prints `boot-test: pass` on success and saves the full log in `target/qemu-boot-test.log`. It takes the machine from the `K0_QEMU_*` variables above and accepts `K0_BOOT_REUSE=skip` for memory layouts that have no untyped region of the right size, where the root task skips its reuse test.
-- `tools/boot-matrix.sh` boots the kernel in each configuration that K0 calls supported and checks the result: QEMU virt with GICv3 and GICv2 at EL1 and EL2, three CPU models, 4 cores, the 16 KiB image, other load addresses, `xlnx-versal-virt`, a pinned image, and a static check that the image does not touch the physical timer. The `uefi-*` rows boot the kernel through the UEFI loader on EDK2: GICv3 and GICv2 at EL1 and EL2, the `max` CPU, 4 cores, the 16 KiB image, a random number source from the firmware and the FAT drive path, and the `uefi-acpi-*` rows (`uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k`, `uefi-acpi-rng`), which boot QEMU's default machine with ACPI on and no device tree. A static check (`tools/pe-check.py`) covers the loader file's form and its cache and MMU instruction order, which QEMU cannot test. For configurations that must be refused, it reads the reason from the boot log in memory, or for the loader from the serial log: a 16 KiB kernel on `cortex-a72`, and a kernel with one changed byte. You can name single rows as arguments. CI runs it. On an Apple Silicon Mac, `K0_MATRIX_HVF=1 tools/boot-matrix.sh` adds rows that run the kernel, also through the UEFI loader, on the real CPU cores through QEMU's HVF accelerator.
+- `tools/qemu-boot-test.sh` boots the kernel, reads the log line by line in a fixed order, fails on any error line, checks the exact number of intentional fault lines, and stops QEMU when it is done. It prints `boot-test: pass` on success and saves the full log in `target/qemu-boot-test.log`. It takes the machine from the `K0_QEMU_*` variables above and accepts `K0_BOOT_REUSE=skip` for memory layouts that have no untyped region of the right size, where the root task skips its reuse test. It reads the kernel lines from the serial port, so it needs an image with a console driver. For an image without one, see "Testing an image without console" below. If the serial log has no kernel line, it prints a hint about a kernel built without a console feature.
+- `tools/boot-matrix.sh` boots the kernel in each configuration that K0 calls supported and checks the result: QEMU virt with GICv3 and GICv2 at EL1 and EL2, three CPU models, 4 cores, the 16 KiB image, other load addresses, `xlnx-versal-virt`, a pinned image, and a static check that the image does not touch the physical timer. The console rows check the I/O features: `console-symbols` (a static check that `llvm-nm` on the debug images shows the driver symbols exactly as the features say, and that each image file carries exactly its own `k0: console drivers` line), `quiet` and `quiet-16k` (an image without console, judged from memory, with an empty serial log and an unmapped console page), `console-pl011-only`, `console-16550-only` (QEMU virt has a PL011, so this image has no driver for it and stays silent), `pl011-identity` (the device tree is patched so that the console node points at the RTC, and the kernel must print `k0: console is not a pl011, ignored`, write nothing and not keep that page mapped) and `serial-check` (the judgement itself: a console image judged as quiet must fail on its serial output). The `uefi-*` rows boot the kernel through the UEFI loader on EDK2: GICv3 and GICv2 at EL1 and EL2, the `max` CPU, 4 cores, the 16 KiB image, a random number source from the firmware and the FAT drive path, and the `uefi-acpi-*` rows (`uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k`, `uefi-acpi-rng`), which boot QEMU's default machine with ACPI on and no device tree. A static check (`tools/pe-check.py`) covers the loader file's form and its cache and MMU instruction order, which QEMU cannot test. For configurations that must be refused, it reads the reason from the boot log in memory, or for the loader from the serial log: a 16 KiB kernel on `cortex-a72`, and a kernel with one changed byte. You can name single rows as arguments. CI runs it. On an Apple Silicon Mac, `K0_MATRIX_HVF=1 tools/boot-matrix.sh` adds rows that run the kernel, also through the UEFI loader, on the real CPU cores through QEMU's HVF accelerator, among them `hvf-quiet` for the image without console.
+
+### Testing an image without console
+
+An image without console writes nothing to the serial port, so the boot test reads the kernel lines from the boot log in guest memory through the QEMU monitor. Three settings of `tools/qemu-boot-test.sh` do this:
+
+| Setting | Meaning |
+| --- | --- |
+| `K0_BOOT_MEMLOG=<address>` | The physical address where the image was loaded, `0x40080000` on QEMU virt. The kernel lines are read from the boot log in guest memory instead of the serial port. Not usable with a UEFI loader |
+| `K0_BOOT_SERIAL=empty` | Needs `K0_BOOT_MEMLOG`. Also requires that not one byte came out of the serial port |
+| `K0_BOOT_CONSOLE_PAGE=mapped` or `unmapped` | Compares the console address in the `k0: platform` line with the list in `k0: device pages`. That line is printed just before the kernel enters user space and lists every device page the kernel keeps mapped. After it the kernel maps no further device |
+
+```sh
+cargo build -p k0-kernel --offline --target-dir target/quiet
+K0_BOOT_MEMLOG=0x40080000 K0_BOOT_SERIAL=empty K0_BOOT_CONSOLE_PAGE=unmapped \
+  tools/qemu-boot-test.sh target/quiet/aarch64-unknown-none-softfloat/debug/k0-kernel
+```
+
+What this shows and what it does not:
+
+- An empty serial log shows only that no byte reached the serial port of QEMU virt, a PL011. It says nothing about register reads. Those are covered by the symbol check and by the device page list, which is the kernel's own report.
+- The symbol check runs on debug images. Release (LTO) images of the feature sets without console are not built or booted by the matrix, and no image without console is booted through UEFI.
+- The 16550 driver has never been executed by any test, because QEMU virt has no such UART. Its code was checked by review only. The SBSA UART uses the PL011 driver without an identity check, and the identity check of the PL011 itself runs only for a device tree node that says `arm,pl011` and declares the full 4 KiB frame. Nothing has run on real hardware.
+- An image without console reduces the output path, not what the kernel holds in memory. The boot log is plain kernel memory, and anyone who can read RAM or attach a debugger sees it.
+- The line `k0: console drivers` can be imitated later by output from the first program, which can print lines that look like kernel lines while it holds the Console capability. Only its first occurrence, or the image file, identifies a build.
 
 The default QEMU CPU model has no PAC, PAN or RNDR. To test those as well, boot on the `max` model and require the matching log lines:
 
@@ -199,10 +255,14 @@ GitHub also runs these tests automatically on every pull request and every push 
 | Problem | What to do |
 | --- | --- |
 | `qemu-system-aarch64` is not found | Install QEMU as described under "What you need" |
-| `boot-test: kernel ELF not found` | Build first with `cargo build -p k0-kernel --offline` |
+| `boot-test: kernel ELF not found` | Build first with `cargo build -p k0-kernel --features console --offline` |
+| The terminal stays blank after `cargo run -p k0-kernel` without features | The image has no console driver and prints nothing. Build with `--features console`, or use `cargo virt` |
+| `runner: this kernel has no console driver and prints nothing here (build with --features console to see output)` | The image was built without a console feature, or the runner found `k0: console drivers [none]` in it. Build with `--features console` to see output, or read the boot log from memory |
+| `boot-test: the serial log has no kernel line` | The same cause: a kernel built without a console feature writes nothing to the serial port. Build with `--features console`, or judge the log in guest memory with `K0_BOOT_MEMLOG=<load address>` |
 | The boot test times out on a slow computer | Give it more time, for example `K0_BOOT_TIMEOUT=300 tools/qemu-boot-test.sh` |
 | The 16 KiB image does not boot on `cortex-a72` | Expected: that CPU has no 16 KiB page support. Use `K0_QEMU_CPU=max` |
-| A boot stops early and nothing is printed | There may be no supported console. Read the boot log from memory with `tools/boot-log.py` |
+| A boot stops early and nothing is printed | There may be no supported console, or the image has no driver for it (an image with only one driver is silent on a console of the other kind). Read the boot log from memory with `tools/boot-log.py` |
 | `runner: no UEFI firmware found, set K0_QEMU_FIRMWARE` | Install the firmware as described under "What you need", or set `K0_QEMU_FIRMWARE` to the path of an EDK2 `aarch64` code image |
-| `build-loader: kernel ELF not found` | Build the kernel first with `cargo build -p k0-kernel --offline` |
+| `build-loader: kernel ELF not found` | Build the kernel first with `cargo build -p k0-kernel --features console --offline` |
+| `build-loader: embedding a kernel with: k0: console drivers [none]` | The loader will carry a kernel without console. It still prints its own lines, and the kernel prints nothing after them. Build the kernel with `--features console` and run `tools/build-loader.sh` again if you want output |
 | The screen shows only firmware messages, or the firmware menu | The firmware could not start the loader, or the loader refused and the firmware went on. Look for `k0-loader:` lines. With none, check that the `.efi` file exists and, with `K0_QEMU_ESP`, that the drive is found |

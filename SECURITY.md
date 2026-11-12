@@ -54,9 +54,9 @@ What is still NOT provided on `main`:
 - One core only.
 - New executable code cannot be loaded after boot, so a confined task runs code from the root task image.
 - Only the evidence tiers in [INTRODUCTION.md](INTRODUCTION.md) count as supported. Real boards, KVM and other hypervisors, the 16550 console driver, and processors with `HCR_EL2.E2H` fixed to 1 have never been booted.
-- The device tree is not trusted, but it now supplies device addresses. A wrong or hostile device tree can point the console at another device. The kernel limits this: it checks the platform descriptor against the memory map, checks the identification registers of the GIC and the PL011 (no such register exists for a 16550, so that driver has no such check), maps a device page only after validation, bounds every console wait, and offers a pinned build (`K0_PIN`) that refuses a different platform. The pinned build compares values that come from the device tree, so it does not stop a hostile boot chain.
+- The device tree is not trusted, but it now supplies device addresses. A wrong or hostile device tree can point the console at another device. The kernel limits this: it checks the platform descriptor against the memory map, checks the identification registers of the GIC and the PL011 (the PL011 through a temporary probe mapping, so a device that fails the check is not left mapped; no such register exists for a 16550 or an SBSA UART, so those have no such check), maps a device page only after validation, bounds every console wait, and offers a pinned build (`K0_PIN`) that refuses a different platform. The pinned build compares values that come from the device tree, so it does not stop a hostile boot chain.
 - The address of the device tree cannot be checked before the first read. The boot loader passes it in `x0`, and the kernel has no memory map until it has read that blob. The kernel refuses a null or misaligned address, an address at or above 2^47 and a range that overlaps the kernel image. It then maps the address as read-only normal memory and reads eight bytes. It reads further, up to 2 MiB, only if those bytes look like a device tree header. A boot loader that passes the address of a device therefore makes the kernel read device registers as if they were memory, and reading some registers has side effects. The mapping is cacheable, so the processor may fetch more of that page than the eight bytes the kernel asks for. The later check that the device tree lies inside declared memory uses the memory map from the same blob. The kernel never writes through this mapping.
-- Kernel output and task output share one console and one boot log, and a line does not say who wrote it. A task that holds a `Console` capability can print a line that starts with `k0:`. The kernel replaces control bytes and limits how much of the boot log task output may use, but nothing that reads the console or the log, including `tools/qemu-boot-test.sh`, can treat a `k0:` line printed after `k0: entering root task (el0)` as written by the kernel.
+- Kernel output and task output share one boot log, and in an image built with a console driver also one console. A line does not say who wrote it. A task that holds a `Console` capability can print a line that starts with `k0:`. The kernel replaces control bytes and limits how much of the boot log task output may use, but nothing that reads the console or the log, including `tools/qemu-boot-test.sh`, can treat a `k0:` line printed after `k0: entering root task (el0)` as written by the kernel. This includes the `k0: console drivers [...]` line (see "Optional console output").
 - Isolation covers confidentiality and integrity, not availability. A trap to EL2 after the kernel has stepped down to EL1 parks the whole machine by design.
 - Entry at EL2 relies on the firmware contract that Linux also uses: an EL3 firmware must enable the fine-grained-trap and HCRX controls when those features exist.
 - The root task is still trusted and holds the initial `Untyped` capabilities, and `write_bootinfo` still exposes their physical addresses to it.
@@ -91,6 +91,33 @@ Limits and residual risks of the loader:
 15. GICv2 frame sizes are not in the ACPI tables. The loader assumes 4 KiB and 8 KiB, as Linux does.
 16. The check that a device named by a table does not lie in memory exists only in the loader. The kernel receives no firmware-owned ranges, so it cannot repeat it.
 17. A table kept in memory of the reserved type is not read.
+
+## Optional console output
+
+The kernel has no input or output unless the image was built with it. The Cargo features of `k0-kernel` are `console-pl011` (a transmit driver for the PL011 and for the SBSA UART, which uses the same registers), `console-16550` (a transmit driver for the 16550 family) and `console` (both). They only add I/O and are never in `default`, so every build command names them. For example, `cargo build -p k0-kernel --features console --offline` builds the 4 KiB image with console, and `cargo build -p k0-kernel --offline` builds one without. No feature for input or for a terminal exists, because no such code exists. A new input or output path must go behind a feature from the start.
+
+What an image without a console feature removes:
+
+- The UART driver code is not in the image.
+- The kernel never maps the console device page and writes nothing to a UART.
+- Every kernel line and every line from user tasks goes only to the boot log in kernel memory. The kernel prints `k0: no console (driver not built in)`. An image with one driver treats a console of the other kind the same way.
+
+What stays in every image:
+
+- The kernel still finds and checks the console node of the device tree, with the same judgement, the same `K0_PIN` line and the same self-check in the UEFI loader. A device tree whose console fails the checks is refused even by an image that would never use the console.
+- The `DEBUG_PUTC` system call and the `Console` capability stay, and what a task prints still reaches the boot log.
+- The boot log stays.
+- The UEFI loader prints its own lines through the firmware console before it exits boot services, whatever its embedded kernel was built with.
+
+Two lines let a reader check an image. `k0: console drivers [pl011 16550]` (or `[pl011]`, `[16550]`, `[none]`) is the first line of platform bring-up, and it is one string inside the image, so `grep -a 'k0: console drivers' <image file>` tells which I/O an image was built with without booting it. `k0: device pages [...] of 0x1000 bytes` is printed just before the kernel enters user space and lists every device page the kernel keeps mapped. After it the kernel maps no further device. The boot matrix checks both (see [design/en/boot.md](design/en/boot.md)).
+
+Limits:
+
+1. The empty serial log of the `quiet` rows shows only that no byte reached the serial port of QEMU virt, which is a PL011. It says nothing about register reads. Those are covered by the symbol check and by the device page list, which is the kernel's own report.
+2. The symbol check runs on debug images. Release (LTO) images of the feature sets without console are not built or booted by the matrix, and no image without console is booted through UEFI.
+3. The 16550 driver has never been executed by any test, because QEMU virt has no such UART. Its code was checked by review only. The SBSA UART uses the PL011 driver without an identity check. Nothing has run on real hardware.
+4. An image without console reduces the output path, not what the kernel holds in memory. The boot log is plain kernel memory, and anyone who can read RAM or attach a debugger sees it.
+5. A task that holds a `Console` capability can print lines that look like kernel lines, and that includes `k0: console drivers [...]`. Only the first occurrence of that line in the log, or the image file, identifies a build. The line is a label, not proof.
 
 ## Known advisories
 
