@@ -108,7 +108,8 @@ In the following table, each row gives a log line and the step it stands for, in
 | `k0: dtb rejected: ...` (only on failure) | `map_dtb` maps the DTB read-only through the alias. It checks the pointer (not null, 8-byte aligned) and `dtb_span`, which reads only the magic and total size. |
 | `k0: memory ...` | The DTB is parsed through the alias. [dtb.md](dtb.md) covers the parser. |
 | `k0: console drivers [...]` | The first line of platform bring-up, printed even when the platform is later refused. It names the console drivers built into this image (see "Optional console output"). |
-| `k0: platform ...` | `bring_up_platform` finds the console, the interrupt controller and the timer interrupt in the DTB and builds one immutable platform descriptor. It checks the descriptor against the memory map before it maps any device page: RAM must lie below 2^47, the kernel image and the DTB must lie inside declared memory, and no device range, widened to whole granules, may overlap memory or a reserved range or reach beyond the CPU's physical address width (`k0_mm::pa_bits`). In pinned mode it then compares the line with the expected one. Only after that does it attach the console. An image with a driver for this kind of console maps it and attaches it, which replays the buffered log. An image without one maps nothing and prints `k0: no console (driver not built in)`. If the platform is refused, the kernel attaches the console first when the console alone passes the checks (and the image is not pinned, and a driver exists), so that the reason is visible. `k0: no console (...)` names the reason when there is none. See [dtb.md](dtb.md). |
+| `k0: platform ...` | `bring_up_platform` finds the console, its interrupt (if the console node has a usable one), the interrupt controller and the timer interrupt in the DTB and builds one immutable platform descriptor. It checks the descriptor against the memory map before it maps any device page: RAM must lie below 2^47, the kernel image and the DTB must lie inside declared memory, and no device range, widened to whole granules, may overlap memory or a reserved range or reach beyond the CPU's physical address width (`k0_mm::pa_bits`). The line carries the console interrupt number, for example `k0: platform con=pl011@0x9000000,irq33 ...`. In pinned mode it then compares the line with the expected one, so a pin string made before this field existed no longer matches and must be made again. Only after that does it attach the console. An image with a driver for this kind of console maps it and attaches it, which replays the buffered log. An image without one maps nothing and prints `k0: no console (driver not built in)`. If the platform is refused, the kernel attaches the console first when the console alone passes the checks (and the image is not pinned, and a driver exists), so that the reason is visible. `k0: no console (...)` names the reason when there is none. See [dtb.md](dtb.md). |
+| `k0: console input on (pl011 irq 33)` or `k0: console input off (<reason>)` | Printed only by an image built with `console-input`, right after the platform is accepted. See "Optional console input". |
 | `k0: root task integrity ok (...)` | The embedded root task image is hashed again and compared with the hash fixed at build time. |
 | `k0: entropy ...`, `k0: pac=... bti=... pan=...` | PAC keys are derived and loaded, and the key words are wiped from the boot stack. The 32-byte seed for the root task is derived here too, independent of the PAC keys, and kept for the handoff. PAN is enabled and EL0 access to counters, debug and PMU is turned off. See [hardening.md](hardening.md). |
 | `k0: irq on (timer 1s)` | `setup_irq` maps only the interrupt controller pages it needs. For GICv3 it looks at the redistributor frames one at a time to find the boot CPU's frame, then maps that frame and its SGI frame. The driver checks the GIC identification registers against what the DTB claimed. The EL1 virtual timer is programmed with the interrupt number from the platform descriptor. IRQ and SError are unmasked. |
@@ -116,7 +117,7 @@ In the following table, each row gives a log line and the step it stands for, in
 | `k0: root task loaded (entry ...)` | The root task is copied into frames from the window, its root TCB is made in the window, and its address space is built. The kernel does not print the physical address of the user root table. The address space is then entered in the address space registry. See [user-address-space.md](user-address-space.md). |
 | `k0: memory <base> + <size> not handed out (<reason>)` (only when it happens), `k0: kernel reserve <T> tables + <E> address space entries = <B> bytes in <N> ranges` | `reserve_kernel_share` carves the kernel share out of each free physical range before any untyped capability exists (see "Carving the kernel share out of untyped memory"). A range that cannot hold its share is not handed out, and the kernel prints the first kind of line with the reason. The second line is printed once, for example `k0: kernel reserve 262 tables + 130130 address space entries = 0x206000 bytes in 3 ranges` on QEMU virt with 512 MiB and the 4 KiB granule. |
 | `k0: untyped ...`, `k0: root cnode ready (N caps, N untyped, N image frames, N slots)` | The root CNode (an object in the window with `ROOT_CNODE_SLOTS` = 512 slots, as the log shows) is filled: slot 1 the root TCB, slot 2 the root address space, slot 3 the console, slot 4 the root CNode itself, then every free physical range that was handed out as an untyped capability, then one Frame capability per mapped granule of the root task image (text with R and X, read-only data with R, data with R and W). Finally the root task is bound to its CNode and address space, exactly as any other task is: copies of those two capabilities go into its TCB. See [capabilities.md](capabilities.md). |
-| `k0: bootinfo page ready` | The capability list is written into the read-only bootinfo page (layout version 3): a header and one descriptor per slot, with the VA, size and rights of every image Frame. The page does not hold the boot seed. |
+| `k0: bootinfo page ready` | The capability list is written into the read-only bootinfo page (layout version 4): a header and one descriptor per slot, with the VA, size and rights of every image Frame. The page does not hold the boot seed. |
 | `k0: user w^x checks pass` | `TTBR0` now points at the user tables, the identity map is gone, and the user mappings are checked from both EL0 and EL1. |
 | `k0: dtb seeds wiped <n>B` | The DTB is not needed any more, so the kernel zeroes the `rng-seed` and `kaslr-seed` bytes in it (through the read-only alias, switched to read-write for the write), reads them back, and wipes its own copy. The line is `40B` on QEMU virt. If the read-back is not zero, the line is `k0: WARNING dtb seeds not wiped`. See [hardening.md](hardening.md). |
 | `k0: device pages [...] of 0x1000 bytes` | Every device page the kernel keeps mapped. After this line the kernel maps no further device. |
@@ -159,12 +160,9 @@ Every line the kernel prints also goes into a **16 KiB buffer** in kernel memory
 
 ## Optional console output
 
-Input and output are optional in K0. You can select them with Cargo features of the kernel crate (`k0-kernel`).
+Input and output are optional in K0. You can select them with Cargo features of the kernel crate (`k0-kernel`). Console output is selected with the console features below. Console input and the operator terminal have their own features, described in "Optional console input".
 
-> [!NOTE]
-> A feature for input or for a terminal does not exist yet. Console output is the only thing you can select today.
-
-Console output exists only in an image built with a console feature (opt-in). No image has input. The following figure shows where the output goes, depending on the features in the build.
+Console output exists only in an image built with a console feature (opt-in). An image built without `console-input` has no input code at all. The following figure shows where the output goes, depending on the features in the build.
 
 <p align="center">
   <img src="../../assets/console-features.svg" alt="An image built without a console feature writes only to the boot log in memory, and an image built with a console feature also writes to the matching UART">
@@ -225,10 +223,29 @@ All feature sets write the same ELF path, so a separate `--target-dir`, for exam
 
 **Rule for contributors**: you must follow these rules.
 
-- Every new input or output path goes behind a Cargo feature from the start (today the only one is console output).
+- Every new input or output path goes behind a Cargo feature from the start (today: console output, `console-input` and `terminal`).
 - Features only add and are never in `default`.
 - Every supported combination gets a row in the boot matrix.
 - The scripts, the `virt` alias and CI name the features explicitly.
+
+### Optional console input
+
+Console input is a second opt-in layer. It is off by default, and features only add. The following table lists the features of `k0-kernel`.
+
+| Feature | Adds |
+| --- | --- |
+| `console-input` | the kernel's receive path for the console UART and the system call `CONSOLE_READ` (see [exceptions.md](exceptions.md)). It needs a console driver feature to do anything. Receive exists for the PL011 and the SBSA UART only, so a 16550 console has output and no input. |
+| `terminal` | the operator terminal task in the root task image. It turns `console-input` on. |
+
+> [!NOTE]
+> An image built without `console-input` contains no receive code, no `CONSOLE_READ` and none of the log lines below. The static matrix row `input-symbols` checks this.
+
+- **Bring-up**: the console interrupt number comes from the device tree (see [dtb.md](dtb.md)) or, under UEFI, from the ACPI SPCR table, and it is part of the `k0: platform` line. The receive interrupt stays off until a task first reads console input with the read right. A console node without a usable interrupt is not a boot refusal, input is just off.
+- **Log lines**: `k0: console input on (pl011 irq 33)` or `k0: console input off (<reason>)`. The reasons are `no console`, `no receive driver for this uart`, `no usable interrupt in the device tree`, `register frame too small`, `console not attached`, `interrupt number out of range` and `interrupt not available`. A wrong interrupt number costs only the input path.
+- **First read**: it discards what the device holds and stops the periodic `k0: tick N` lines after one line `k0: tick lines off (console input in use)`. Ticks, preemption and timeouts keep working.
+- **Evidence**: the rows `input-only`, `input-gicv2`, `input-16550`, `input-bad-irq`, `input-symbols` (static), `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi` and `hvf-term` are in `tools/boot-matrix.sh`. `tools/qemu-boot-test.sh` reads `K0_BOOT_INPUT=on|off`, `K0_BOOT_SERVICE=vault|plain|none` and, for judging only, `K0_BOOT_JUDGE`. `tools/term-test.py <image>` runs a scripted terminal session over QEMU's serial port.
+
+The SBSA UART path, FIFO overruns and the receive timeout interrupt are not exercised by QEMU. They are covered only by host tests with a fake UART (`crates/k0-conin`).
 
 ## Trust
 
@@ -308,5 +325,5 @@ The self-checks inside `kernel_main` are themselves tests: if a mapping is wrong
 - Only one core runs, and the boot loader must enter exactly one CPU. K0 has no code to start or park other CPUs.
 - The kernel always sits at the same virtual address. There is no address randomization.
 - A release build prints nothing on panic. That is intentional, but it also means a release build gives no diagnosis on panic.
-- No image has input. Console output exists only in an image built with a console feature, and the limits of that evidence are listed in "Optional console output".
+- Console output exists only in an image built with a console feature, and console input only in an image built with `console-input`. The limits of that evidence are listed in "Optional console output" and "Optional console input".
 - Under UEFI, the cache flush and the MMU switch-off in the loader cannot be tested by QEMU (it has no caches), and ACPI-only firmware boots only through the three static tables (only QEMU virt has been booted). [uefi.md](uefi.md) lists all the limits of the loader.

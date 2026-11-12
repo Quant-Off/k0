@@ -33,9 +33,9 @@ This builds the kernel with a console driver and starts it in QEMU. The boot mes
 Input and output are optional in K0. You can select them with Cargo features of the kernel crate.
 
 > [!NOTE]
-> A feature for input or for a terminal does not exist yet. Console output is the only thing you can select today.
+> Console input and the operator terminal are features too, but they are off by default. They are described in "Operator terminal" below.
 
-Console output exists only in an image built with a console feature. No image has input. `cargo virt` is an alias for `cargo run -p k0-kernel --features console`, so it always includes the console. The following picture shows where the output goes, depending on the features in the build.
+Console output exists only in an image built with a console feature. An image has input only if it was built with `console-input` or `terminal`. `cargo virt` is an alias for `cargo run -p k0-kernel --features console`, so it always includes the console. The following picture shows where the output goes, depending on the features in the build.
 
 <p align="center">
   <img src="assets/console-features.svg" alt="Output path by console feature. An image built without a feature writes only to the boot log in memory, and an image built with a console feature also writes to the matching UART.">
@@ -189,12 +189,112 @@ In the boot log you should see these lines, in addition to the lines in "Reading
 
 - `k0: dtb seeds wiped 40B` and `root: boot seed from rng-seed bytes 0x0000000000000020 without rndr` (with `K0_QEMU_CPU=max` the second line ends with `and rndr`). QEMU virt provides a 32-byte `rng-seed`, which is `0x20`.
 - Two more `k0: task fault` lines, 8 in total. They come from two clients that the self-test lets break the memory rules on purpose.
-- `root: oracle tests pass` before `root: sched tests pass`. This line means that all the checks of the oracle passed: the vault made its key from the boot seed, a signer got a signature that verifies, a changed message or signature does not verify, the admin and a reader were refused when they asked to sign, and signing was refused after the key was erased.
+- `root: oracle tests pass` before `root: sched tests pass`. This line means that all the checks of the oracle passed: the vault made its key from the public RFC 8032 test seed, a signer got a signature that verifies, a changed message or signature does not verify, the admin and a reader were refused when they asked to sign, and signing was refused after the key was erased.
 
 The vault makes a key only if the boot seed holds at least 32 `rng-seed` bytes or 256 bits from RNDR. If it does not, for example on a machine whose device tree has no `rng-seed` and whose CPU has no RNDR, the vault answers `NO_ENTROPY` and makes no key. The root task then prints `root: oracle made no key (boot seed has no entropy)` and stops the oracle test there. `root: oracle tests pass` does not appear, so a boot test that requires it fails, which is the intended result.
 
 > [!NOTE]
-> The implementation of Ed25519 is the vendored crate `ed25519-dalek` 2.2.0 and has no validation of any kind, and the key does not come from an approved random bit generator. There is one key, no persistence, no key import or export and no input from an operator. The availability of the vault is not protected, because all clients share one endpoint and must use timeouts. The root task is trusted and could read the vault. The oracle was only run in QEMU (TCG and HVF). The details and the limits are in [SECURITY.md](SECURITY.md).
+> The implementation of Ed25519 is the vendored crate `ed25519-dalek` 2.2.0 and has no validation of any kind, and the key does not come from an approved random bit generator. There is one key, no persistence, no key import or export and no authentication of the operator. The availability of the vault is not protected, because all clients share one endpoint and must use timeouts. The root task is trusted and could read the vault. The oracle was only run in QEMU (TCG and HVF). The details and the limits are in [SECURITY.md](SECURITY.md).
+
+### Operator terminal
+
+The operator terminal is a small task that lets you type commands on the serial line and talk to the vault. It is optional and off by default. Two features of `k0-kernel` select it, and features only add.
+
+| Feature | Adds |
+| --- | --- |
+| `console-input` | The kernel's receive path for the console UART and the system call `CONSOLE_READ`. It needs a console driver feature to do anything. Receive exists for PL011 and SBSA UART only, so a 16550 console has output and no input |
+| `terminal` | The terminal task in the root task image, started as a service after the self-tests. It turns `console-input` on. With `vault` the terminal is the vault's operator. With `vault-ed25519` it can make an Ed25519 key |
+
+An image without `console-input` has no receive code, no `CONSOLE_READ` and none of the new log lines. An image without `terminal` has no terminal code. You can build and run it as follows:
+
+```sh
+$ cargo build -p k0-kernel --features console,terminal,vault-ed25519
+$ cargo run -p k0-kernel --features console,terminal,vault-ed25519
+```
+
+`cargo run` starts QEMU with the serial port on your terminal. QEMU's own escape key is `Ctrl-A` there (`Ctrl-A`, then `X` quits QEMU), so `Ctrl-A` never reaches K0.
+
+After the self-tests, the root task starts the vault, hands it the boot seed, runs two hostile tasks wired like the terminal (they must be refused and end in a fault), drops its admin capability and starts the terminal. The boot log shows `root: vault seeded`, `root: terminal console filter [...]`, `root: terminal wiring holds`, two `k0: task fault` lines, `root: service started` and then the banner. On a machine without an input path it shows `root: no console input, terminal not started`. After the first read, the periodic `k0: tick N` lines stop, and one line `k0: tick lines off (console input in use)` marks that. In the following session, every command ends with exactly one line, `ok` or `err <reason>`:
+
+```
+K0 operator console, type 'help'
+k0> vault status
+state=seeded
+alg=none
+selftest=passed
+seed=rng-seed
+validated=no
+ok
+k0> vault keygen ed25519
+state=ready
+alg=ed25519
+ok
+k0> vault pubkey
+pubkey=<32 hex characters>
+       <32 hex characters>
+ok
+k0> vault zeroize
+hint=type 'vault zeroize confirm' to erase the key
+err confirm-required
+k0>
+```
+
+Values are printed as `name=value`. The screen prompt is `k0> `. In the following table, the first column is what you type:
+
+| Command | Argument | What it does |
+| --- | --- | --- |
+| `help` | | Lists the commands |
+| `vault status` | | Prints the vault state (see below) |
+| `vault pubkey` | | Prints the public key |
+| `vault keygen <alg>` | `ed25519` | Makes the key from the held seed with the chosen algorithm and wipes the seed |
+| `vault zeroize confirm` | | Erases the key. `vault zeroize` alone prints `hint=type 'vault zeroize confirm' to erase the key` and `err confirm-required` |
+
+`vault status` prints `state=fresh|seeded|ready|zeroized|failed`, `alg=none|ed25519`, `selftest=passed|failed`, `seed=none|rng-seed|rndr|rng-seed+rndr` and `validated=no`. `seed=rng-seed` means that the bytes were present, not that they were unpredictable. `validated=no` is always printed, because the implementation has no validation of any kind. `vault pubkey` prints `pubkey=` and 32 hex characters, then a second line indented by 7 spaces with the other 32. A vault makes one key per boot: a second `vault keygen` gives `err key-exists`, and after `vault zeroize confirm` you have to reboot. Without the `vault` feature, `help` lists only `help` and `vault ...` answers `err no-vault`.
+
+In the following table, the keys work on the line you are typing:
+
+| Key | Effect |
+| --- | --- |
+| Enter (CR or LF) | Runs the line. A line has at most 64 characters, printable ASCII only |
+| Backspace or DEL | Erases one character |
+| `Ctrl-C` or `Ctrl-U` | Cancels the line (shown as `^C` or `^U`) |
+| ESC sequences (arrow keys) | Ignored |
+
+Bytes that reached the UART before the prompt are dropped. If the input was lost (a FIFO overrun, a break, a framing or parity error), everything up to the next line end is discarded and the command answers `err input-lost`. A keygen or zeroize that was delivered but not answered in time adds `hint=run 'vault status' to see whether it took effect`. In the following table, the error names are what comes after `err `:
+
+| Error | Meaning |
+| --- | --- |
+| `unknown-command` | The command is not known |
+| `bad-argument` | An argument is wrong or missing |
+| `line-too-long` | The line is longer than 64 characters |
+| `input-lost` | Input was lost before the line end |
+| `confirm-required` | `vault zeroize` without `confirm` |
+| `denied` | The operation is not allowed for the operator |
+| `no-vault` | The image has no vault |
+| `no-key` | The vault has no key |
+| `key-exists` | The vault already made its key this boot |
+| `no-entropy` | The boot seed has no entropy |
+| `unsupported-algorithm` | The algorithm is not in this image |
+| `zeroized` | The key was erased; a reboot is needed |
+| `vault-failed` | The vault failed and wiped seed and key |
+| `vault-timeout` | The vault did not answer in time |
+
+> [!WARNING]
+> There is no authentication on the serial line. Whoever holds the line is the operator and can do exactly the operator's four operations (`STATUS`, `PUBLIC_KEY`, `KEYGEN`, `ZEROIZE`), including erasing the key. The operator cannot get a signature, cannot deliver a seed and cannot change policy.
+
+What stays true, and what is not covered:
+
+- **Kernel code**: the receive code runs at EL1. It is small and never interprets a byte, but it is kernel code driven by an outside party. A user-space driver needs device and interrupt delegation, which K0 does not have.
+- **Timing**: an outside party can now cause interrupts while tasks run (bounded by the reader), and the reader learns arrival times finer than the tick. Other tasks can notice the stolen time. This timing channel is not analysed.
+- **Latency**: input waits behind running tasks. There are no priorities, so the latency is up to a tick per ready task.
+- **Hardware**: a 16550 console has no input. The SBSA UART path, FIFO overruns and the receive timeout interrupt are not exercised by QEMU, only by host tests with a fake UART. The cut-off for an interrupt line that fires without a UART cause is also covered only by host tests. No test measures kernel time under a flood on a machine. Nothing ran on real hardware.
+- **Screen**: if a kernel line appears while you are typing, the screen line is split but the buffer is whole, and Enter runs the whole buffer. Any task with `Console` output can still print lines that look like kernel or root task lines, and nothing authenticates the prefix. The terminal can additionally erase within its current line.
+- **Bytes held back**: "dropped before the prompt" counts bytes that reached the UART. An emulator or adapter that holds bytes back delivers them later (QEMU does).
+- **Service**: no signing client exists in service mode yet. The key is made and shown but not used by another task. The terminal and the vault are not restarted if they die. The root task is trusted.
+- **Boot log**: terminal output counts against the user share of the in-memory boot log. Once that share is full, later task output is not recorded there.
+- **Vault**: all earlier limits stay. The implementation is unvalidated, there is no side-channel analysis, the key does not come from an approved random bit generator, there is no persistence and there is no PQC. The availability of the vault and of the terminal is not protected.
+
+If the console interrupt number is wrong, only the input path is lost: the boot log shows `k0: console input off (...)`. The reasons are `no console`, `no receive driver for this uart`, `no usable interrupt in the device tree`, `register frame too small`, `console not attached`, `interrupt number out of range` and `interrupt not available`. A line that keeps firing without a UART cause is switched off after 8 entries with `k0: console input off (interrupt N fired without a uart cause)`. With input on, the boot log shows `k0: console input on (pl011 irq 33)`. The interrupt number is part of the platform line (`k0: platform con=pl011@0x9000000,irq33 ...`), so a `K0_PIN` made before this change no longer matches and must be made again.
 
 ## Booting through UEFI
 
@@ -307,9 +407,9 @@ $ tools/qemu-boot-test.sh                                 # boot in QEMU and che
 $ tools/boot-matrix.sh                                    # boot every supported configuration (builds the 16 KiB, pinned and UEFI loader images too)
 ```
 
-- `tools/host-test.sh` runs the 276 host tests (190 on an x86-64 computer): small tests of single parts of the kernel (unit tests) as ordinary programs on your computer. It also does **fuzzing**: it feeds the device tree parser and the UEFI loader's planning code random, broken input to find crashes. The 276 are 14 (`k0-abi`), 42 (`k0-cap`), 82 (`k0-boot`), 32 (`k0-efi`), 20 (`k0-vault`, which is 13 with Ed25519 and 7 without) and 43 for each of the two page sizes (`k0-mm`). The memory management tests use ARM instructions, so they run only on an ARM computer (an Apple Silicon Mac or Linux arm64), and the x86-64 count leaves out those 86.
+- `tools/host-test.sh` runs the 354 host tests (268 on other hosts): small tests of single parts of the kernel (unit tests) as ordinary programs on your computer. It also does **fuzzing**: it feeds the device tree parser and the UEFI loader's planning code random, broken input to find crashes. The 354 are 15 (`k0-abi`), 44 (`k0-cap`), 85 (`k0-boot`), 33 (`k0-efi`), 15 (`k0-conin`), 31 (`k0-vault`, which is 20 with Ed25519 and 11 without), 45 (`k0-term`, which is 24 with the vault feature and 21 without) and 43 for each of the two page sizes (`k0-mm`). The memory management tests use ARM instructions, so they run only on an ARM computer (an Apple Silicon Mac or Linux arm64), and the count on other hosts leaves out those 86.
 - `tools/qemu-boot-test.sh` boots the kernel and reads the log line by line in a fixed order. It fails on any error line, checks the exact number of intentional fault lines, and stops QEMU when it is done. The root task's timeout tests wait for real timer ticks, so a boot takes about 4 seconds longer than it did before they existed. The test also counts the tick lines between `root: teardown tests pass` and `root: timeout tests pass` and wants at least 4, which is how it checks that a timeout does not end early. It prints `boot-test: pass` on success and saves the full log in `target/qemu-boot-test.log`. It takes the machine from the `K0_QEMU_*` variables above. It accepts `K0_BOOT_REUSE=skip` for memory layouts that have no untyped region of the right size, where the root task skips its reuse test. It reads the kernel lines from the **serial port**, so it needs an image with a console driver. For an image without one, see "Testing an image without console" below. If the serial log has no kernel line, it prints a hint about a kernel built without a console feature.
-- `tools/boot-matrix.sh` boots the kernel in **each** configuration that K0 calls supported and checks the result. It boots QEMU virt with GICv3 and GICv2 at EL1 and EL2, and also three CPU models, 4 cores, the 16 KiB image, other load addresses, `xlnx-versal-virt`, a pinned image and the images with the signing oracle. It also checks statically that the image does not touch the physical timer. The matrix has 61 rows on a Mac with HVF and 51 in CI. You can name single rows as arguments. CI runs it.
+- `tools/boot-matrix.sh` boots the kernel in **each** configuration that K0 calls supported and checks the result. It boots QEMU virt with GICv3 and GICv2 at EL1 and EL2, and also three CPU models, 4 cores, the 16 KiB image, other load addresses, `xlnx-versal-virt`, a pinned image and the images with the signing oracle. It also checks statically that the image does not touch the physical timer. The matrix has 76 rows on a Mac with HVF and 65 in CI. You can name single rows as arguments. CI runs it.
 
 The console rows check the console features. The following table lists the console rows and what they check.
 
@@ -336,7 +436,24 @@ The `uefi-*` rows boot the kernel through the UEFI loader on EDK2: GICv3 and GIC
 
 For configurations that must be refused, it reads the reason from the boot log in memory, or for the loader from the serial log. These are a 16 KiB kernel on `cortex-a72` and a kernel with one changed byte.
 
-On an Apple Silicon Mac, `K0_MATRIX_HVF=1 tools/boot-matrix.sh` adds rows that run the kernel, also through the UEFI loader, on the real CPU cores through QEMU's HVF accelerator. Among them are `hvf-quiet` for the image without console and `hvf-vault` for the image with the oracle.
+On an Apple Silicon Mac, `K0_MATRIX_HVF=1 tools/boot-matrix.sh` adds rows that run the kernel, also through the UEFI loader, on the real CPU cores through QEMU's HVF accelerator. Among them are `hvf-quiet` for the image without console, `hvf-vault` for the image with the oracle and `hvf-term` for the terminal image.
+
+The input and terminal rows check the receive path and the terminal. In the following table, the rows `input-only`, `input-gicv2`, `input-16550` and `input-bad-irq` boot images with `console-input` and no terminal:
+
+| Row | What it checks |
+| --- | --- |
+| `input-only` | An image with `console-input` and no terminal |
+| `input-gicv2` | The same on GICv2 |
+| `input-16550` | An image with only the 16550 driver: input is off (`console not attached`) and the log says so |
+| `input-bad-irq` | A device tree with an interrupt number out of range costs only the input path (`interrupt number out of range`) |
+| `input-symbols` | Static check. An image without `console-input` contains no receive code, no `CONSOLE_READ` and none of the new log lines |
+| `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k` | The terminal image, run through `tools/term-test.py` on the default CPU, on the `max` CPU, at EL2, on GICv2 and with a 16 KiB image |
+| `term-no-vault` | A terminal without the vault: `help` lists only `help` |
+| `term-no-alg` | A terminal with `vault` but no algorithm |
+| `term-uefi`, `term-uefi-acpi` | The terminal image through the UEFI loader (device tree path and ACPI path) |
+| `hvf-term` | The terminal image under HVF (Mac only) |
+
+`tools/term-test.py <image>` boots the image with QEMU's serial port on pipes and runs a scripted session. It covers every command and error, erase and cancel, CR LF, an ESC sequence, a line that is too long, key generation, the public key format, zeroize, 200 kB without a line end, 2000 lines in a row and a serial break. `tools/qemu-boot-test.sh` also knows `K0_BOOT_INPUT=on|off` and `K0_BOOT_SERVICE=vault|plain|none` to say what the image should show, and a judge-only mode `K0_BOOT_JUDGE`. A terminal image prints two more `k0: task fault` lines than the same image without the terminal (8 without the vault, 10 with it), so use `K0_BOOT_FAULTS` for it.
 
 ### Testing an image without console
 
@@ -397,3 +514,7 @@ The following table lists what to do for each problem.
 | `build-loader: kernel ELF not found` | Build the kernel first with `cargo build -p k0-kernel --features console --offline` |
 | `build-loader: embedding a kernel with: k0: console drivers [none]` | The loader will carry a kernel without console. It still prints its own lines, and the kernel prints nothing after them. Build the kernel with `--features console` and run `tools/build-loader.sh` again if you want output |
 | The screen shows only firmware messages, or the firmware menu | The firmware could not start the loader, or the loader refused and the firmware went on. Look for `k0-loader:` lines. With none, check that the `.efi` file exists and, with `K0_QEMU_ESP`, that the drive is found |
+| The terminal shows no `k0> ` prompt | Either the image was built without `terminal` (and `console-input`), or the log shows `k0: console input off (...)` or `root: no console input, terminal not started`. Build with `--features console,terminal,vault-ed25519` and read the reason in the boot log |
+| Nothing happens when I type, or `Ctrl-A` does not arrive | Under `cargo run` QEMU keeps `Ctrl-A` for itself. A 16550 console has no input at all |
+| `boot-test` fails on the number of `k0: task fault` lines for a terminal image | That image prints 2 more than without the terminal (8 or 10). Use `K0_BOOT_FAULTS` |
+| A `K0_PIN` made earlier no longer matches | The platform line now contains the console interrupt (`irq33`). Make the pin again |

@@ -46,7 +46,7 @@ Because the inputs are hashed together, a hostile or predictable input cannot ca
 
 The kernel also derives a 32-byte seed for the root task (`k0_boot::derive_root_seed`). It is SHA-256 over its own domain string (`k0-root-task-seed-v1`), the length of the DTB entropy, the DTB entropy itself, the counter and, when the CPU has `RNDR`, four fresh `RNDR` words. The domain string differs from the one of the PAC keys, so the two outputs are independent of each other by domain separation: knowing one does not give the other. They do share the DTB entropy and the counter, so the seed is as good as its inputs and no better.
 
-The seed is not in the bootinfo page. The kernel puts it into the saved context of the root task, so it arrives in the entry registers `x0` to `x3`. Register `x4` is the seed info word: bits 15..0 hold how many `rng-seed` bytes went into the seed, and bit 16 is set when `RNDR` contributed. The layout of the bootinfo page is now version 3 (`bootinfo::VERSION`), and a root task that sees another version stops. The kernel wipes its own copies of the seed from the boot stack. The root task prints only the material, never the seed: `root: boot seed from rng-seed bytes 0x... and rndr` or `... without rndr`.
+The seed is not in the bootinfo page. The kernel puts it into the saved context of the root task, so it arrives in the entry registers `x0` to `x3`. Register `x4` is the seed info word: bits 15..0 hold how many `rng-seed` bytes went into the seed, and bit 16 is set when `RNDR` contributed. The layout of the bootinfo page is now version 4 (`bootinfo::VERSION`), and a root task that sees another version stops. The kernel wipes its own copies of the seed from the boot stack. The root task prints only the material, never the seed: `root: boot seed from rng-seed bytes 0x... and rndr` or `... without rndr`.
 
 ### Wiping the seed from the DTB
 
@@ -106,9 +106,12 @@ EL0 still cannot read any hardware counter or timer. IPC timeouts, however, give
 
 The EL0 thread pointer registers `TPIDR_EL0` and `TPIDRRO_EL0` are part of each task's saved context. `TCB_CONFIGURE` zeroes them, so a new task starts without the creator's values.
 
-`DEBUG_PUTC` requires the `Console` capability and replaces every byte that is neither printable ASCII nor a newline with `?`. A task cannot send terminal escape sequences to whoever reads the console (in an image built with a console driver) or the boot log.
+`DEBUG_PUTC` requires the `Console` capability with the write right (W) and replaces every byte that is neither printable ASCII nor a newline with `?`. The one exception is backspace (0x08), which a `Console` capability with the read right (R), the terminal's, may also emit. A task cannot send terminal escape sequences to whoever reads the console (in an image built with a console driver) or the boot log.
 
-The filter does not mark who wrote a line. Kernel output and task output share the boot log, and in an image built with a console driver also the console.
+The filter does not mark who wrote a line. Kernel output and task output share the boot log, and in an image built with a console driver also the console. The terminal can additionally erase within its current line.
+
+> [!NOTE]
+> In an image built with `console-input`, an outside party can cause interrupts while tasks run. The kernel masks the receive interrupt itself when the ring is full, so the rate is bounded by the reader. The reader still learns arrival times finer than the tick, and other tasks can notice the stolen time. This timing channel has not been analysed. The kernel's receive code runs at EL1 and never interprets a byte, but it is kernel code driven by an outside party, and a user-space driver would need device and interrupt delegation, which K0 does not have.
 
 > [!WARNING]
 > A task with a `Console` capability can print a newline followed by text that starts with `k0:`. A reader of the console or the log, including `tools/qemu-boot-test.sh`, cannot treat a `k0:` line that appears after `k0: entering root task (el0)` as written by the kernel.

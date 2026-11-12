@@ -95,9 +95,10 @@ Every violation returns a `BootError`, and the kernel then prints `k0: dtb rejec
 
 ## The platform descriptor
 
-Besides memory, the kernel finds exactly three devices in the DTB and nothing else (`discover` in `crates/k0-boot/src/platform.rs`):
+Besides memory, the kernel finds exactly three devices in the DTB, plus the console's interrupt, and nothing else (`discover` in `crates/k0-boot/src/platform.rs`):
 
 - **The console**: only the node named by `/chosen/stdout-path` (an absolute path, or an alias that resolves to one). The node must be enabled, and its `compatible` must name a PL011 (`arm,pl011`), an SBSA UART (`arm,sbsa-uart`) or a 16550-family UART (`ns16550a`, `ns16550`, `snps,dw-apb-uart`, `brcm,bcm2835-aux-uart`). Any other UART, a missing or unresolvable `stdout-path`, or a node the kernel cannot translate to a CPU physical address gives a boot with no console. That is not an error. The kernel prints `k0: no console (...)` with the reason, and the boot log buffer is the only record (see [boot.md](boot.md)). Every image does this discovery and validation, also an image built without a console driver, which then maps nothing and prints `k0: no console (driver not built in)`. Such an image refuses a device tree whose console fails the checks like any other. The register range the driver touches must lie inside the declared `reg` and inside one granule.
+  - **The console interrupt** (read only in an image built with `console-input`, see [boot.md](boot.md)): the `interrupts` property of the console node, taken only when the interrupt parent is the discovered GIC and the property is exactly one SPI (three cells, first cell 0) with a level type and active high. The number is the SPI number plus 32. A console node with no property, another form or another parent is not an error: the platform has no console interrupt and input is off. A number that is out of range is caught later, when input is brought up (`k0: console input off (...)`).
 - **The interrupt controller**: the node that the timer node's interrupt parent points to (`arm,armv8-timer` or `arm,armv7-timer`, exactly one enabled node). It must be a GICv3 (`arm,gic-v3`) or a GICv2 (`arm,gic-400`, `arm,cortex-a15-gic`, `arm,cortex-a7-gic`) with the expected cell counts and frame alignment. Up to four GICv3 redistributor ranges are accepted. A duplicate phandle, a disabled node, an `interrupt-map`, or a GICv2 without per-CPU banked interfaces (`cpu-offset`) is refused.
 - **The EL1 virtual timer interrupt number**: taken from the timer node's `interrupts` (the `virt` entry when `interrupt-names` exists, else the third entry) as a PPI number plus 16. A timer node that declares a timer erratum (`fsl,erratum-a008585`, `hisilicon,erratum-161010101` or `allwinner,erratum-unknown1`) is refused, because the kernel has no workaround code.
 
@@ -106,7 +107,7 @@ Besides memory, the kernel finds exactly three devices in the DTB and nothing el
 
 Register addresses are translated through the `ranges` of the parent buses to CPU physical addresses. A bus without `ranges` cannot be translated.
 
-The result is one immutable `Platform` value. The kernel prints it as the single line `k0: platform con=... gic=... tmr=...`, in a fixed format. Before any device page is mapped, `Platform::validate` checks it against the memory map. The checks are the following:
+The result is one immutable `Platform` value. The kernel prints it as the single line `k0: platform con=... gic=... tmr=...`, in a fixed format. The console field carries the interrupt number when there is one, for example `con=pl011@0x9000000,irq33`. Before any device page is mapped, `Platform::validate` checks it against the memory map. The checks are the following:
 
 - RAM must lie below 2^47.
 - The kernel image and the DTB must lie inside declared memory.
@@ -126,7 +127,7 @@ A mismatch makes the kernel refuse or, for the console, continue without one.
 
 ### Pinned mode
 
-The platform line, the entry exception level and the RAM range form the string `<platform line> el=<n> ram=<lo>-<hi>`. If `K0_PIN` was set at build time to the text after `k0: platform ` from a boot log of the target, the image refuses to boot when this string differs. It catches a wrong board or a swapped DTB. It **does not defend against a hostile boot chain**, because the compared values are derived from the DTB.
+The platform line, the entry exception level and the RAM range form the string `<platform line> el=<n> ram=<lo>-<hi>`. If `K0_PIN` was set at build time to the text after `k0: platform ` from a boot log of the target, the image refuses to boot when this string differs. It catches a wrong board or a swapped DTB. Pin strings made before the console interrupt joined the platform line no longer match and must be made again. It **does not defend against a hostile boot chain**, because the compared values are derived from the DTB.
 
 ## How it is tested
 

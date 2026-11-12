@@ -56,9 +56,10 @@ The following figure shows the task states and the transitions between them. The
 | `Running` | the current task |
 | `BlockedSend`, `BlockedRecv`, `BlockedCall` | waiting in an endpoint queue |
 | `BlockedReply` | waiting for the answer to a `CALL` |
+| `BlockedConsole` | waiting for console input in `CONSOLE_READ` (only in an image built with `console-input`). The task is in no queue. One kernel waiter slot points at it, and only one task can wait at a time. |
 | `Dead` | exited, killed, or torn down |
 
-A task in any of the blocked states can also become `Ready` when its deadline passes (see [Timeouts](#timeouts)).
+A task in any of the blocked states can also become `Ready` when its deadline passes. A `BlockedConsole` task also becomes `Ready` when a byte arrives or when its capability is deleted, revoked or moved (for deadlines see [Timeouts](#timeouts)).
 
 `Inactive` has the value 0. A freshly retyped frame is all zeroes, so it already is a valid `Inactive` TCB with empty queue links, empty embedded slots and no reply right. Retype needs no constructor.
 
@@ -107,12 +108,12 @@ Three operations use this switch, as shown in the following table.
 
 ## Preemption
 
-The timer fires once per second. When it fires while EL0 is running, the IRQ path acknowledges it, re-arms the timer, prints `k0: tick N` and calls `k0_preempt`, which calls `rotate`. The `k0: tick N` line goes to the console in an image built with a console driver, and only the first 4 tick lines are logged. A task that never yields therefore **loses the CPU after at most one second**.
+The timer fires once per second. When it fires while EL0 is running, the IRQ path acknowledges it, re-arms the timer, prints `k0: tick N` and calls `k0_preempt`, which calls `rotate`. The `k0: tick N` line goes to the console in an image built with a console driver, and only the first 4 tick lines are logged. A task that never yields therefore **loses the CPU after at most one second**. Once a task has read console input, the tick lines stop after one line `k0: tick lines off (console input in use)`, but the tick, the preemption and the timeouts go on.
 
 > [!IMPORTANT]
 > The kernel itself is never preempted. Exception entry masks interrupts, and the kernel keeps them masked while it handles a system call or fault.
 
-A timer interrupt that arrives at EL1 is possible only during boot, before the handoff, and it only counts the tick.
+A timer interrupt that arrives at EL1 is possible only during boot, before the handoff, and it only counts the tick. In an image with `console-input`, an arriving input byte does not preempt: the woken reader goes to the end of the ready queue like any other woken task. There are no priorities, so input latency is up to a tick per ready task.
 
 ## Timeouts
 
@@ -145,6 +146,7 @@ The following table shows what teardown does in each state.
 | `Ready` | removes the task from the ready queue |
 | `BlockedSend`, `BlockedRecv`, `BlockedCall` | removes the task from the endpoint queue named by `blocked_on`, and from the timed list if it has a deadline |
 | `BlockedReply` | clears the reply right in the task that holds it (`reply_from`), and removes the task from the timed list if it has a deadline |
+| `BlockedConsole` | clears the kernel's console waiter slot and removes the task from the timed list if it has a deadline |
 | `Running` | nothing is unlinked. See below. |
 
 For every state it then withdraws any reply right the task itself holds, so that the caller waiting for that reply wakes with `NO_REPLY` and does not stay blocked forever. Finally it sets the state to `Dead`, clears the queue links, `blocked_on`, `reply_from`, `ipc_badge` and `ttbr0_pa`, and, unless the task is `Running`, zeroes its saved registers. A queue or reply link that does not match what the state promises is a kernel invariant violation, and the kernel halts with `k0: FATAL ...` (see [exceptions.md](exceptions.md)).
@@ -164,7 +166,9 @@ The kernel no longer parks the core when no task can run. If the current task bl
 Timer ticks keep being counted and handled while the kernel idles. The idle loop prints one of two lines, each at most once per boot:
 
 - `k0: idle (waiting for a timeout)`: at least one waiter has a deadline.
-- `k0: all tasks stopped (none ready, no timeout pending)`: no waiter has a deadline. Nothing can wake a task in that state today, because there are no notification objects and no device interrupts for tasks, so the machine stays idle.
+- `k0: all tasks stopped (none ready, no timeout pending)`: no waiter has a deadline and no task waits for console input. Nothing can wake a task in that state today, because there are no notification objects and no device interrupts for tasks other than console input, so the machine stays idle.
+
+When the only thing left to wait for is console input (an image with `console-input`), the kernel prints nothing: that is the normal state of a terminal image. The idle loop also looks for arrived input after each interrupt and wakes the reader.
 
 > [!WARNING]
 > Availability is still not protected. A task that waits without a timeout can wait forever if its partner never acts, and a confined task that is the last one to block can still leave the system with nothing to run (advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md), updated at release time). Isolation protects confidentiality and integrity between tasks, not availability.

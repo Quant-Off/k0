@@ -33,9 +33,9 @@ $ cargo virt
 K0에서 입력 및 출력은 선택 사항입니다. 커널 크레이트의 Cargo features로 선택할 수 있습니다.
 
 > [!NOTE]
-> 입력 또는 터미널용 feature는 아직 없습니다. 지금 선택할 수 있는 것은 콘솔 출력뿐입니다.
+> 콘솔 입력과 운영자 터미널도 feature이지만 기본으로는 꺼져 있습니다. 뒤의 "운영자 터미널"에서 설명합니다.
 
-콘솔 출력은 콘솔 feature를 포함해 빌드한 이미지에만 있습니다. 입력은 어떤 이미지에도 없습니다. `cargo virt`는 `cargo run -p k0-kernel --features console`의 별칭이므로 항상 콘솔을 포함합니다. 다음 그림은 빌드에 포함한 feature에 따라 출력이 어디에 닿는지 보여 줍니다.
+콘솔 출력은 콘솔 feature를 포함해 빌드한 이미지에만 있습니다. 입력은 `console-input` 또는 `terminal`을 포함해 빌드한 이미지에만 있습니다. `cargo virt`는 `cargo run -p k0-kernel --features console`의 별칭이므로 항상 콘솔을 포함합니다. 다음 그림은 빌드에 포함한 feature에 따라 출력이 어디에 닿는지 보여 줍니다.
 
 <p align="center">
   <img src="assets/console-features_KR.svg" alt="빌드에 포함한 feature에 따른 출력 경로. feature 없이 빌드한 이미지는 메모리의 부트 로그에만 출력하고, 콘솔 feature로 빌드한 이미지는 해당 UART에도 출력합니다.">
@@ -189,12 +189,112 @@ $ K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE='k0: dtb seeds wiped 40B|root: oracle tests p
 
 - `k0: dtb seeds wiped 40B`와 `root: boot seed from rng-seed bytes 0x0000000000000020 without rndr`입니다(`K0_QEMU_CPU=max`에서는 두 번째 줄이 `and rndr`로 끝납니다). QEMU virt는 32바이트 `rng-seed`를 제공하며, 이것이 `0x20`입니다.
 - `k0: task fault` 줄이 두 개 더 나와 모두 8개입니다. 자가 테스트가 일부러 메모리 규칙을 어기게 하는 클라이언트 둘에서 나온 줄입니다.
-- `root: sched tests pass` 앞의 `root: oracle tests pass`입니다. 이 줄은 오라클의 검사가 모두 통과했다는 뜻입니다. 볼트가 부트 시드로 키를 만들었고, 서명자가 검증되는 서명을 받았으며, 메시지나 서명을 바꾸면 검증되지 않고, 관리자와 읽기 전용 클라이언트는 서명을 요청했을 때 거부되었으며, 키를 지운 뒤에는 서명이 거부되었습니다.
+- `root: sched tests pass` 앞의 `root: oracle tests pass`입니다. 이 줄은 오라클의 검사가 모두 통과했다는 뜻입니다. 볼트가 공개 RFC 8032 테스트 시드로 키를 만들었고, 서명자가 검증되는 서명을 받았으며, 메시지나 서명을 바꾸면 검증되지 않고, 관리자와 읽기 전용 클라이언트는 서명을 요청했을 때 거부되었으며, 키를 지운 뒤에는 서명이 거부되었습니다.
 
 볼트는 부트 시드에 `rng-seed` 바이트가 32개 이상 있거나 RNDR에서 온 256비트가 있을 때만 키를 만듭니다. 그렇지 않으면, 예를 들어 디바이스 트리에 `rng-seed`가 없고 CPU에 RNDR도 없는 머신에서는 볼트가 `NO_ENTROPY`로 답하고 키를 만들지 않습니다. 그러면 루트 태스크가 `root: oracle made no key (boot seed has no entropy)`를 출력하고 오라클 테스트를 거기서 멈춥니다. `root: oracle tests pass`는 나오지 않으므로 이 줄을 요구하는 부팅 테스트는 실패하며, 이것이 의도한 결과입니다.
 
 > [!NOTE]
-> Ed25519 구현은 vendor에 넣은 `ed25519-dalek` 2.2.0 크레이트이며 어떤 종류의 검증도 받지 않았고, 키는 승인된 난수 비트 생성기에서 나오지 않습니다. 키는 하나뿐이고, 영속성도 키의 가져오기나 내보내기도 운영자 입력도 아직 없습니다. 클라이언트가 엔드포인트 하나를 함께 사용하므로 볼트의 가용성은 보호되지 않으며 타임아웃을 써야 합니다. 루트 태스크는 신뢰 대상이며 볼트를 읽을 수 있습니다. 오라클은 QEMU(TCG와 HVF)에서만 실행해 보았습니다. 자세한 내용과 한계는 [SECURITY_KR.md](SECURITY_KR.md)에 있습니다.
+> Ed25519 구현은 vendor에 넣은 `ed25519-dalek` 2.2.0 크레이트이며 어떤 종류의 검증도 받지 않았고, 키는 승인된 난수 비트 생성기에서 나오지 않습니다. 키는 하나뿐이고, 영속성도 키의 가져오기나 내보내기도 운영자 인증도 아직 없습니다. 클라이언트가 엔드포인트 하나를 함께 사용하므로 볼트의 가용성은 보호되지 않으며 타임아웃을 써야 합니다. 루트 태스크는 신뢰 대상이며 볼트를 읽을 수 있습니다. 오라클은 QEMU(TCG와 HVF)에서만 실행해 보았습니다. 자세한 내용과 한계는 [SECURITY_KR.md](SECURITY_KR.md)에 있습니다.
+
+### 운영자 터미널
+
+운영자 터미널은 직렬 포트에서 명령을 입력해 볼트와 대화하는 작은 태스크입니다. 선택 사항이며 기본으로는 꺼져 있습니다. 커널 크레이트의 feature 두 개로 선택하며, feature는 더하기만 합니다.
+
+| Feature | 추가하는 것 |
+| --- | --- |
+| `console-input` | 콘솔 UART용 커널 수신 경로와 시스템 콜 `CONSOLE_READ`. 동작하려면 콘솔 드라이버 feature가 필요함. 수신은 PL011과 SBSA UART에만 있으므로 16550 콘솔에는 출력만 있고 입력은 없음 |
+| `terminal` | 루트 태스크 이미지 안의 터미널 태스크로, 자가 테스트 뒤에 서비스로 시작함. `console-input`을 켬. `vault`를 포함하면 터미널이 볼트의 운영자가 되고, `vault-ed25519`를 포함하면 Ed25519 키를 만들 수 있음 |
+
+`console-input` 없이 빌드한 이미지에는 수신 코드도 `CONSOLE_READ`도 새 로그 줄도 없습니다. `terminal` 없이 빌드한 이미지에는 터미널 코드가 없습니다. 다음과 같이 빌드하고 실행할 수 있습니다.
+
+```sh
+$ cargo build -p k0-kernel --features console,terminal,vault-ed25519
+$ cargo run -p k0-kernel --features console,terminal,vault-ed25519
+```
+
+`cargo run`은 직렬 포트를 내 터미널에 연결해 QEMU를 시작합니다. 이때 QEMU 자신의 이스케이프 키는 `Ctrl-A`입니다(`Ctrl-A`를 누른 다음 `X`로 QEMU 종료). 따라서 `Ctrl-A`는 K0에 전달되지 않습니다.
+
+자가 테스트가 끝나면 루트 태스크가 볼트를 시작해 부트 시드를 넘기고, 터미널과 똑같이 연결한 적대적 태스크 둘을 돌리고(둘 다 거부되어 폴트로 끝나야 함), 관리자 케이퍼빌리티를 버린 뒤 터미널을 시작합니다. 부트 로그에는 `root: vault seeded`, `root: terminal console filter [...]`, `root: terminal wiring holds`, `k0: task fault` 두 줄, `root: service started`, 그다음 배너가 나옵니다. 입력 경로가 없는 머신에서는 `root: no console input, terminal not started`가 나옵니다. 처음 읽은 뒤에는 주기적인 `k0: tick N` 줄이 멈추고, `k0: tick lines off (console input in use)` 한 줄이 그 사실을 알립니다. 다음 세션에서 모든 명령은 `ok` 또는 `err <reason>` 중 정확히 한 줄로 끝납니다.
+
+```
+K0 operator console, type 'help'
+k0> vault status
+state=seeded
+alg=none
+selftest=passed
+seed=rng-seed
+validated=no
+ok
+k0> vault keygen ed25519
+state=ready
+alg=ed25519
+ok
+k0> vault pubkey
+pubkey=<32 hex characters>
+       <32 hex characters>
+ok
+k0> vault zeroize
+hint=type 'vault zeroize confirm' to erase the key
+err confirm-required
+k0>
+```
+
+값은 `name=value` 형태로 출력됩니다. 화면 프롬프트는 `k0> `입니다. 다음 표의 첫 열이 입력하는 명령입니다.
+
+| 명령 | 인자 | 하는 일 |
+| --- | --- | --- |
+| `help` | | 명령 목록을 출력함 |
+| `vault status` | | 볼트 상태를 출력함(아래 참고) |
+| `vault pubkey` | | 공개 키를 출력함 |
+| `vault keygen <alg>` | `ed25519` | 보관 중인 시드로 고른 알고리즘의 키를 만들고 시드를 지움 |
+| `vault zeroize confirm` | | 키를 지움. `vault zeroize`만 입력하면 `hint=type 'vault zeroize confirm' to erase the key`와 `err confirm-required`를 출력함 |
+
+`vault status`는 `state=fresh|seeded|ready|zeroized|failed`, `alg=none|ed25519`, `selftest=passed|failed`, `seed=none|rng-seed|rndr|rng-seed+rndr`, `validated=no`를 출력합니다. `seed=rng-seed`는 바이트가 있었다는 뜻이지 예측할 수 없다는 뜻이 아닙니다. 구현이 어떤 종류의 검증도 받지 않았으므로 `validated=no`는 항상 출력됩니다. `vault pubkey`는 `pubkey=`와 16진수 32자를 출력하고, 7칸 들여쓴 둘째 줄에 나머지 32자를 출력합니다. 볼트는 부팅 한 번에 키를 하나만 만듭니다. `vault keygen`을 한 번 더 하면 `err key-exists`가 나오고, `vault zeroize confirm` 뒤에는 재부팅해야 합니다. `vault` feature가 없으면 `help`는 `help`만 나열하고 `vault ...`는 `err no-vault`로 답합니다.
+
+다음 표의 키는 입력 중인 줄에 작용합니다.
+
+| 키 | 효과 |
+| --- | --- |
+| Enter(CR 또는 LF) | 줄을 실행함. 한 줄은 최대 64자이며 출력 가능한 ASCII만 허용함 |
+| Backspace 또는 DEL | 한 글자를 지움 |
+| `Ctrl-C` 또는 `Ctrl-U` | 줄을 취소함(`^C` 또는 `^U`로 표시) |
+| ESC 시퀀스(방향키) | 무시함 |
+
+프롬프트가 나오기 전에 UART에 도착한 바이트는 버려집니다. 입력이 유실되면(FIFO 오버런, 브레이크, 프레이밍 또는 패리티 오류) 다음 줄 끝까지 모두 버리고 명령은 `err input-lost`로 답합니다. 전달은 됐지만 제때 응답받지 못한 keygen 또는 zeroize는 `hint=run 'vault status' to see whether it took effect`를 덧붙입니다. 다음 표의 오류 이름은 `err ` 뒤에 나오는 것입니다.
+
+| 오류 | 뜻 |
+| --- | --- |
+| `unknown-command` | 모르는 명령 |
+| `bad-argument` | 인자가 틀렸거나 빠짐 |
+| `line-too-long` | 한 줄이 64자를 넘음 |
+| `input-lost` | 줄이 끝나기 전에 입력이 유실됨 |
+| `confirm-required` | `confirm` 없는 `vault zeroize` |
+| `denied` | 운영자에게 허용되지 않은 동작 |
+| `no-vault` | 이미지에 볼트가 없음 |
+| `no-key` | 볼트에 키가 없음 |
+| `key-exists` | 볼트가 이번 부팅에서 이미 키를 만듦 |
+| `no-entropy` | 부트 시드에 엔트로피가 없음 |
+| `unsupported-algorithm` | 이 이미지에 없는 알고리즘 |
+| `zeroized` | 키가 지워짐. 재부팅이 필요함 |
+| `vault-failed` | 볼트가 실패해 시드와 키를 지움 |
+| `vault-timeout` | 볼트가 제때 응답하지 않음 |
+
+> [!WARNING]
+> 직렬 포트에는 인증이 없습니다. 포트를 쥔 사람이 곧 운영자이며, 키 삭제를 포함해 운영자의 네 가지 동작(`STATUS`, `PUBLIC_KEY`, `KEYGEN`, `ZEROIZE`)을 그대로 할 수 있습니다. 운영자는 서명을 받을 수 없고, 시드를 넘길 수 없으며, 정책을 바꿀 수 없습니다.
+
+계속 유효한 한계와 다루지 않는 부분은 다음과 같습니다.
+
+- **커널 코드**: 수신 코드는 EL1에서 실행됩니다. 작고 바이트를 해석하지 않지만, 외부 당사자가 구동하는 커널 코드입니다. 사용자 공간 드라이버에는 장치 및 인터럽트 위임이 필요한데, K0에는 그것이 없습니다.
+- **타이밍**: 외부 당사자가 이제 태스크가 도는 동안 인터럽트를 일으킬 수 있고(읽는 쪽이 상한을 정함), 읽는 쪽은 틱보다 정밀한 도착 시각을 알게 됩니다. 다른 태스크가 빼앗긴 시간을 알아챌 수 있습니다. 이 타이밍 채널은 분석하지 않았습니다.
+- **지연**: 입력은 실행 중인 태스크 뒤에서 기다립니다. 우선순위가 없으므로 지연은 준비된 태스크마다 최대 한 틱입니다.
+- **하드웨어**: 16550 콘솔에는 입력이 없습니다. SBSA UART 경로, FIFO 오버런, 수신 타임아웃 인터럽트는 QEMU로 실행되지 않고 가짜 UART를 쓰는 호스트 테스트로만 다룹니다. UART 원인 없이 발생하는 인터럽트 선을 끊는 동작도 호스트 테스트로만 다룹니다. 플러드 상황에서 커널이 쓰는 시간을 머신에서 측정하는 테스트는 없습니다. 실제 하드웨어에서는 아무것도 돌려 보지 않았습니다.
+- **화면**: 입력 중에 커널 줄이 나타나면 화면의 줄은 갈라지지만 버퍼는 온전하며, Enter는 버퍼 전체를 실행합니다. `Console` 출력이 있는 태스크는 여전히 커널이나 루트 태스크 줄처럼 보이는 줄을 출력할 수 있고, 접두어를 인증하는 것은 없습니다. 터미널은 추가로 자기 현재 줄 안을 지울 수 있습니다.
+- **붙잡힌 바이트**: "프롬프트 전에 버림"은 UART에 도착한 바이트를 말합니다. 바이트를 붙잡아 두는 에뮬레이터나 어댑터는 나중에 전달합니다(QEMU가 그렇습니다).
+- **서비스**: 서비스 모드에는 서명 클라이언트가 아직 없습니다. 키는 만들어지고 보이지만 다른 태스크가 사용하지 않습니다. 터미널과 볼트는 죽어도 다시 시작되지 않습니다. 루트 태스크는 신뢰 대상입니다.
+- **부트 로그**: 터미널 출력은 메모리 부트 로그의 사용자 몫을 소모합니다. 그 몫이 차면 이후 태스크 출력은 거기에 기록되지 않습니다.
+- **볼트**: 이전의 한계는 모두 유지됩니다. 구현은 검증을 받지 않았고, 부채널 분석이 없으며, 키는 승인된 난수 비트 생성기에서 나오지 않고, 영속성도 PQC도 없습니다. 볼트와 터미널의 가용성은 보호되지 않습니다.
+
+콘솔 인터럽트 번호가 틀려도 잃는 것은 입력 경로뿐이며, 부트 로그에 `k0: console input off (...)`가 나옵니다. 이유는 `no console`, `no receive driver for this uart`, `no usable interrupt in the device tree`, `register frame too small`, `console not attached`, `interrupt number out of range`, `interrupt not available`입니다. UART 원인 없이 계속 발생하는 인터럽트 선은 8번 진입한 뒤 `k0: console input off (interrupt N fired without a uart cause)`와 함께 꺼집니다. 입력이 켜지면 부트 로그에 `k0: console input on (pl011 irq 33)`이 나옵니다. 인터럽트 번호는 플랫폼 줄(`k0: platform con=pl011@0x9000000,irq33 ...`)에 들어 있으므로, 이번 변경 이전에 만든 `K0_PIN`은 더 이상 맞지 않아 다시 만들어야 합니다.
 
 ## UEFI로 부팅
 
@@ -307,9 +407,9 @@ $ tools/qemu-boot-test.sh                                 # QEMU에서 부팅하
 $ tools/boot-matrix.sh                                    # 지원하는 구성을 전부 부팅(16 KiB 이미지, 고정 이미지, UEFI 로더 이미지도 빌드함)
 ```
 
-- `tools/host-test.sh`는 호스트 테스트 276개를 실행합니다(x86-64 컴퓨터에서는 190개). 커널의 부분 하나하나를 내 컴퓨터에서 일반 프로그램처럼 돌리는 작은 테스트(단위 테스트)입니다. **퍼징**도 합니다. 디바이스 트리 파서와 UEFI 로더의 계획 코드에 무작위로 망가뜨린 입력을 넣어 충돌을 찾는 방법입니다. 276개는 `k0-abi` 14개, `k0-cap` 42개, `k0-boot` 82개, `k0-efi` 32개, `k0-vault` 20개(Ed25519를 포함하면 13개, 없으면 7개), `k0-mm` 43개씩 두 페이지 크기분입니다. 메모리 관리 테스트는 ARM 명령을 사용하므로 ARM 컴퓨터(Apple Silicon Mac이나 Linux arm64)에서만 돌고, x86-64의 개수는 그 86개를 뺀 것입니다.
+- `tools/host-test.sh`는 호스트 테스트 354개를 실행합니다(그 밖의 호스트에서는 268개). 커널의 부분 하나하나를 내 컴퓨터에서 일반 프로그램처럼 돌리는 작은 테스트(단위 테스트)입니다. **퍼징**도 합니다. 디바이스 트리 파서와 UEFI 로더의 계획 코드에 무작위로 망가뜨린 입력을 넣어 충돌을 찾는 방법입니다. 354개는 `k0-abi` 15개, `k0-cap` 44개, `k0-boot` 85개, `k0-efi` 33개, `k0-conin` 15개, `k0-vault` 31개(Ed25519를 포함하면 20개, 없으면 11개), `k0-term` 45개(`vault` feature를 포함하면 24개, 없으면 21개), `k0-mm` 43개씩 두 페이지 크기분입니다. 메모리 관리 테스트는 ARM 명령을 사용하므로 ARM 컴퓨터(Apple Silicon Mac이나 Linux arm64)에서만 돌고, 그 밖의 호스트의 개수는 그 86개를 뺀 것입니다.
 - `tools/qemu-boot-test.sh`는 커널을 부팅하고, 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 줄이 하나라도 나오면 실패하고, 일부러 일으킨 폴트 줄의 개수를 정확히 맞춘 뒤 QEMU를 끕니다. 루트 태스크의 타임아웃 테스트는 실제 타이머 틱을 기다리므로, 부팅 한 번이 그 테스트가 생기기 전보다 약 4초 더 걸립니다. `root: teardown tests pass`와 `root: timeout tests pass` 사이의 틱 줄도 세어 4개 이상을 요구하는데, 이것이 타임아웃이 일찍 끝나지 않는지 확인하는 방법입니다. 성공하면 `boot-test: pass`를 출력하고 전체 로그를 `target/qemu-boot-test.log`에 남깁니다. 머신은 앞의 `K0_QEMU_*` 변수에서 가져옵니다. 맞는 크기의 untyped 영역이 없는 메모리 배치에서는 루트 태스크가 재사용 시험을 건너뛰므로, 그때는 `K0_BOOT_REUSE=skip`을 받습니다. 커널 줄을 **직렬 포트**에서 읽으므로 콘솔 드라이버가 있는 이미지가 필요합니다. 콘솔 없는 이미지는 뒤의 "콘솔 없는 이미지 시험"을 보세요. 직렬 로그에 커널 줄이 하나도 없으면 콘솔 feature 없이 빌드한 커널이 아닌지 알려 주는 힌트를 출력합니다.
-- `tools/boot-matrix.sh`는 K0가 지원한다고 말하는 **구성마다** 커널을 부팅해서 결과를 확인합니다. GICv3와 GICv2의 QEMU virt를 EL1과 EL2에서 부팅하고, CPU 모델 세 가지, 코어 4개, 16 KiB 이미지, 다른 적재 주소, `xlnx-versal-virt`, 고정 이미지, 서명 오라클이 있는 이미지도 부팅합니다. 이미지가 물리 타이머를 건드리지 않는지는 정적으로 검사합니다. 행렬은 HVF가 있는 Mac에서 61행, CI에서 51행입니다. 행 이름을 인자로 주면 그 행만 돌립니다. CI가 이것을 실행합니다.
+- `tools/boot-matrix.sh`는 K0가 지원한다고 말하는 **구성마다** 커널을 부팅해서 결과를 확인합니다. GICv3와 GICv2의 QEMU virt를 EL1과 EL2에서 부팅하고, CPU 모델 세 가지, 코어 4개, 16 KiB 이미지, 다른 적재 주소, `xlnx-versal-virt`, 고정 이미지, 서명 오라클이 있는 이미지도 부팅합니다. 이미지가 물리 타이머를 건드리지 않는지는 정적으로 검사합니다. 행렬은 HVF가 있는 Mac에서 76행, CI에서 65행입니다. 행 이름을 인자로 주면 그 행만 돌립니다. CI가 이것을 실행합니다.
 
 콘솔 행은 콘솔 feature를 확인합니다. 다음 표는 콘솔 행과 확인하는 내용입니다.
 
@@ -336,7 +436,24 @@ $ tools/boot-matrix.sh                                    # 지원하는 구성�
 
 거부해야 하는 구성에서는 커널의 사유를 메모리에 남은 부트 로그에서 읽고, 로더의 사유는 직렬 로그에서 읽습니다. 이런 구성으로 `cortex-a72`에서의 16 KiB 커널과 한 바이트를 바꾼 커널이 있습니다.
 
-Apple Silicon Mac에서는 `K0_MATRIX_HVF=1 tools/boot-matrix.sh`로 QEMU의 HVF 가속기를 통해 실제 CPU 코어에서 커널을 (UEFI 로더를 거치는 경우도 포함해) 돌리는 행을 더할 수 있습니다. 콘솔 없는 이미지용으로는 `hvf-quiet`이, 오라클이 있는 이미지용으로는 `hvf-vault`가 있습니다.
+Apple Silicon Mac에서는 `K0_MATRIX_HVF=1 tools/boot-matrix.sh`로 QEMU의 HVF 가속기를 통해 실제 CPU 코어에서 커널을 (UEFI 로더를 거치는 경우도 포함해) 돌리는 행을 더할 수 있습니다. 콘솔 없는 이미지용으로는 `hvf-quiet`이, 오라클이 있는 이미지용으로는 `hvf-vault`가, 터미널 이미지용으로는 `hvf-term`이 있습니다.
+
+입력 및 터미널 행은 수신 경로와 터미널을 확인합니다. 다음 표에서 `input-only`, `input-gicv2`, `input-16550`, `input-bad-irq` 행은 `console-input`을 포함하고 터미널은 없는 이미지를 부팅합니다.
+
+| 행 | 확인하는 것 |
+| --- | --- |
+| `input-only` | `console-input`을 포함하고 터미널이 없는 이미지 |
+| `input-gicv2` | GICv2에서 같은 이미지 |
+| `input-16550` | 16550 드라이버만 있는 이미지. 입력이 꺼지고(`console not attached`) 로그에 그렇게 남음 |
+| `input-bad-irq` | 디바이스 트리의 인터럽트 번호가 범위를 벗어나도 입력 경로만 잃는지(`interrupt number out of range`) |
+| `input-symbols` | 정적 검사. `console-input` 없는 이미지에 수신 코드도 `CONSOLE_READ`도 새 로그 줄도 없음 |
+| `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k` | 터미널 이미지를 `tools/term-test.py`로 실행. 기본 CPU, `max` CPU, EL2, GICv2, 16 KiB 이미지 |
+| `term-no-vault` | 볼트가 없는 터미널. `help`가 `help`만 나열함 |
+| `term-no-alg` | `vault`는 있고 알고리즘은 없는 터미널 |
+| `term-uefi`, `term-uefi-acpi` | UEFI 로더를 거치는 터미널 이미지(디바이스 트리 경로와 ACPI 경로) |
+| `hvf-term` | HVF에서의 터미널 이미지(Mac 전용) |
+
+`tools/term-test.py <이미지>`는 QEMU의 직렬 포트를 파이프에 연결해 이미지를 부팅하고 정해진 세션을 실행합니다. 모든 명령과 오류, 지우기와 취소, CR LF, ESC 시퀀스, 너무 긴 줄, 키 생성, 공개 키 형식, zeroize, 줄 끝 없는 200 kB, 연속 2000줄, 직렬 브레이크를 다룹니다. `tools/qemu-boot-test.sh`는 이미지가 보여야 할 것을 알려 주는 `K0_BOOT_INPUT=on|off`와 `K0_BOOT_SERVICE=vault|plain|none`, 그리고 판정만 하는 모드 `K0_BOOT_JUDGE`도 이해합니다. 터미널 이미지는 터미널 없는 같은 이미지보다 `k0: task fault` 줄이 두 개 더 나오므로(볼트 없이 8개, 볼트와 함께 10개) `K0_BOOT_FAULTS`를 사용하세요.
 
 ### 콘솔 없는 이미지 시험
 
@@ -397,3 +514,7 @@ GitHub도 풀 리퀘스트와 `main` 푸시가 있을 때마다 이 테스트를
 | `build-loader: kernel ELF not found` | 먼저 `cargo build -p k0-kernel --features console --offline`로 커널을 빌드하세요 |
 | `build-loader: embedding a kernel with: k0: console drivers [none]` | 로더가 콘솔 없는 커널을 품게 됩니다. 로더는 자기 줄을 계속 출력하고, 그 뒤로 커널은 아무것도 출력하지 않습니다. 출력이 필요하면 `--features console`로 커널을 빌드하고 `tools/build-loader.sh`를 다시 실행하세요 |
 | 화면에 펌웨어 메시지나 펌웨어 메뉴만 나옴 | 펌웨어가 로더를 시작하지 못했거나, 로더가 거부해서 펌웨어가 다음으로 넘어간 것입니다. `k0-loader:` 줄이 있는지 보세요. 없다면 `.efi` 파일이 있는지, `K0_QEMU_ESP`를 사용했다면 드라이브가 보이는지 확인하세요 |
+| 터미널에 `k0> ` 프롬프트가 나오지 않음 | 이미지를 `terminal`(과 `console-input`) 없이 빌드했거나, 로그에 `k0: console input off (...)` 또는 `root: no console input, terminal not started`가 있습니다. `--features console,terminal,vault-ed25519`로 빌드하고 부트 로그에서 이유를 읽으세요 |
+| 입력해도 반응이 없거나 `Ctrl-A`가 전달되지 않음 | `cargo run`에서는 QEMU가 `Ctrl-A`를 자기 몫으로 씁니다. 16550 콘솔에는 입력이 전혀 없습니다 |
+| 터미널 이미지에서 `boot-test`가 `k0: task fault` 줄 수 때문에 실패 | 그 이미지는 터미널 없는 이미지보다 2개 더 출력합니다(8개 또는 10개). `K0_BOOT_FAULTS`를 사용하세요 |
+| 이전에 만든 `K0_PIN`이 더 이상 맞지 않음 | 플랫폼 줄에 이제 콘솔 인터럽트(`irq33`)가 들어 있습니다. 핀을 다시 만드세요 |

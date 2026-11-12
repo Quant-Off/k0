@@ -70,9 +70,9 @@ $ tools/build-loader.sh   # 빌드한 커널을 UEFI 로더에 포함하고 .efi
 K0에서 입력 및 출력은 선택 사항입니다. 커널 크레이트의 Cargo features로 선택할 수 있습니다.
 
 > [!NOTE]
-> 입력 또는 터미널용 feature는 아직 없습니다. 지금 선택할 수 있는 것은 콘솔 출력뿐입니다.
+> 콘솔 입력과 운영자 터미널도 feature(`console-input`, `terminal`)이며 기본으로는 꺼져 있습니다.
 
-콘솔 출력은 콘솔 feature(`console-pl011`, `console-16550`, `console`)를 포함해 빌드한 이미지에만 있습니다. 입력은 어떤 이미지에도 없습니다. `cargo virt`는 `cargo run -p k0-kernel --features console`의 별칭입니다. feature의 설명은 [USAGE_KR.md](USAGE_KR.md#콘솔-feature)에 있습니다.
+콘솔 출력은 콘솔 feature(`console-pl011`, `console-16550`, `console`)를 포함해 빌드한 이미지에만 있습니다. 입력은 `console-input` 또는 `terminal`을 포함해 빌드한 이미지에만 있습니다. `cargo virt`는 `cargo run -p k0-kernel --features console`의 별칭입니다. feature의 설명은 [USAGE_KR.md](USAGE_KR.md#콘솔-feature)에 있습니다.
 
 커널은 종료하지 않습니다. 루트 태스크가 자가 테스트를 마치면 계속 양보하고, 콘솔이 있는 커널은 1초마다 `k0: tick N`을 출력합니다. QEMU는 `Ctrl-A X`로 끕니다.
 
@@ -94,11 +94,11 @@ $ cargo build -p k0-kernel --features console --offline
 $ tools/qemu-boot-test.sh   # QEMU 부팅과 자가 테스트 확인
 ```
 
-`tools/host-test.sh`는 `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi`, `k0-vault`의 테스트를 어느 호스트에서나 실행합니다(AArch64 호스트에서 276개, 그 밖에서 190개). `k0-vault`는 알고리즘 feature `vault-ed25519`를 포함한 경우와 포함하지 않은 경우로 두 번 실행하며, 각각 13개와 7개입니다. `k0-mm` 테스트는 AArch64 인라인 어셈블리를 포함하기 때문에 AArch64 호스트(Apple Silicon 또는 Linux arm64)에서만 실행되며, 스크립트가 4 KiB와 16 KiB 그래뉼 두 구성으로 모두 돌립니다.
+`tools/host-test.sh`는 `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi`, `k0-conin`, `k0-vault`, `k0-term`의 테스트를 어느 호스트에서나 실행합니다(AArch64 호스트에서 354개, 그 밖에서 268개). `k0-vault`는 알고리즘 feature `vault-ed25519`를 포함한 경우와 포함하지 않은 경우로 두 번 실행하며, 각각 20개와 11개입니다. `k0-term`도 `vault` feature를 포함한 경우와 포함하지 않은 경우로 실행하며, 각각 24개와 21개입니다. `k0-mm` 테스트는 AArch64 인라인 어셈블리를 포함하기 때문에 AArch64 호스트(Apple Silicon 또는 Linux arm64)에서만 실행되며, 스크립트가 4 KiB와 16 KiB 그래뉼 두 구성으로 모두 돌립니다.
 
 `tools/qemu-boot-test.sh`는 디버그 커널을 부팅하고 부팅 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 표식이 하나라도 나오면 실패하고, 루트 태스크가 `root: sched tests pass`를 출력하면 곧바로 QEMU를 종료합니다. 통과 줄 외에도 `k0: untyped ` 줄보다 앞의 `k0: kernel reserve `, `root: teardown tests pass` 뒤의 `k0: idle (waiting for a timeout)`와 `root: timeout tests pass`, `root: revocation tests pass` 뒤의 `root: kernel reserve tests pass`를 기대합니다. `k0: all tasks`로 시작하는 줄은 모두 실패입니다. `root: teardown tests pass`와 `root: timeout tests pass` 사이의 타이머 틱 줄도 세어 4개 이상을 요구하는데, EL0에는 시계가 없어서 이것이 타임아웃의 하한을 확인하는 방법이기 때문입니다. 타임아웃 테스트는 실제 틱을 기다리므로 부팅 한 번이 이전보다 약 4초 더 걸립니다. 느린 환경에서는 `K0_BOOT_TIMEOUT`(초)을 늘려 주세요. 직렬 포트를 읽기 때문에 콘솔 드라이버가 있는 이미지가 필요합니다. 콘솔 없는 이미지를 시험하려면 [USAGE_KR.md](USAGE_KR.md#콘솔-없는-이미지-시험)의 "콘솔 없는 이미지 시험"에 설명된 `K0_BOOT_MEMLOG`, `K0_BOOT_SERIAL=empty`, `K0_BOOT_CONSOLE_PAGE`를 사용하세요.
 
-서명 오라클이 있는 이미지(`vault` 또는 `vault-ed25519`)는 일부러 일으키는 폴트가 두 번 더 있어 `k0: task fault` 줄이 6개가 아니라 8개이므로 `K0_BOOT_FAULTS=8`이 필요하고, `root: oracle tests pass`를 `K0_BOOT_REQUIRE`로 요구하세요. 부팅 매트릭스에는 이를 위한 행 `vault`, `vault-max`, `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault`와 정적 검사 `vault-symbols`가 있으며, 행렬은 HVF가 있는 Mac에서 61행, CI에서 51행입니다. 행의 내용은 [USAGE_KR.md](USAGE_KR.md)에 있습니다.
+서명 오라클이 있는 이미지(`vault` 또는 `vault-ed25519`)는 일부러 일으키는 폴트가 두 번 더 있어 `k0: task fault` 줄이 6개가 아니라 8개이므로 `K0_BOOT_FAULTS=8`이 필요하고, `root: oracle tests pass`를 `K0_BOOT_REQUIRE`로 요구하세요. 부팅 매트릭스에는 이를 위한 행 `vault`, `vault-max`, `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault`와 정적 검사 `vault-symbols`가 있으며, 행렬은 HVF가 있는 Mac에서 76행, CI에서 65행입니다. 행 `input-*`와 `term-*`는 콘솔 입력과 터미널을 다룹니다. 터미널 이미지는 `k0: task fault` 줄이 두 개 더 나오며(볼트 없이 8개, 볼트와 함께 10개), `tools/term-test.py <이미지>`가 정해진 직렬 세션을 실행합니다. 행의 내용은 [USAGE_KR.md](USAGE_KR.md)에 있습니다.
 
 기본 QEMU CPU 모델(`cortex-a72`)에는 PAC, PAN, RNDR이 없습니다. 이 경로까지 검증하려면 QEMU의 `max` 모델로 부팅하고 해당 로그 줄을 필수로 지정하세요. 커널 경로 뒤의 인자는 그대로 QEMU에 전달됩니다. 다음과 같이 입력할 수 있습니다.
 

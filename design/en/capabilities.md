@@ -23,7 +23,7 @@ The related code is in the files of the following table.
 | `crates/k0-abi/src/lib.rs` | numbers and error codes (the source of truth for the ABI) |
 
 > [!IMPORTANT]
-> The system call ABI changed incompatibly with this model (bootinfo version 2, now 3). Read the "Known gaps" section before relying on any of this.
+> The system call ABI changed incompatibly with this model (bootinfo version 2, now 4). Read the "Known gaps" section before relying on any of this.
 
 Capability-based isolation covers confidentiality and integrity between tasks. It does not cover availability.
 
@@ -66,14 +66,15 @@ In the following table, each kind is listed with the time it is created and what
 | `Endpoint` | by `RETYPE` | a rendezvous point for synchronous IPC |
 | `CNode` | by `RETYPE`, and at boot for the root CNode | an array of slots, used as a capability space and as a destination for copies and moves |
 | `AddrSpace` | by `RETYPE`, and at boot for the root task | an address space: the right to map into it and to run a task in it |
-| `Console` | at boot | the right to write bytes to the debug output: the boot log, and the console in an image built with a console driver |
+| `Console` | at boot | the right to write bytes to the debug output (`W`): the boot log, and the console in an image built with a console driver. With `R` it also grants reading console input in an image built with `console-input` |
 
 ### Rights
 
-The **rights bits** are `R` = 1, `W` = 2 and `X` = 4. They have meaning on two kinds only.
+The **rights bits** are `R` = 1, `W` = 2 and `X` = 4. They have meaning on three kinds only.
 
 - **Frame**: the ceiling for mapping permissions. `RO` needs `R`, `RW` needs `R|W`, `RX` needs `R|X`. A frame made by `RETYPE` has `R|W` and can never gain `X`.
 - **Endpoint**: `R` is the right to receive, `W` the right to send. A new endpoint capability has both.
+- **Console**: `W` is the right to write output (`DEBUG_PUTC`), and `R` is the right to read input (`CONSOLE_READ`). `CAP_COPY` can only remove them, and a copy that would keep no right fails with `NO_RIGHTS`. A `Console` capability with `R` may also emit the backspace byte (0x08) through `DEBUG_PUTC`. Every other control byte is still printed as `?`.
 
 All other kinds carry no rights, and the rights mask of `CAP_COPY` is ignored for them. **Rights can only be removed**, and only by `CAP_COPY`.
 
@@ -114,7 +115,7 @@ The root task's CNode is the root CNode. It has `ROOT_CNODE_SLOTS` (512) slots a
 | 0 | null |
 | 1 | `Tcb` of the root task |
 | 2 | `AddrSpace` of the root task |
-| 3 | `Console` |
+| 3 | `Console`, with `W`. It has `R` only in an image built with `console-input` |
 | 4 | `CNode`, a capability to the root CNode itself, so it can be used as a copy or move destination |
 | 5 and up | `Untyped` capabilities, then one `Frame` capability per mapped granule of the root task image |
 
@@ -138,7 +139,7 @@ Running out of slots also stops the boot. A DTB memory region beyond the CPU's p
 
 ## The bootinfo page
 
-Just before the handoff, the kernel writes a description of the root CNode into the bootinfo page, which is mapped read-only for the root task at `bootinfo::VA`. The version is 3 (`bootinfo::VERSION`). The page layout did not change from version 2; the version changed because the root task now receives a boot seed in its entry registers (the seed in `x0..x3`, its description in `x4`; see [boot.md](boot.md)), and the seed is not in this page. A root task that sees another version must not proceed.
+Just before the handoff, the kernel writes a description of the root CNode into the bootinfo page, which is mapped read-only for the root task at `bootinfo::VA`. The version is 4 (`bootinfo::VERSION`). The page layout did not change from version 2. Version 3 came because the root task receives a boot seed in its entry registers (the seed in `x0..x3`, its description in `x4`; see [boot.md](boot.md)), and the seed is not in this page. Version 4 came because the `Console` capability now carries rights. A root task that sees another version must not proceed.
 
 The page starts with a header `{version, frame_size, cap_count, cnode_slots}`, followed by `cap_count` descriptors `{kind, base, size, rights}`. The index of a descriptor is its slot number in the root CNode, and every slot at or beyond `cap_count` is empty. A descriptor is filled in by kind as follows:
 
@@ -232,6 +233,7 @@ When an original capability is removed, its object is finalized by the callbacks
 - **Frame**: the mapping this capability made is removed. This happens for any `Frame` capability that has a mapping record, including copies.
 - **PageTable**: it is detached from its address space (the same, for any capability with a record).
 - **Endpoint** (original): every queued task is woken with `REVOKED`.
+- **Console**: a task that waits in `CONSOLE_READ` on this capability wakes at once with `REVOKED` when the capability is deleted, revoked or moved (see [ipc.md](ipc.md)).
 - **Tcb** (original), and any capability bound to a task: the task is torn down, see [scheduling.md](scheduling.md) and [ipc.md](ipc.md).
 - **AddrSpace** (original): it is released in the registry (which bumps its generation). If it is installed in TTBR0, TTBR0 is switched to an empty table from the kernel pool.
 
@@ -247,7 +249,8 @@ The following table lists the capabilities and rights each system call requires.
 
 | System call | Capabilities and rights it requires |
 | --- | --- |
-| `DEBUG_PUTC` | `Console` |
+| `DEBUG_PUTC` | a `Console` with `W` |
+| `CONSOLE_READ` | a `Console` with `R` (only in images built with `console-input`) |
 | `RETYPE` | an `Untyped`, and a free destination slot in the caller's CNode |
 | `MAP` | a `Frame` whose rights cover the permission (`RO` needs `R`, `RW` needs `R\|W`, `RX` needs `R\|X`) or a `PageTable`, and an `AddrSpace` naming the target |
 | `UNMAP` | a `Frame` or `PageTable` that is mapped |
@@ -280,7 +283,7 @@ The following table lists the error codes for slot problems and their meaning.
 | `BAD_PERM` | the mapping permission or the rights mask is not valid |
 | `BAD_BADGE` | a badge on a kind that cannot carry one, or a different badge on an already badged capability |
 | `TOO_DEEP` | the derivation depth limit would be exceeded |
-| `REVOKED` | returned to a task that was waiting on an endpoint that was deleted |
+| `REVOKED` | returned to a task that was waiting on an endpoint that was deleted, or in `CONSOLE_READ` on a `Console` capability that was deleted, revoked or moved |
 | `KERNEL_RESOURCE` | an internal resource is missing. It is still a defined code, but neither the kernel alias tables nor the address space registry can cause it any more |
 
 ## How it is tested

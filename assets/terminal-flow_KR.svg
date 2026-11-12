@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 340" width="960" height="340" role="img" aria-labelledby="title desc">
+  <title id="title">시리얼 입력과 운영자 터미널</title>
+  <desc id="desc">시리얼 선으로 들어온 바이트는 커널의 256바이트 수신 링에 쌓입니다. 터미널 태스크는 CONSOLE_READ 호출 한 번에 한 바이트를 읽습니다. 터미널은 케이퍼빌리티를 둘 가집니다. 읽기와 쓰기 권한이 있는 Console 복사본, 그리고 송신 권한과 운영자 배지가 있는 볼트 엔드포인트입니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="339" rx="10"/>
+
+  <rect class="ext" x="30" y="60" width="130" height="130" rx="8"/>
+  <text class="t h" x="95" y="110" text-anchor="middle">시리얼 선</text>
+  <text class="t s" x="95" y="132" text-anchor="middle">운영자의 키 입력</text>
+  <line class="line" x1="162" y1="125" x2="218" y2="125" marker-end="url(#arrow)"/>
+  <text class="t s" x="190" y="115" text-anchor="middle">바이트</text>
+
+  <rect class="kernel" x="220" y="60" width="220" height="130" rx="8"/>
+  <text class="t h" x="330" y="88" text-anchor="middle">커널 (EL1)</text>
+  <text class="t s" x="330" y="112" text-anchor="middle">UART 수신 드라이버</text>
+  <text class="t s" x="330" y="134" text-anchor="middle">256바이트 링</text>
+  <text class="t s" x="330" y="156" text-anchor="middle">바이트를 해석하지 않음</text>
+
+  <line class="line" x1="578" y1="125" x2="442" y2="125" marker-end="url(#arrow)"/>
+  <text class="m" x="510" y="112" text-anchor="middle">CONSOLE_READ</text>
+  <text class="t s" x="510" y="146" text-anchor="middle">한 번에 한 바이트</text>
+
+  <rect class="user" x="580" y="60" width="270" height="130" rx="8"/>
+  <text class="t h" x="715" y="88" text-anchor="middle">터미널 태스크</text>
+  <text class="t s" x="715" y="110" text-anchor="middle">자체 주소 공간, 케이퍼빌리티 둘</text>
+  <text class="t s" x="715" y="138" text-anchor="middle">1: Console 복사본, R과 W</text>
+  <text class="t s" x="715" y="160" text-anchor="middle">2: 볼트 엔드포인트, 송신, 운영자</text>
+
+  <line class="line" x1="715" y1="192" x2="715" y2="248" marker-end="url(#arrow)"/>
+  <text class="t s" x="727" y="226">CALL, 운영자 배지</text>
+
+  <rect class="kernel" x="580" y="250" width="270" height="60" rx="8"/>
+  <text class="t h" x="715" y="276" text-anchor="middle">볼트 엔드포인트</text>
+  <text class="t s" x="715" y="296" text-anchor="middle">배지가 역할을 정함</text>
+
+  <line class="line" x1="578" y1="280" x2="442" y2="280" marker-end="url(#arrow)"/>
+  <text class="t s" x="510" y="270" text-anchor="middle">RECV</text>
+
+  <rect class="user" x="220" y="250" width="220" height="60" rx="8"/>
+  <text class="t h" x="330" y="276" text-anchor="middle">볼트 태스크</text>
+  <text class="t s" x="330" y="296" text-anchor="middle">키를 보관</text>
+</svg>

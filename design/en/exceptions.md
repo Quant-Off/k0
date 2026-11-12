@@ -20,7 +20,7 @@ The following figure shows the path that the kernel follows for each kind of exc
 
 ## The vector table
 
-AArch64 has 16 vector entries: four kinds of exception (synchronous, IRQ, FIQ, SError) for each of four origins. K0 gives each entry one of four behaviors. The kernel takes only IRQs, so a FIQ is a state that should not happen. The FIQ entries call a dispatcher that prints `k0: UNEXPECTED fiq intid=0` and parks. The following table lists the behavior of each entry.
+AArch64 has 16 vector entries: four kinds of exception (synchronous, IRQ, FIQ, SError) for each of four origins. K0 gives each entry one of four behaviors. The kernel takes only IRQs (never FIQs), so a FIQ is a state that should not happen. The FIQ entries call a dispatcher that prints `k0: UNEXPECTED fiq intid=0` and parks. The following table lists the behavior of each entry.
 
 | Origin | Sync | IRQ | FIQ | SError |
 | --- | --- | --- | --- | --- |
@@ -86,7 +86,7 @@ The system call number is in `x8`. Arguments are in `x0` to `x5`, and the result
 
 | Number | Call | Description |
 | --- | --- | --- |
-| 0 | `DEBUG_PUTC` | write one filtered byte to the boot log, and to the console in an image built with a console driver; needs a `Console` capability |
+| 0 | `DEBUG_PUTC` | write one filtered byte to the boot log, and to the console in an image built with a console driver; needs a `Console` capability with the write right |
 | 1 | `YIELD` | go to the back of the ready queue |
 | 2 | `EXIT` | terminate the calling task |
 | 3 | `RETYPE` | create a kernel object from untyped memory, into a destination slot the caller names |
@@ -102,6 +102,7 @@ The system call number is in `x8`. Arguments are in `x0` to `x5`, and the result
 | 13 | `CAP_MOVE` | move a capability to another slot |
 | 14 | `CAP_DELETE` | delete a capability and everything derived from it |
 | 15 | `CAP_REVOKE` | delete everything derived from a capability and keep the capability |
+| 16 | `CONSOLE_READ` | read one byte of console input (only in an image built with `console-input`, see below); needs a `Console` capability with the read right |
 
 > [!IMPORTANT]
 > An unknown number is not just an error code. K0 treats it as a sign that the task is broken or hostile, prints `k0: unknown syscall N, killing task`, and terminates the caller.
@@ -134,19 +135,29 @@ When no task is ready (for example the last runnable task died, or every task is
 | `k0: idle (waiting for a timeout)` | the first time the kernel idles while at least one waiter has a deadline |
 | `k0: all tasks stopped (none ready, no timeout pending)` | the first time the kernel idles while no waiter has a deadline |
 
-In the second state nothing can wake a task today, because there are no notification objects and no device interrupts for tasks. The machine stays idle. `tools/qemu-boot-test.sh` treats any line that starts with `k0: all tasks` as a failure.
+In the second state nothing can wake a task today, because there are no notification objects and no device interrupts for tasks other than console input. The machine stays idle. In an image with `console-input`, a task that waits for console input counts as a waiter: when that is the only thing left to wait for, the kernel prints nothing, which is the normal state of a terminal image. The second line is printed only when there is neither a timed waiter nor a console waiter. `tools/qemu-boot-test.sh` treats any line that starts with `k0: all tasks` as a failure.
 
 ## Timer interrupts from EL0
 
-The only interrupt the kernel enables is **the EL1 virtual timer**. Its interrupt number comes from the DTB, and the kernel uses no physical timer. The interrupt controller is GICv2 or GICv3, whichever the DTB says is the timer's interrupt parent. Before it writes anything, the driver checks the identification registers against that description and refuses to boot if they differ. See [dtb.md](dtb.md).
+The interrupt the kernel always enables is **the EL1 virtual timer**. An image built with `console-input` takes a second one, the console UART's receive interrupt (see below). Its interrupt number comes from the DTB, and the kernel uses no physical timer. The interrupt controller is GICv2 or GICv3, whichever the DTB says is the timer's interrupt parent. Before it writes anything, the driver checks the identification registers against that description and refuses to boot if they differ. See [dtb.md](dtb.md).
 
 An IRQ taken from EL0 is saved the same way as a system call. The handler acknowledges the interrupt. If it was the timer, it re-arms the timer for one second, and prints `k0: tick N`. In an image built with a console driver, the line also goes to the console; only the first 4 tick lines are logged. Then it calls `k0_preempt`. That function first expires the IPC timeouts that are due (`k0_ipc::expire_timeouts`), so a waiter whose deadline has passed is ready before the round-robin switch, and then rotates to the next ready task. Spurious interrupt numbers 1020 to 1023 are ignored. Any other interrupt number, or any FIQ, cannot happen by design, so the kernel prints `k0: UNEXPECTED ...` and parks.
+
+Once a tick has been counted, the handler also drains the console receive ring (an image with `console-input`), and after a task has started reading console input it stops printing the periodic tick lines (see [boot.md](boot.md)). Ticks, preemption and timeouts are unchanged.
+
+## Console interrupt
+
+An image built with `console-input` takes one more interrupt: the console UART's receive interrupt. The dispatcher tells the two apart by interrupt number (the timer's, then the console's), in the same function for IRQs taken at EL0 and at EL1. Anything else is still `k0: UNEXPECTED ...`. The console branch drains the UART into a ring of 256 bytes and never interprets a byte. It reports to the kernel binary through `k0_console_event`, a policy function like `k0_preempt`, which wakes a waiting `CONSOLE_READ` caller. The woken task goes to the end of the ready queue, so input does not preempt a running task.
+
+The interrupt is bounded by the reader. When the ring is full the kernel masks the UART's receive interrupt itself and reopens it after the reader has taken half of the ring. The same drain also runs once per tick, so input still arrives, up to a tick late, when the interrupt does not. A line that fires without a UART cause is switched off after 8 entries with `k0: console input off (interrupt N fired without a uart cause)`. The cut-off is covered only by host tests. Receive interrupts stay off until a task first reads console input with the read right.
+
+`CONSOLE_READ` takes the `Console` slot in `x0` and flags in `x1` (`NONBLOCK` = 1, `FLUSH` = 2, a timeout in ticks in bits 63..32, other bits refused with `BAD_FLAGS`). It returns the byte in `x1`, and `x2` is 1 if input was lost right before this byte. Only one task can wait at a time, a second reader gets `BUSY`, and `NO_DEVICE` means there is no input path or it was turned off. A waiter whose capability is deleted, revoked or moved wakes at once with `REVOKED`.
 
 ## How it is tested
 
 The root task self-tests start tasks that fault in each way that matters. They check that only the faulting task dies, that the code after the faulting instruction never runs, and that the root task and the other tasks continue. The faults are a store through a null pointer, an FP/SIMD instruction, a read of an address that is mapped only in the root task, a write to a read-only page, a branch into a stack page, and a read of a kernel address. The test also kills a task with one unknown system call, and checks that thread pointer registers stay separate per task.
 
-`tools/qemu-boot-test.sh` counts the lines **exactly**. It requires exactly six `k0: task fault ` lines (overridable with `K0_BOOT_FAULTS`) and exactly one `k0: unknown syscall ` line, and it requires that the fault line for the root-only address shows that address in `far`. A task that is resumed after it was destroyed, or that dies for a different reason, adds or removes a line and fails the test.
+`tools/qemu-boot-test.sh` counts the lines **exactly**. It requires exactly six `k0: task fault ` lines (overridable with `K0_BOOT_FAULTS`; an image with the terminal shows two more than the same image without it, 8 without the vault and 10 with it) and exactly one `k0: unknown syscall ` line, and it requires that the fault line for the root-only address shows that address in `far`. A task that is resumed after it was destroyed, or that dies for a different reason, adds or removes a line and fails the test.
 
 The test also requires the ordered markers, among them `k0: task fault dabort-lower`, `k0: task fault fp-simd`, `k0: task fault iabort-lower`, `k0: unknown syscall 65535, killing task` and `root: fault isolation tests pass`. It fails on `k0: FATAL`, `k0: EXCEPTION`, `k0: PANIC` and `k0: UNEXPECTED`.
 

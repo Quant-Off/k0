@@ -183,7 +183,7 @@ $ K0_LOADER_FEATURES=refuse-halt tools/build-loader.sh
 
 - **호스트 단위 테스트**: `crates/k0-efi/src/tests.rs`에 32개가 있습니다. 벡터는 실제로 측정한 펌웨어 메모리 맵입니다. 디스크립터 규칙, 겹침, 항목 한계, 작성기와 재작성, 검증기, ACPI 리더, 트리 합성을 다룹니다. 네 번째 퍼저 `fuzz_acpi_with_mutated_tables`는 테이블 이미지를 변형합니다. 2026-11-12에 200만에서 300만 케이스의 캠페인이 통과했고, 앞서 실제 불일치 하나를 찾았습니다(리더가 커널의 디스커버리가 거부하는 GIC 프레임 정렬을 받아들였습니다). 커널의 배치 규칙을 리더에 적용해 수정했습니다.
 - **결정적 퍼저 셋**: `k0-efi`의 `fuzz_plan_with_random_maps`, `fuzz_rewrite_with_mutated_trees`, `fuzz_prepare_end_to_end`입니다. 다른 퍼저와 같은 변수 `K0_FUZZ_ITERS`, `K0_FUZZ_SEED`, `K0_FUZZ_CASE`를 사용합니다. 기본값은 각각 20,000, 20,000, 5,000개의 케이스입니다. 주간 워크플로가 셋 모두를 500만 케이스로 실행합니다. 2026-11-12에 각각 500만 케이스의 캠페인이 통과했습니다. 계획 퍼저는 앞서 실제 버그 하나를 찾았습니다(물리 주소 0의 블록이 받아들여졌습니다). 수정되었습니다.
-- **호스트 테스트 스크립트**: `tools/host-test.sh`는 이제 ARM 호스트에서 276개(`k0-abi` 14, `k0-cap` 42, `k0-boot` 82, `k0-efi` 32, Ed25519 포함 13개와 제외 7개의 `k0-vault`, 두 그래뉼 각각에 `k0-mm` 43)를, `k0-mm` 테스트를 건너뛰는 그 밖의 호스트에서 190개를 실행합니다.
+- **호스트 테스트 스크립트**: `tools/host-test.sh`는 이제 ARM 호스트에서 354개(`k0-abi` 15, `k0-cap` 44, `k0-boot` 85, `k0-efi` 33, `k0-conin` 15, Ed25519 포함 20개와 제외 11개의 `k0-vault`, 볼트 feature 포함 24개와 제외 21개의 `k0-term`, 두 그래뉼 각각에 `k0-mm` 43)를, `k0-mm` 테스트를 건너뛰는 그 밖의 호스트에서 268개를 실행합니다.
 - **PE 검사**: `tools/pe-check.py <loader>.efi`는 PE 형태(섹션 4개, 쓰기와 실행이 함께 가능한 섹션 없음)와 캐시 및 MMU 명령의 순서를 검사하고 `pe-check: ok (...)`를 출력합니다.
 - **EDK2 부팅 테스트**: `tools/qemu-virt-runner.sh`는 `.efi` 인자를 EDK2 펌웨어로 부팅합니다. 기본 머신은 `virt,gic-version=3,acpi=off`이므로 디바이스 트리 경로입니다. ACPI 행은 `K0_QEMU_MACHINE=virt,gic-version=3` 또는 `virt,gic-version=2`를 넘깁니다. `tools/qemu-boot-test.sh`는 로더의 첫 줄 `k0-loader: start`부터 실패를 판정하므로 펌웨어 메시지는 세지 않습니다. `tools/build-loader.sh <커널 ELF>`는 이미 빌드된 커널을 내장하고 `.efi`의 경로(`<커널 ELF>.efi`)를 출력합니다. 그래서 UEFI 행도 다른 행과 같은 커널 바이너리를 부팅합니다. 명령은 [USAGE_KR.md](../../USAGE_KR.md)에 있습니다.
 
@@ -253,6 +253,7 @@ $ K0_LOADER_FEATURES=refuse-halt tools/build-loader.sh
 - **MADT의 GIC**: 분배기 항목 하나입니다. 버전 2는 GICv2, 3과 4는 GICv3, 0은 리디스트리뷰터가 기술되었는지로 정하고, 그 밖의 값은 거부합니다. GICv2 프레임 크기는 테이블에 없으므로 로더는 분배기에 4 KiB, CPU 인터페이스에 8 KiB를 사용합니다(Linux가 사용하는 값). GICv3 리디스트리뷰터는 GICR 항목(최대 4개)에서 오고, 없으면 CPU 항목에서 오며, 인접하면 128 KiB 또는 256 KiB 간격으로 병합합니다. 부트 CPU의 항목이 그 안에 있어야 합니다. 프레임은 정렬되어 있어야 하고, 서로 겹치지 않아야 하며, 메모리 맵 기준으로 RAM이나 펌웨어 메모리에 있으면 안 됩니다. 그렇지 않으면 로더가 거부합니다.
 - **GTDT의 타이머**: 가상 EL1 타이머 인터럽트는 16에서 31이어야 합니다.
 - **SPCR의 콘솔**(선택): PL011(타입 0x03), SBSA UART(0x0D, 0x0E), 그리고 16550(0x00, 0x01, 0x12)은 8비트 레지스터와 바이트 접근일 때만 받습니다. SPCR이 레지스터 간격을 표현할 수 없기 때문입니다.
+- **SPCR의 콘솔 인터럽트**(선택): 인터럽트 종류는 GIC 하나뿐(비트 3만)이고 전역 시스템 인터럽트는 SPI(32~1019)여야 합니다. 로더는 이를 콘솔 노드의 `interrupts` 속성(SPI 번호, 레벨, 액티브 하이)으로 쓰고 커널은 [dtb_KR.md](dtb_KR.md)대로 읽습니다. 필드를 담기에 짧은 테이블이나 다른 형태는 인터럽트 없는 콘솔이 되며 거부가 아니라 입력만 꺼집니다. 번호는 `k0: platform` 줄(`irq33`)에 나타나므로, 이 필드가 생기기 전에 만든 고정 문자열은 더 이상 맞지 않습니다.
 - **거부와 콘솔 없는 부팅의 구분**: 잘못된 테이블, GIC, 타이머, 메모리에 있는 장치는 거부합니다(`ACPI tables: <reason>`). 커널에 드라이버가 없는 콘솔, 잘못된 SPCR, 메모리에 있는 콘솔은 콘솔 없는 부팅이 됩니다. 로더는 `k0-loader: device tree built from ACPI tables (MADT, GTDT and SPCR)` 또는 `(MADT and GTDT, no usable SPCR console)`을 출력합니다.
 - **엔트로피**: ACPI로 만든 트리에는 펌웨어 시드가 없습니다. 펌웨어에 `EFI_RNG_PROTOCOL`이 있으면 커널이 32바이트를 받고, 없으면 아무것도 받지 못합니다(`k0: entropy dtb=0B`를 로그에 남기고 계속합니다).
 - **작업 영역 비우기**: 로더는 점프 전에 작업 영역도 데이터 캐시에서 비웁니다. `tools/pe-check.py`는 비우기 호출 셋(블록, 작업 영역, 트램펄린)을 요구합니다.

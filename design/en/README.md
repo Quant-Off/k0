@@ -26,5 +26,6 @@ Read them in the order of the following table the first time. This order follows
 | [scheduling.md](scheduling.md) | TCBs and their bound CNode and address space, task creation and teardown, the round-robin scheduler, and timer preemption |
 | [ipc.md](ipc.md) | Endpoints and badges, `SEND`, `RECV`, `CALL` and `REPLY_RECV`, the single-use reply right, and what happens to waiting tasks when an endpoint is deleted |
 | [vault.md](vault.md) | The signing oracle: the vault task and its frames, the `CALL` protocol and nonce, the fixed badge policy, the provider boundary, the boot seed and its wipe, features, tests, and known gaps |
+| [terminal.md](terminal.md) | Serial input and the operator terminal: why the kernel receives, the receive ring and its bounds, `CONSOLE_READ` and the Console rights, waiting and waking, the terminal's wiring and the hostile-task check, the screen and command rules, tests, and known gaps |
 
 Every note ends with a "**Known gaps**" section. The open security advisories are listed in [SECURITY.md](../../SECURITY.md).

@@ -34,6 +34,10 @@ K0 is a small operating system kernel for 64-bit ARM (AArch64) computers. It is 
 - **Write or run, never both**: no memory is writable and executable at the same time. The flip side is that no new code can become executable after boot, so programs cannot load new code.
 - **Distrust of boot input**: the hardware description handed over at boot is checked as if an attacker wrote it.
 - **Optional signing oracle**: a build option adds a task that signs messages for other tasks and never gives out its key. It is off by default, the Ed25519 implementation is unvalidated, and it keeps one key in memory only. See [INTRODUCTION.md](INTRODUCTION.md).
+- **Optional operator terminal**: a build option adds a screen on the serial line where a person types commands. It can make the signing oracle's key, read the public key and erase the key, but it cannot sign. It is off by default.
+
+> [!NOTE]
+> The terminal has no authentication, so whoever holds the serial line is the operator. Input exists only for the PL011 and the SBSA UART, and it has never been run on real hardware.
 
 The first program checks these properties with self-tests on every boot.
 
@@ -46,6 +50,12 @@ $ cd k0
 
 # Build K0 and boot it in QEMU (quit with Ctrl-A, then X)
 $ cargo virt
+```
+
+To build an image with the terminal and run it in QEMU, you can enter the following. Under `cargo run`, Ctrl-A is QEMU's own escape key, so it never reaches K0.
+
+```sh
+$ cargo run -p k0-kernel --features console,terminal,vault-ed25519
 ```
 
 [USAGE.md](USAGE.md) explains what you need, how to read the output and how to run the automatic tests.

@@ -13,7 +13,7 @@ This note describes K0's inter-process communication. It covers the following:
 - the badge that tells a server its clients apart
 - the single-use reply right that makes `CALL` safe
 
-The code is in `crates/k0-ipc/src/lib.rs`, with the endpoint queue in `crates/k0-task/src/lib.rs`.
+The code is in `crates/k0-ipc/src/lib.rs`, with the endpoint queue in `crates/k0-task/src/lib.rs`. The system call `CONSOLE_READ` waits like an IPC call and shares its timeouts, its teardown and its `REVOKED` wake-up. It is described in "Waiting for console input". It exists only in images built with `console-input`.
 
 ## Design in one paragraph
 
@@ -101,6 +101,7 @@ The teardown looks only at the task's state and cuts every kernel pointer to it:
 
 - **Ready**: removed from the ready queue.
 - **Blocked in SEND, RECV or CALL**: removed from the queue of the endpoint it waits on, whether it is the head, the middle or the tail.
+- **Waiting for console input** (`BlockedConsole`): removed from the one waiter place of the console.
 - **Waiting for a reply** (`BlockedReply`): the reply right is cut in both directions. So the server holds no right to answer it, and a late reply cannot wake a dead task.
 - **Holding a reply right**: the caller waiting for it wakes with `NO_REPLY`.
 - **Inactive, stopped or running**: nothing to unlink.
@@ -127,6 +128,7 @@ The following table lists what the caller gets when a wait ends by timeout.
 | `RECV`, `REPLY_RECV` | in the endpoint queue | `TIMEOUT` | nothing received (a reply given by `REPLY_RECV` was already delivered) |
 | `CALL` | in the endpoint queue | `TIMEOUT` | not delivered |
 | `CALL` | `BlockedReply` | `REPLY_TIMEOUT` | delivered, and the server may or may not have acted |
+| `CONSOLE_READ` | the console waiter place | `TIMEOUT` | no byte read |
 
 When a `CALL` ends with `REPLY_TIMEOUT`, the kernel clears the reply right of the server that holds it. If the server answers later, its `REPLY_RECV` finds no reply right to use, and the late reply is dropped. The next caller receives its own reply.
 
@@ -154,12 +156,42 @@ A task that has to wait is marked with its blocked state and linked into the end
 If no task is ready at that point, the kernel does not stop. It idles in `idle_until_ready` (`kernel/src/syscall.rs`): it waits for the next interrupt, wakes every waiter whose deadline has passed, and switches to a ready task if there is one. Timer ticks keep being counted and handled meanwhile. The idle loop prints one of two lines, each at most once per boot:
 
 - `k0: idle (waiting for a timeout)`: at least one waiter has a deadline, so something will wake a task.
-- `k0: all tasks stopped (none ready, no timeout pending)`: no waiter has a deadline. Nothing can wake a task in that state today, because K0 has no notification objects and no device interrupts for tasks, so the machine stays idle. `tools/qemu-boot-test.sh` treats any line that starts with `k0: all tasks` as a failure.
+- `k0: all tasks stopped (none ready, no timeout pending)`: no waiter has a deadline and no task waits for console input. Nothing can wake a task in that state today, because K0 has no notification objects and the only device interrupt that wakes a task is console input, so the machine stays idle. `tools/qemu-boot-test.sh` treats any line that starts with `k0: all tasks` as a failure.
+
+When the only thing left to wait for is console input, the kernel prints neither line. That is the normal state of a terminal image.
 
 > [!WARNING]
 > The kernel no longer halts when every task is blocked, and a task can bound its own waits with timeouts. Availability is still not protected. A task that waits without a timeout can wait forever if its partner never acts, and a confined task that holds a capability to an endpoint can still make others wait. This is the subject of advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md). The advisory is updated at release time.
 
 A server, or the root task, that must stay responsive has to give a timeout on every wait. Task isolation does not change this.
+
+## Waiting for console input
+
+`CONSOLE_READ` (number 16) reads one byte of console input. It exists only in an image built with `console-input` and a console driver that can receive (PL011 and SBSA UART, not 16550). The arguments and results are the following:
+
+| Register | Meaning |
+| --- | --- |
+| `x0` (in) | the slot of a `Console` capability with `R` |
+| `x1` (in) | flags: `NONBLOCK` = 1, `FLUSH` = 2, a timeout in ticks in bits 63 to 32. Any other bit fails with `BAD_FLAGS` |
+| `x0` (out) | 0, or an error code |
+| `x1` (out) | the byte |
+| `x2` (out) | 1 if input was lost right before this byte, otherwise 0 |
+
+One call returns one byte. The kernel never interprets a byte. `FLUSH` discards what the kernel and the device hold before the read, so that input that arrived before a prompt is not read as a command. `NONBLOCK` returns `WOULD_BLOCK` when no byte is ready.
+
+If no byte is ready, the task waits in the state `BlockedConsole`. The wait works like the waits above:
+
+- **One waiter**: only one task can wait at a time. A second reader gets `BUSY`.
+- **Timeouts**: the timeout uses the same timed list as IPC, and a wait that runs out returns `TIMEOUT`.
+- **Revocation**: a waiter whose `Console` capability is deleted, revoked or moved wakes at once with `REVOKED`, and gets no byte.
+- **No input path**: `NO_DEVICE` means that the image has no receive driver for this console, or that the input path was turned off. A waiter wakes with it when the path is turned off while it waits.
+- **Teardown**: a task that dies while it waits is removed from the waiter place.
+- **Wake-up order**: a woken reader goes to the end of the ready queue. Input does not preempt a running task.
+
+Receive interrupts stay off until a task first reads console input with the right. That first read discards what the device holds and stops the periodic `k0: tick N` lines after one line `k0: tick lines off (console input in use)`. Ticks, preemption and timeouts keep working. The receive path and its limits are described in [USAGE.md](../../USAGE.md) and [exceptions.md](exceptions.md).
+
+> [!NOTE]
+> Input waits behind running tasks. There are no priorities, so the latency of a byte is up to one tick per ready task.
 
 ## Errors
 
@@ -172,10 +204,12 @@ The following table lists the error codes and their causes.
 | `NO_RIGHTS` | the endpoint capability lacks `W` (`SEND`, `CALL`) or `R` (`RECV`, `REPLY_RECV`) |
 | `WOULD_BLOCK` | `NONBLOCK` was set and the other side was not ready |
 | `NO_REPLY` | the receiver of a `CALL` exited, faulted or took a newer `CALL` without replying, or was destroyed |
-| `REVOKED` | the original capability of the endpoint was deleted while the caller was queued on it |
+| `REVOKED` | the original capability of the endpoint was deleted while the caller was queued on it. For `CONSOLE_READ`, the `Console` capability was deleted, revoked or moved while the caller waited |
 | `TIMEOUT` | the wait ended before a partner arrived, and the message was not delivered |
 | `REPLY_TIMEOUT` | a `CALL` was delivered but no reply came in time, and the server may or may not have acted |
-| `BAD_FLAGS` | a reserved bit (31 to 1) of the flags register was set |
+| `BAD_FLAGS` | a reserved bit (31 to 1) of the flags register was set. For `CONSOLE_READ`, any bit other than `NONBLOCK`, `FLUSH` and the timeout |
+| `BUSY` (-23) | `CONSOLE_READ` found another task already waiting for console input |
+| `NO_DEVICE` (-24) | `CONSOLE_READ` found no input path: the image has no receive driver for the console, or the path was turned off |
 
 ## How it is tested
 
@@ -198,6 +232,8 @@ The timeout tests (`test_timeouts` in `userspace/root-task/src/main.rs`) wait fo
 - that a waiter woken by a message keeps no deadline.
 
 The timeout tests take their objects from the largest untyped. The tests wait for real ticks, so a boot test takes about 4 seconds longer.
+
+The input tests are part of the root task self-test in images built with `console-input`. They print `root: backspace without the input right [?]` and `root: console input tests pass`, or `root: console input tests pass (no input path)`, or `... cut short (the line is busy)` when bytes arrive during the test. The receive logic is in the separate crate `crates/k0-conin` and is tested on the host with a fake UART. `tools/term-test.py` runs a scripted session against a terminal image.
 
 The capability tests check that a badge can be set once and is refused a second time, that a copy keeps the badge, that a send-only capability cannot receive and a receive-only one cannot send (`NO_RIGHTS`), and that revoking an endpoint removes every copy while the original stays.
 
@@ -224,6 +260,7 @@ The boot test script also requires an exact number of `k0: task fault` lines and
 - **Timeouts say when a task becomes ready, not when it runs**: there is no priority and no CPU budget, and the scheduler is round robin with a one-tick slice (see [scheduling.md](scheduling.md)).
 - **Long system calls**: the kernel is not preemptible, so a long call such as `CAP_REVOKE` on an untyped with many objects delays every other task and every timeout.
 - **Fatal stops**: a `k0_arch::fatal` or a kernel panic still stops the machine.
-- **Timing source for EL0**: whether the tick-aligned wake-up can be used for timing attacks has not been analysed.
+- **Timing source for EL0**: whether the tick-aligned wake-up can be used for timing attacks has not been analysed. In an image with console input, an outside party can cause interrupts while tasks run (bounded by the reader), and the reader learns arrival times finer than the tick. Other tasks can notice the stolen time. This timing channel is not analysed either.
+- **Input latency**: a `CONSOLE_READ` waiter is woken behind running tasks, so a byte can wait up to a tick per ready task.
 - **A queued sender**: it delivers once after revocation. A sender that is already waiting on an endpoint keeps the badge of the send that queued it. If its capability is revoked while it waits, its message is still delivered once to the next receiver.
 - **Four words per message**: larger data needs shared memory. The holder of a task's `AddrSpace` capability must map it into that task's address space, since tasks can now run in separate address spaces.

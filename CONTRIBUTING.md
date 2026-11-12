@@ -68,9 +68,9 @@ $ tools/build-loader.sh   # put the built kernel into the UEFI loader, prints th
 Input and output are optional in K0. You can select them with Cargo features of the kernel crate.
 
 > [!NOTE]
-> A feature for input or for a terminal does not exist yet. Console output is the only thing you can select today.
+> Console input and the operator terminal are features too (`console-input`, `terminal`), and they are off by default.
 
-Console output exists only in an image built with a console feature (`console-pl011`, `console-16550`, `console`). No image has input. `cargo virt` is an alias for `cargo run -p k0-kernel --features console`. [USAGE.md](USAGE.md#console-features) explains the features.
+Console output exists only in an image built with a console feature (`console-pl011`, `console-16550`, `console`). An image has input only if it was built with `console-input` or `terminal`. `cargo virt` is an alias for `cargo run -p k0-kernel --features console`. [USAGE.md](USAGE.md#console-features) explains the features.
 
 The kernel never exits. Once the root task finishes its self-tests, it yields forever and a kernel with console prints `k0: tick N` once a second. Stop QEMU with `Ctrl-A X`.
 
@@ -92,11 +92,11 @@ $ cargo build -p k0-kernel --features console --offline
 $ tools/qemu-boot-test.sh   # boot under QEMU and check the self-tests
 ```
 
-`tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi` and `k0-vault` on any host (276 tests on an AArch64 host, 190 elsewhere). It runs `k0-vault` twice, with and without the algorithm feature `vault-ed25519`, which gives 13 and 7 tests. The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
+`tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi`, `k0-conin`, `k0-vault` and `k0-term` on any host (354 tests on an AArch64 host, 268 elsewhere). It runs `k0-vault` twice, with and without the algorithm feature `vault-ed25519`, which gives 20 and 11 tests. It runs `k0-term` with and without the vault feature, which gives 24 and 21 tests. The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
 
 `tools/qemu-boot-test.sh` boots the debug kernel, checks the boot log line by line in a fixed order, fails on any error marker, and stops QEMU as soon as the root task reports `root: sched tests pass`. Besides the pass lines, it expects `k0: kernel reserve ` before the `k0: untyped ` lines, `k0: idle (waiting for a timeout)` and `root: timeout tests pass` after `root: teardown tests pass`, and `root: kernel reserve tests pass` after `root: revocation tests pass`. Any line that starts with `k0: all tasks` is a failure. It also counts the timer tick lines between `root: teardown tests pass` and `root: timeout tests pass` and wants at least 4, because EL0 has no clock and this is how the lower bound of a timeout is checked. The timeout tests wait for real ticks, so a boot takes about 4 seconds longer than it did before. Set `K0_BOOT_TIMEOUT` (seconds) on slow machines. It reads the serial port, so it needs an image with a console driver. To test an image without console, use `K0_BOOT_MEMLOG`, `K0_BOOT_SERIAL=empty` and `K0_BOOT_CONSOLE_PAGE`, which are described in "Testing an image without console" in [USAGE.md](USAGE.md#testing-an-image-without-console).
 
-An image with the signing oracle (`vault` or `vault-ed25519`) has two more intended faults, so it prints 8 `k0: task fault` lines instead of 6. Run the test with `K0_BOOT_FAULTS=8` and require `root: oracle tests pass` with `K0_BOOT_REQUIRE`. The boot matrix has the rows `vault`, `vault-max`, `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault` and the static check `vault-symbols` for it, and 61 rows in total on a Mac with HVF and 51 in CI. [USAGE.md](USAGE.md) describes the rows.
+An image with the signing oracle (`vault` or `vault-ed25519`) has two more intended faults, so it prints 8 `k0: task fault` lines instead of 6. Run the test with `K0_BOOT_FAULTS=8` and require `root: oracle tests pass` with `K0_BOOT_REQUIRE`. The boot matrix has the rows `vault`, `vault-max`, `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault` and the static check `vault-symbols` for it, and 76 rows in total on a Mac with HVF and 65 in CI. The rows `input-*` and `term-*` cover console input and the terminal. A terminal image prints two more `k0: task fault` lines (8 without the vault, 10 with it), and `tools/term-test.py <image>` runs its scripted serial session. [USAGE.md](USAGE.md) describes the rows.
 
 The default QEMU CPU model (`cortex-a72`) has no PAC, PAN or RNDR. To exercise those paths as well, boot on QEMU's `max` model and require the matching log lines. Any arguments after the kernel path are passed to QEMU. You can enter it as follows:
 

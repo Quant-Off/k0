@@ -102,7 +102,7 @@ $ cargo build -p k0-kernel --offline --no-default-features --features granule-16
 | `k0: dtb rejected: ...` (실패할 때만) | `map_dtb`가 별칭을 통해 DTB를 읽기 전용으로 매핑합니다. 포인터(null이 아니고 8바이트 정렬)와, 매직과 전체 크기만 읽는 `dtb_span`을 검사합니다. |
 | `k0: memory ...` | 별칭을 통해 DTB를 파싱합니다. 파서는 [dtb_KR.md](dtb_KR.md)에서 다룹니다. |
 | `k0: console drivers [...]` | 플랫폼 기동의 첫 줄이며, 나중에 플랫폼이 거부되더라도 출력됩니다. 이 이미지에 들어 있는 콘솔 드라이버를 알려 줍니다("선택적 콘솔 출력" 참고). |
-| `k0: platform ...` | `bring_up_platform`이 DTB에서 콘솔, 인터럽트 컨트롤러, 타이머 인터럽트를 찾아 불변인 플랫폼 기술서 하나를 만듭니다. 디바이스 페이지를 매핑하기 전에 기술서를 메모리 맵과 대조합니다. RAM은 2^47 아래여야 하고, 커널 이미지와 DTB는 선언된 메모리 안에 있어야 하며, 그래뉼 단위로 넓힌 디바이스 구간은 메모리나 예약 구간과 겹치거나 CPU의 물리 주소 폭(`k0_mm::pa_bits`)을 넘으면 안 됩니다. 고정 모드에서는 이어서 이 줄을 기대값과 비교합니다. 그 뒤에야 콘솔을 연결합니다. 이 종류의 콘솔 드라이버가 있는 이미지는 콘솔을 매핑하고 연결하며, 이때 버퍼에 쌓인 로그가 재생됩니다. 드라이버가 없는 이미지는 아무것도 매핑하지 않고 `k0: no console (driver not built in)`을 출력합니다. 플랫폼이 거부되더라도 콘솔만으로 대조를 통과하면(그리고 이미지가 고정 모드가 아니고 드라이버가 있으면) 사유가 보이도록 콘솔을 먼저 연결합니다. 콘솔이 없으면 `k0: no console (...)`이 이유를 알려 줍니다. [dtb_KR.md](dtb_KR.md)를 참고하세요. |
+| `k0: platform ...` | `bring_up_platform`이 DTB에서 콘솔, 콘솔의 인터럽트(콘솔 노드에 쓸 만한 것이 있을 때), 인터럽트 컨트롤러, 타이머 인터럽트를 찾아 불변인 플랫폼 기술서 하나를 만듭니다. 디바이스 페이지를 매핑하기 전에 기술서를 메모리 맵과 대조합니다. RAM은 2^47 아래여야 하고, 커널 이미지와 DTB는 선언된 메모리 안에 있어야 하며, 그래뉼 단위로 넓힌 디바이스 구간은 메모리나 예약 구간과 겹치거나 CPU의 물리 주소 폭(`k0_mm::pa_bits`)을 넘으면 안 됩니다. 이 줄에는 콘솔 인터럽트 번호가 들어갑니다(예: `k0: platform con=pl011@0x9000000,irq33 ...`). 고정 모드에서는 이어서 이 줄을 기대값과 비교하므로, 이 필드가 생기기 전에 만든 고정 문자열은 더 이상 맞지 않아 다시 만들어야 합니다. 그 뒤에야 콘솔을 연결합니다. 이 종류의 콘솔 드라이버가 있는 이미지는 콘솔을 매핑하고 연결하며, 이때 버퍼에 쌓인 로그가 재생됩니다. 드라이버가 없는 이미지는 아무것도 매핑하지 않고 `k0: no console (driver not built in)`을 출력합니다. 플랫폼이 거부되더라도 콘솔만으로 대조를 통과하면(그리고 이미지가 고정 모드가 아니고 드라이버가 있으면) 사유가 보이도록 콘솔을 먼저 연결합니다. 콘솔이 없으면 `k0: no console (...)`이 이유를 알려 줍니다. [dtb_KR.md](dtb_KR.md)를 참고하세요. |
 | `k0: root task integrity ok (...)` | 내장 루트 태스크 이미지를 다시 해시하고 빌드 시점에 고정된 해시와 비교합니다. |
 | `k0: entropy ...`, `k0: pac=... bti=... pan=...` | PAC 키를 파생해 적재하고 키 워드를 부트 스택에서 지웁니다. 루트 태스크에 넘길 32바이트 시드도 여기서 PAC 키와 독립적으로 파생하여 이양까지 보관합니다. PAN을 켜고, 카운터·디버그·PMU에 대한 EL0 접근을 끕니다. [hardening_KR.md](hardening_KR.md)를 참고하세요. |
 | `k0: irq on (timer 1s)` | `setup_irq`가 필요한 인터럽트 컨트롤러 페이지만 매핑합니다. GICv3는 리디스트리뷰터 프레임을 하나씩 들여다보며 부트 CPU의 프레임을 찾은 뒤, 그 프레임과 SGI 프레임만 매핑합니다. 드라이버는 GIC 식별 레지스터가 DTB의 설명과 맞는지 확인합니다. EL1 가상 타이머는 플랫폼 기술서의 인터럽트 번호로 설정합니다. IRQ와 SError의 마스크를 해제합니다. |
@@ -110,7 +110,8 @@ $ cargo build -p k0-kernel --offline --no-default-features --features granule-16
 | `k0: root task loaded (entry ...)` | 루트 태스크를 윈도우의 프레임에 복사하고, 윈도우에 루트 TCB를 만들고, 주소 공간을 만듭니다. 커널은 사용자 루트 테이블의 물리 주소를 출력하지 않습니다. 이후 이 주소 공간을 주소 공간 등록부에 올립니다. [user-address-space_KR.md](user-address-space_KR.md)를 참고하세요. |
 | `k0: memory <base> + <size> not handed out (<reason>)`(일어날 때만), `k0: kernel reserve <T> tables + <E> address space entries = <B> bytes in <N> ranges` | `reserve_kernel_share`가 untyped 케이퍼빌리티가 만들어지기 전에 비어 있는 물리 범위마다 커널 몫을 떼어 냅니다("untyped 메모리에서 커널 몫 떼어 내기" 참고). 자기 몫을 담지 못하는 범위는 넘기지 않으며, 이때 커널은 첫 번째 종류의 줄에 이유를 출력합니다. 두 번째 줄은 한 번 출력됩니다. 예를 들어 512 MiB, 4 KiB 그래뉼의 QEMU virt에서는 `k0: kernel reserve 262 tables + 130130 address space entries = 0x206000 bytes in 3 ranges`입니다. |
 | `k0: untyped ...`, `k0: root cnode ready (N caps, N untyped, N image frames, N slots)` | 루트 CNode(윈도우 안의 오브젝트이며 슬롯은 `ROOT_CNODE_SLOTS` = 512개, 로그에도 그렇게 나옵니다)를 채웁니다. 슬롯 1은 루트 TCB, 2는 루트 주소 공간, 3은 콘솔, 4는 루트 CNode 자신이고, 이어서 넘기기로 한 비어 있는 물리 범위마다 untyped 케이퍼빌리티, 루트 태스크 이미지의 매핑된 그래뉼마다 Frame 케이퍼빌리티 하나(text는 R과 X, 읽기 전용 데이터는 R, 데이터는 R과 W)가 들어갑니다. 마지막으로 루트 태스크를 다른 태스크와 똑같이 자신의 CNode와 주소 공간에 묶습니다. 두 케이퍼빌리티의 복사본이 TCB에 들어갑니다. [capabilities_KR.md](capabilities_KR.md)를 참고하세요. |
-| `k0: bootinfo page ready` | 케이퍼빌리티 목록을 읽기 전용 bootinfo 페이지(레이아웃 버전 3)에 기록합니다. 헤더와 슬롯마다 하나의 디스크립터이며, 이미지 Frame마다 VA, 크기, 권한이 들어갑니다. 이 페이지에는 부트 시드가 들어 있지 않습니다. |
+| `k0: console input on (pl011 irq 33)` 또는 `k0: console input off (<reason>)` | `console-input`으로 빌드한 이미지만 플랫폼이 받아들여진 직후에 출력합니다. "선택적 콘솔 입력"을 참고하십시오. |
+| `k0: bootinfo page ready` | 케이퍼빌리티 목록을 읽기 전용 bootinfo 페이지(레이아웃 버전 4)에 기록합니다. 헤더와 슬롯마다 하나의 디스크립터이며, 이미지 Frame마다 VA, 크기, 권한이 들어갑니다. 이 페이지에는 부트 시드가 들어 있지 않습니다. |
 | `k0: user w^x checks pass` | `TTBR0`가 사용자 테이블을 가리키고, identity 매핑은 사라졌으며, 사용자 매핑을 EL0와 EL1 양쪽에서 검사합니다. |
 | `k0: dtb seeds wiped <n>B` | 이제 DTB는 필요 없으므로 커널이 그 안의 `rng-seed`와 `kaslr-seed` 바이트를 0으로 지웁니다(읽기 전용 별칭을 쓰는 동안만 읽기·쓰기로 바꿈). 지운 바이트를 다시 읽어 확인하고, 커널이 가진 자기 사본도 지웁니다. QEMU virt에서는 `40B`입니다. 다시 읽은 값이 0이 아니면 줄은 `k0: WARNING dtb seeds not wiped`가 됩니다. [hardening_KR.md](hardening_KR.md)를 참고하세요. |
 | `k0: device pages [...] of 0x1000 bytes` | 커널이 매핑한 채로 두는 모든 디바이스 페이지입니다. 이 줄 뒤에 커널은 더 이상 디바이스를 매핑하지 않습니다. |
@@ -153,12 +154,9 @@ $ cargo build -p k0-kernel --offline --no-default-features --features granule-16
 
 ## 선택적 콘솔 출력
 
-K0에서 입력 및 출력은 선택 사항입니다. 커널 크레이트(`k0-kernel`)의 Cargo features로 선택할 수 있습니다.
+K0에서 입력 및 출력은 선택 사항입니다. 커널 크레이트(`k0-kernel`)의 Cargo features로 선택할 수 있습니다. 콘솔 출력은 아래 콘솔 feature로 선택합니다. 콘솔 입력과 운영자 터미널에는 별도의 feature가 있으며, "선택적 콘솔 입력"에서 설명합니다.
 
-> [!NOTE]
-> 입력 또는 터미널용 feature는 아직 없습니다. 지금 선택할 수 있는 것은 콘솔 출력뿐입니다.
-
-콘솔 출력은 콘솔 feature를 포함해 빌드한 이미지에만 있습니다(옵트인). 입력은 어떤 이미지에도 없습니다. 다음 그림은 빌드에 포함한 feature에 따라 출력이 닿는 곳을 보여 줍니다.
+콘솔 출력은 콘솔 feature를 포함해 빌드한 이미지에만 있습니다(옵트인). `console-input` 없이 빌드한 이미지에는 입력 코드가 전혀 없습니다. 다음 그림은 빌드에 포함한 feature에 따라 출력이 닿는 곳을 보여 줍니다.
 
 <p align="center">
   <img src="../../assets/console-features_KR.svg" alt="콘솔 feature 없이 빌드한 이미지는 메모리의 부트 로그에만 출력하고, 콘솔 feature로 빌드한 이미지는 해당 UART에도 출력합니다">
@@ -219,10 +217,29 @@ $ K0_PIN='...' cargo build -p k0-kernel --features console --offline --target-di
 
 **기여자 규칙**: 다음 규칙을 지켜야 합니다.
 
-- 새로운 입력 또는 출력 경로는 처음부터 Cargo feature 뒤에 둡니다(지금 있는 것은 콘솔 출력뿐입니다).
+- 새로운 입력 또는 출력 경로는 처음부터 Cargo feature 뒤에 둡니다(지금 있는 것은 콘솔 출력, `console-input`, `terminal`입니다).
 - feature는 더하기만 하며 `default`에 추가하지 않습니다.
 - 지원하는 조합마다 부팅 매트릭스에 행을 둡니다.
 - 스크립트, `virt` 별칭, CI는 feature를 명시합니다.
+
+### 선택적 콘솔 입력
+
+콘솔 입력은 두 번째 옵트인 계층입니다. 기본값은 꺼짐이며, feature는 기능을 더하기만 합니다. 다음 표는 `k0-kernel`의 feature를 보여 줍니다.
+
+| Feature | 추가하는 것 |
+| --- | --- |
+| `console-input` | 콘솔 UART의 커널 수신 경로와 시스템 콜 `CONSOLE_READ`([exceptions_KR.md](exceptions_KR.md) 참고). 콘솔 드라이버 feature가 있어야 동작합니다. 수신은 PL011과 SBSA UART에만 있어서, 16550 콘솔은 출력만 있고 입력은 없습니다. |
+| `terminal` | 루트 태스크 이미지에 들어가는 운영자 터미널 태스크. `console-input`을 함께 켭니다. |
+
+> [!NOTE]
+> `console-input` 없이 빌드한 이미지에는 수신 코드도, `CONSOLE_READ`도, 아래 로그 줄도 없습니다. 정적 매트릭스 행 `input-symbols`가 이를 검사합니다.
+
+- **기동**: 콘솔 인터럽트 번호는 디바이스 트리([dtb_KR.md](dtb_KR.md) 참고)에서 오고, UEFI에서는 ACPI SPCR 테이블에서 옵니다. 이 번호는 `k0: platform` 줄에 들어갑니다. 수신 인터럽트는 태스크가 읽기 권리로 콘솔 입력을 처음 읽을 때까지 꺼져 있습니다. 쓸 만한 인터럽트가 없는 콘솔 노드는 부팅 거부 사유가 아니며, 입력만 꺼집니다.
+- **로그 줄**: `k0: console input on (pl011 irq 33)` 또는 `k0: console input off (<reason>)`입니다. 이유는 `no console`, `no receive driver for this uart`, `no usable interrupt in the device tree`, `register frame too small`, `console not attached`, `interrupt number out of range`, `interrupt not available`입니다. 인터럽트 번호가 틀려도 입력 경로만 잃습니다.
+- **첫 읽기**: 장치가 쥐고 있던 바이트를 버리고, 줄 하나 `k0: tick lines off (console input in use)`를 남긴 뒤 주기적인 `k0: tick N` 줄을 멈춥니다. 틱, 선점, 타임아웃은 그대로 동작합니다.
+- **증거**: 행 `input-only`, `input-gicv2`, `input-16550`, `input-bad-irq`, `input-symbols`(정적), `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi`, `hvf-term`이 `tools/boot-matrix.sh`에 있습니다. `tools/qemu-boot-test.sh`는 `K0_BOOT_INPUT=on|off`, `K0_BOOT_SERVICE=vault|plain|none`, 판정 전용 `K0_BOOT_JUDGE`를 읽습니다. `tools/term-test.py <image>`는 QEMU 시리얼 포트로 스크립트 터미널 세션을 실행합니다.
+
+SBSA UART 경로, FIFO 오버런, 수신 타임아웃 인터럽트는 QEMU에서 실행되지 않습니다. 가짜 UART를 쓰는 호스트 테스트(`crates/k0-conin`)만 이를 다룹니다.
 
 ## 신뢰 문제
 
@@ -302,5 +319,5 @@ $ cargo build -p k0-kernel --features console --offline
 - 코어 하나만 실행되며, 부트로더가 CPU를 정확히 하나만 진입시켜야 합니다. K0에는 다른 CPU를 시작하거나 파킹하는 코드가 없습니다.
 - 커널은 항상 같은 가상 주소에 놓입니다. 주소 무작위화가 없습니다.
 - 릴리즈 빌드는 패닉 때 아무것도 출력하지 않습니다. 의도한 동작이지만, 릴리즈 빌드에서는 패닉이 나도 진단을 얻을 수 없다는 뜻이기도 합니다.
-- 입력은 어떤 이미지에도 없습니다. 콘솔 출력은 콘솔 feature를 포함해 빌드한 이미지에만 있으며, 그 증거의 한계는 "선택적 콘솔 출력"에 있습니다.
+- 콘솔 출력은 콘솔 feature를 포함해 빌드한 이미지에만 있고, 콘솔 입력은 `console-input`으로 빌드한 이미지에만 있습니다. 그 증거의 한계는 "선택적 콘솔 출력"과 "선택적 콘솔 입력"에 있습니다.
 - UEFI에서는 로더의 캐시 비우기와 MMU 끄기를 QEMU로 테스트할 수 없고(캐시가 없습니다), ACPI만 있는 펌웨어는 세 정적 테이블만으로 부팅합니다(부팅해 본 것은 QEMU virt뿐입니다). 로더의 한계는 [uefi_KR.md](uefi_KR.md)에 모두 있습니다.

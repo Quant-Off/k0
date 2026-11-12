@@ -35,6 +35,7 @@ In the following table, you can find the words used in this document.
 | **Endpoint** | A mailbox through which tasks exchange messages (IPC) |
 | **System call** | A request that a program makes to the kernel |
 | **Interrupt** | A signal from the hardware, such as a timer, that makes the processor stop and run the kernel |
+| **Terminal** | A screen on the serial line where a person types commands and reads the answers. In K0 one ordinary task provides it |
 
 ## Goals
 
@@ -46,7 +47,7 @@ K0 is meant to become the isolation core of high-security systems. The targets a
 - **Research base**: formal verification and certification research
 
 > [!NOTE]
-> Only a first small step exists: the optional signing oracle described under "What works today". The rest does not work yet. Today K0 is a research platform: it boots and checks its own security properties, but by default it does no useful work of its own yet.
+> Only a first small step exists: the optional signing oracle and the operator terminal that drives it over the serial line, both described under "What works today". The rest does not work yet. Today K0 is a research platform: it boots and checks its own security properties, but by default it does no useful work of its own yet.
 
 ## What works today
 
@@ -76,39 +77,40 @@ K0 is meant to become the isolation core of high-security systems. The targets a
 
 - **Finding devices**: from the device tree the kernel takes only three things.
 
-  - **Console**: the node named by `stdout-path` in `/chosen` (PL011, SBSA UART or 16550 family).
+  - **Console**: the node named by `stdout-path` in `/chosen` (PL011, SBSA UART or 16550 family). If the node has `interrupts`, its interrupt number is read as well, and it is used for input only. Through the UEFI loader it comes from the ACPI SPCR table.
   - **Interrupt controller**: the interrupt parent of the timer node (GICv2 or GICv3).
   - **Timer interrupt**: the interrupt number of the EL1 virtual timer.
 
-  They go into one platform descriptor that never changes, printed as a `k0: platform ...` line. It is checked against the memory map before any device page is mapped. The hardware must agree with the device tree (the identification registers of the GIC and the PL011), otherwise the kernel refuses to boot. With any other UART, or without `stdout-path`, there is no console. Every image finds and checks the console node this way, even an image that never drives the console (see the next item). A device tree whose console fails the checks is therefore refused by every image.
+  They go into one platform descriptor that never changes, printed as a `k0: platform ...` line. It is checked against the memory map before any device page is mapped. The hardware must agree with the device tree (the identification registers of the GIC and the PL011), otherwise the kernel refuses to boot. With any other UART, or without `stdout-path`, there is no console. Every image finds and checks the console node this way, even an image that never drives the console (see the next item). A device tree whose console fails the checks is therefore refused by every image. A console node without a usable interrupt is not a reason to refuse: only input is switched off.
 
-- **Console output is optional**: input and output are optional in K0. You can select them with Cargo features of the kernel crate.
+- **Console input and output are optional**: input and output are optional in K0. You can select them with Cargo features of the kernel crate. Console output exists only in an image built with a console feature, and console input exists only in an image built with `console-input` or `terminal`. In the following table, you can find the Cargo features.
+
+| Feature | What it adds |
+| --- | --- |
+| `console-pl011` | The transmit driver for PL011 and SBSA UART |
+| `console-16550` | The transmit driver for the 16550 family |
+| `console` | Both transmit drivers above |
+| `console-input` | The receive path for the console UART and the system call `CONSOLE_READ`. It needs a console driver feature to do anything |
+| `terminal` | The operator terminal task in the root task image. It turns `console-input` on |
 
 > [!NOTE]
-> A feature for input or for a terminal does not exist yet. Console output is the only thing you can select today.
-
-Console output exists only in an image built with a console feature. No image has input. In the following table, you can find the Cargo features that add a transmit driver.
-
-| Feature | Transmit driver it adds |
-| --- | --- |
-| `console-pl011` | PL011 and SBSA UART |
-| `console-16550` | The 16550 family |
-| `console` | Both of the above |
+> Input exists only for the PL011 and the SBSA UART. A 16550 console has output and no input.
 
 These features only add and are not in `default`, so **every build command must name the features**, for example `cargo build -p k0-kernel --features console --offline`. An image built without them has the following properties:
 
 - It contains no UART driver code.
 - It never maps the console device page.
 - It writes nothing to a UART.
+- It has no receive code and no `CONSOLE_READ`.
 - It prints `k0: no console (driver not built in)`.
 - All its output goes only to the boot log.
 
-`DEBUG_PUTC`, the `Console` capability and the boot log stay in every image, and so does the check of the console node. `grep -a 'k0: console drivers' <image file>` tells which drivers an image has (a label, not proof), and `k0: device pages [...]` lists every device page the kernel keeps mapped. The UEFI loader still prints through the firmware console. See [design/en/boot.md](design/en/boot.md) and the section "Optional console output" in [SECURITY.md](SECURITY.md).
+`DEBUG_PUTC`, the `Console` capability and the boot log stay in every image, and so does the check of the console node. The `Console` capability carries the rights R (read input) and W (write output). A copy can only lose them, and the root task's capability has W, and R only in images with `console-input`. `grep -a 'k0: console drivers' <image file>` tells which drivers an image has (a label, not proof), and `k0: device pages [...]` lists every device page the kernel keeps mapped. The UEFI loader still prints through the firmware console. See [design/en/boot.md](design/en/boot.md) and the section "Optional console output" in [SECURITY.md](SECURITY.md).
 
 - **Boot log**: every line the kernel prints also goes into a 16 KiB buffer in kernel memory. Lines printed before the console is attached are replayed once it is. With no console, this buffer is the only record. `tools/boot-log.py` reads it from the memory of a QEMU guest. Output of user tasks is recorded only up to a quota (6 KiB of the 16 KiB), and only the first 4 timer tick lines are logged.
 - **Timer**: only the EL1 virtual timer is used, so it works inside hypervisor guests. The image never touches the physical timer, and the boot matrix checks that.
 - **Granule**: the page size is 4 KiB by default. A 16 KiB build is a build option (see [USAGE.md](USAGE.md)). It is not selected at run time, and on a processor without 16 KiB support the 16 KiB image refuses to boot.
-- **Pinned build**: an image built with `K0_PIN` set to the platform line of a boot log refuses to boot when the discovered platform, the entry level or the RAM range differs. This catches a wrong board or a swapped device tree. It is not a defence against a hostile boot chain, because the comparison uses values that come from the device tree.
+- **Pinned build**: an image built with `K0_PIN` set to the platform line of a boot log refuses to boot when the discovered platform, the entry level or the RAM range differs. The platform line now also carries the console interrupt number (`con=pl011@0x9000000,irq33`), so pin strings made earlier must be made again. This catches a wrong board or a swapped device tree. It is not a defence against a hostile boot chain, because the comparison uses values that come from the device tree.
 - **Protecting its own memory**: the kernel keeps the following.
   - No page of kernel memory is both writable and executable (W^X).
   - An empty guard page sits below the kernel's boot stack, so running off the end of the stack stops the kernel instead of damaging other memory.
@@ -132,7 +134,7 @@ These features only add and are not in `default`, so **every build command must 
 - **Running tasks**: a task is tied to one key ring and one address space when it is set up (TCB_CONFIGURE) and then started (TCB_RESUME). Tasks take turns, and a timer interrupts a task that runs too long (round-robin scheduling with timer preemption). A task can give up its turn (YIELD) or finish (EXIT).
 - **Messages**: tasks exchange short messages that travel in processor registers. The sender waits until the receiver takes the message (synchronous IPC: SEND, RECV, CALL, REPLY_RECV). Sending needs the write right on the mailbox key and receiving needs the read right. The receiver learns the tag of the sender's key, and the right to reply can be used only once.
 - **Timeouts**: every one of these calls can carry a time limit, counted in timer ticks (one tick is one second). If no partner arrives in time, the call returns an error (`TIMEOUT`, or `REPLY_TIMEOUT` when a `CALL` was delivered but no reply came). Without a limit a task waits as long as it takes. The wait lasts at least the given number of ticks and may be a little longer. The limit says when the task becomes ready again, not when it runs.
-- **Idle**: when no task can run, the kernel no longer stops. It waits for the next interrupt, wakes tasks whose time limit has passed and carries on. If nothing can ever wake a task, the machine stays idle and the boot log says `k0: all tasks stopped (none ready, no timeout pending)`.
+- **Idle**: when no task can run, the kernel no longer stops. It waits for the next interrupt, wakes tasks whose time limit has passed and carries on. If nothing can ever wake a task, the machine stays idle and the boot log says `k0: all tasks stopped (none ready, no timeout pending)`. That line appears only when there is neither a timed waiter nor a task waiting for console input. A terminal image prints nothing there, because waiting for input is its normal state.
 - **Kernel tables sized at boot**: the kernel sets aside the memory for its own page tables and address space entries at boot, in proportion to the memory it hands out (about 0.4 % of RAM). So a task cannot use these tables up, and the number of address spaces is limited only by memory.
 - **Crash containment**: when a task crashes, makes a system call the kernel does not know, or exits, only that task is stopped (fault isolation).
 - **Task isolation and taking keys back**: tasks tied to different key rings and address spaces cannot reach each other's memory or keys. Every key remembers which key it was copied from (derivation list). Taking a key back (CAP_REVOKE) or deleting it (CAP_DELETE) has the following effects.
@@ -147,11 +149,28 @@ These features only add and are not in `default`, so **every build command must 
 - **Signing oracle (optional)**: this is the first service that does a job for other programs. A digital signature is a short value that proves a message was approved by whoever holds a secret key, and anyone with the matching public key can check it. A signing oracle is a program that signs messages for others and never shows its secret key. In K0 a vault task holds one key. Client tasks send it messages through a mailbox (IPC) and get back a signature or the public key, but never the key. The vault runs in its own address space, so no task other than the root task can map its memory.
   - **Off by default**: two Cargo features of the kernel crate add it. `vault` adds the service, with no signing algorithm: every signing request answers "unsupported". `vault-ed25519` adds the algorithm. For example: `cargo build -p k0-kernel --features console,vault-ed25519`. The vault's code is part of the root task image, which is checked at boot like before, and nothing is loaded after boot. The default image has no vault code and no crypto code.
   - **Algorithm**: Ed25519 (PureEdDSA with SHA-512, as in FIPS 186-5 and RFC 8032). The implementation is the vendored crate `ed25519-dalek` 2.2.0 and has no validation of any kind. The key does not come from an approved random bit generator.
-  - **Who may do what**: the rules are fixed at build time and depend on the tag (badge) that the kernel puts on each message, so a client cannot forge it. The root task is the admin: it can ask for the status, create the key once (INIT) and wipe it (ZEROIZE), but it cannot sign. A signer can ask for the status and the public key and can sign. A reader can ask for the status and the public key only. A call without a known tag is refused. All signers share the one key, so a signature does not tell which client asked.
-  - **The key**: the vault makes the key only if the boot seed holds enough randomness (at least 32 bytes from the device tree `rng-seed` or 256 bits from the processor's random number instruction RNDR). Otherwise it refuses. Before the kernel starts the root task, it zeroes the seed bytes in the device tree it received, and the boot log says `k0: dtb seeds wiped <n>B`. The seed is as good as its inputs and no better. Copies that the firmware or the UEFI loader keep are not wiped.
-  - **Self-test**: every image built with `vault` runs a test in the root task, which plays the admin and several clients. It shows that an unbadged call is refused, that the key is made once, that the admin cannot sign, that a signer gets a signature that checks and fails for a changed message, that a reader cannot sign, that a client that writes its read-only reply memory or reads another client's request is stopped by a fault, and that signing is refused after ZEROIZE. It ends with `root: oracle tests pass`. The test clients run one after another in one address space, so it shows the isolation between the vault and a client, not between clients.
+  - **Who may do what**: the rules are fixed at build time and depend on the tag (badge) that the kernel puts on each message, so a client cannot forge it. There are four roles. The root task is the admin: it can ask for the status, deliver the seed once (INIT), create the key (KEYGEN) and wipe it (ZEROIZE), but it cannot sign. The operator (the terminal) can ask for the status and the public key, create the key and wipe it, but it can neither sign nor deliver a seed. A signer can ask for the status and the public key and can sign. A reader can ask for the status and the public key only. A call without a known tag is refused. All signers share the one key, so a signature does not tell which client asked.
+  - **The key**: INIT only delivers the boot seed. The vault takes and holds the seed (`seeded`) only if it has enough randomness (at least 32 bytes from the device tree `rng-seed` or 256 bits from the processor's random number instruction RNDR), and otherwise refuses. KEYGEN then makes the key of the chosen algorithm from the held seed and wipes the seed (`ready`). There is one key per boot: a second KEYGEN is refused, and after ZEROIZE a reboot is needed. Before the kernel starts the root task, it zeroes the seed bytes in the device tree it received, and the boot log says `k0: dtb seeds wiped <n>B`. The seed is as good as its inputs and no better. Copies that the firmware or the UEFI loader keep are not wiped.
+  - **Self-test**: every image built with `vault` runs a test in the root task, which plays the admin and several clients. Its vault makes its key from the public RFC 8032 test seed, and the entropy rule still runs. The test shows that an unbadged call is refused, that the key is made once, that the admin cannot sign, that a signer gets a signature that checks and fails for a changed message, that a reader cannot sign, that a client that writes its read-only reply memory or reads another client's request is stopped by a fault, and that signing is refused after ZEROIZE. It ends with `root: oracle tests pass`. The test clients run one after another in one address space, so it shows the isolation between the vault and a client, not between clients.
 
-The root task tests every item above with self-tests on every boot. The signing oracle is tested in the images built with it.
+- **Operator terminal (optional)**: a task that lets a person type commands on the serial line to work with the signing oracle's vault. It can make the key, read the public key and erase the key, but it cannot sign.
+  - **How to turn it on**: it is off by default and is added by the Cargo feature `terminal` of the kernel crate. The vault also needs `vault-ed25519` to make a key. You can build it and run it in QEMU as follows:
+
+    ```sh
+    $ cargo build -p k0-kernel --features console,terminal,vault-ed25519
+    $ cargo run -p k0-kernel --features console,terminal,vault-ed25519
+    ```
+
+    Under `cargo run`, QEMU's own escape key is Ctrl-A (Ctrl-A, then X quits QEMU), so Ctrl-A never reaches K0.
+  - **Start-up order**: a terminal image runs all self-tests first. Then the root task starts a new vault and hands it the boot seed (`root: vault seeded`), checks that two hostile tasks wired exactly like the terminal are refused and end in a fault (`root: terminal wiring holds`), drops its own admin capability and starts the terminal (`root: service started`). After that the banner `K0 operator console, type 'help'` and the prompt `k0> ` appear. On a machine without an input path, `root: no console input, terminal not started` appears and the terminal does not start.
+  - **Commands**: they are `help`, `vault status` (the vault's state), `vault pubkey` (the public key), `vault keygen ed25519` (make the key) and `vault zeroize confirm` (erase the key). `vault zeroize` alone erases nothing and answers `err confirm-required`. Every command ends with one line, `ok` or `err <reason>`. `vault status` always prints `validated=no`, because the implementation has no validation of any kind. [USAGE.md](USAGE.md) has the details and an example screen.
+  - **Input rules**: a line ends with Enter (CR or LF), has at most 64 characters and takes printable ASCII only. Backspace and DEL erase one character, Ctrl-C and Ctrl-U cancel the line, and escape sequences such as the arrow keys are ignored. Bytes that reached the UART before the prompt are dropped. If input was lost, everything up to the next line end is dropped and `err input-lost` is printed.
+  - **What the kernel does**: the kernel only collects the bytes received by the UART in a ring of 256 bytes and never interprets them. A task takes them one byte at a time with the system call `CONSOLE_READ`, and only one task can wait at a time. The receive interrupt stays off until a task first reads console input. At that moment one line `k0: tick lines off (console input in use)` is printed and the periodic `k0: tick N` lines stop, while the timer, preemption and timeouts keep working. When the ring is full, the kernel masks the receive interrupt itself and reopens it after the task has taken half of the ring, so a flood of input costs the kernel no more work than the reader allows. At boot the log says `k0: console input on (pl011 irq 33)` or `k0: console input off (<reason>)`. A wrong interrupt number switches off input only and does not stop the boot.
+  - **There is no authentication**: whoever holds the serial line is the operator and can do all four of the operator's jobs (status, public key, make the key, erase the key). That includes erasing the key and so stopping the service, which is by design. The operator cannot get a signature and cannot change policy.
+  - **Do not trust the screen**: if a kernel line appears while someone is typing, the line on the screen is split but the input buffer is whole, and Enter runs the whole buffer. Any task with console output can print lines that look like kernel or root task lines, so a line prefix proves nothing. The terminal can also erase within its own line (it prints backspace).
+  - **Known limits**: the terminal and the vault are not restarted if they die (the root task is trusted). In service mode no client asks for signatures yet, so the key is made and shown but not used by another task (the self-test shows client signing). Terminal output counts against the user share of the boot log, and once that share is full, later task output is not recorded there.
+
+The root task tests every item above with self-tests on every boot. The signing oracle and the terminal are tested in the images built with them.
 
 ## Where it has run
 
@@ -164,7 +183,7 @@ The following picture summarizes what each evidence tier means.
 > [!NOTE]
 > Only the first two tiers may be called supported.
 
-- **Tier 1**: checked by `tools/boot-matrix.sh` (CI runs it on QEMU 7.2).
+- **Tier 1**: checked by `tools/boot-matrix.sh` (CI runs it on QEMU 7.2). It has 76 rows locally with HVF and 65 in CI.
   - **Direct boot rows**
     - QEMU virt with GICv3 and with GICv2, each entered at EL1 and at EL2
     - The CPU models cortex-a72, cortex-a53 and max
@@ -186,6 +205,8 @@ The following picture summarizes what each evidence tier means.
     - A static check of the loader's PE file form and of the order of its cache and MMU instructions (`tools/pe-check.py`)
   - **ACPI rows**: the rows `uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k` and `uefi-acpi-rng` boot the default QEMU machine with ACPI on, without a device tree, through the tables.
   - **Signing oracle rows**: `vault`, `vault-max` (with RNDR), `vault-el2`, `vault-16k`, `vault-no-alg` (no signing algorithm) and `hvf-vault` (only on a Mac with HVF) boot images with the oracle and judge its self-test. The static row `vault-symbols` checks that the default image has no vault or crypto code.
+  - **Input rows**: `input-only`, `input-gicv2`, `input-16550` and `input-bad-irq` boot images with the input path on and judge whether input came on (or went off where it must) and the self-test. The static row `input-symbols` checks that an image built without an input feature has no receive code, no `CONSOLE_READ` and none of the new log lines.
+  - **Terminal rows**: `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi` and `hvf-term` (only on a Mac with HVF) boot terminal images. `tools/term-test.py <image>` connects QEMU's serial port to pipes and runs a scripted session: every command and error, erase and cancel, a line that is too long, key generation and the public key format, zeroize, 200 kB without a line end, 2000 lines in a row and a serial break.
   - **Refusal checks**: two refusals are read from the serial log.
     - The 16 KiB image on a CPU without 16 KiB pages
     - A loader whose embedded kernel has one flipped byte
@@ -216,6 +237,7 @@ The rows also ran locally on QEMU 11.1.3.
   - Any real board, KVM, Firecracker, Cloud Hypervisor, crosvm
   - The 16550 console driver: no machine in the matrix has one, so no test has ever executed it. It was checked by review only.
   - The SBSA UART: it uses the PL011 driver without an identity check.
+  - Parts of input: a 16550 console has no input. The receive path of the SBSA UART, FIFO overruns and the receive timeout interrupt are not exercised by QEMU and are covered only by host tests with a fake UART. So is the cut-off of an interrupt line that fires without a UART cause. No test has measured kernel time under a flood of input on a machine. The bound is argued from the design and shown in host tests.
   - Release (LTO) images of the feature sets without console: the matrix builds and boots only debug images, and the symbol check runs on them.
   - Any image without console booted through UEFI
   - GICs with real security extensions on hardware
@@ -253,6 +275,9 @@ What it does not stop:
   - A fatal error inside the kernel, or an error from the hardware that the kernel cannot attribute to one task, still stops the whole machine.
   - The kernel part of the boot log can be filled up by crash and exit lines.
   - The signing oracle is no exception: clients share one mailbox to the vault and must give a timeout on every call, or a stuck vault holds them up.
+  - In an image with input, an outside party can cause interrupts while tasks run. Their number is bounded by the reader, but the reader learns arrival times finer than a timer tick, and other tasks can notice the stolen time. This timing channel has not been analysed.
+  - Input waits behind the running tasks. There are no priorities, so the delay is up to one tick for each ready task.
+  - The receive code runs in the kernel (EL1). It is small and never interprets a byte, but it is kernel code driven by an outside party. Moving it to a user-space driver needs delegation of devices and interrupts, which K0 does not have yet.
 - **Tasks that share a key ring and an address space**: such tasks are not isolated from each other. They behave like threads, parts of one program that share everything.
 - **Control of a task**: whoever holds the key to a task, to its key ring or to its address space controls that task.
 - **The root task**: it builds every task, key ring and address space, so it is trusted and is outside the isolation. It could read the memory of the signing oracle and with it the key. "No task other than the root task can map the vault's memory" is all that holds.
@@ -264,7 +289,7 @@ What it does not stop:
 
 Missing features:
 
-- **Input**: input of any kind does not exist yet. No code reads from a UART or from any other device, and no feature for input or for a terminal exists.
+- **The rest of input**: only input from the console UART exists (PL011 and SBSA UART, optional). Input from a 16550 console or from any other device does not exist yet, and neither does handling input in a user-space driver.
 - **Capability transfer**: a key cannot be handed to another task inside a message (capability transfer over IPC).
 - **Hardware interrupt notification**: a program cannot be told about hardware interrupts (Notification objects).
 - **Crash reports**: a crashed task is only stopped. It is not reported to a handler task.
@@ -276,9 +301,9 @@ Missing features:
   - No persistence: the key lives only in memory and is gone after a reboot or ZEROIZE.
   - One key only, and no way to import or export a key.
   - No post-quantum (PQC) algorithm yet.
-  - No operator input: nobody can type a command to it, because no input of any kind exists.
+  - No authentication of the operator: the terminal reads the serial line, and whoever holds the line is the operator. In service mode no signing client uses the key yet.
   - No validation of the implementation, no analysis of timing or cache side channels of the crypto crate on this kernel, and no random bit generator beyond the boot seed.
-  - It has been run only in QEMU (TCG and HVF).
+  - It has been run only in QEMU (TCG and HVF), never on real hardware.
 - **Signature checking**: checking a digital signature (Ed25519) once the root task ships separately from the kernel. The signing oracle makes signatures but does not use them to check the root task.
 - **Real boards and other virtualization**: K0 has not been booted on real boards, or on KVM, Firecracker, Cloud Hypervisor or crosvm (tier 3 above).
 - **Entry from EL3 and ACPI beyond the static tables**: these two are missing.
@@ -316,6 +341,7 @@ In the following table, you can find the contents of each path in the repository
 | `kernel/` | The kernel program: startup assembly, the order of initialization, system call handling (`syscall.rs`), cleanup when a key is removed (`object.rs`), files that describe the memory layout of the kernel image (linker scripts) |
 | `crates/k0-abi` | System call numbers, error codes and the boot information layout that programs share with the kernel |
 | `crates/k0-arch` | Handling of errors, system calls and interrupts (exceptions), entering and leaving user mode, interrupt controller and timer, PAC and PAN, the boot log and the optional console drivers |
+| `crates/k0-conin` | The receive logic of console input (the ring and the loss mark), tested on the host with a fake UART |
 | `crates/k0-boot` | Device tree parser, the built-in root task image and its integrity check, PAC key derivation, the search for the boot memory window (shared with the loader) |
 | `crates/k0-efi` | The loader's logic without `unsafe` code: planning RAM from the UEFI memory map, rewriting the firmware device tree, an independent re-check of the result, and the check of the kernel image header. It runs the kernel's own device tree code on the result before the jump |
 | `crates/k0-cap` | Keys and their rights, key rings, the derivation list, untyped memory, retype, revoke and delete |
@@ -324,8 +350,9 @@ In the following table, you can find the contents of each path in the repository
 | `crates/k0-sched` | Round-robin scheduler |
 | `crates/k0-ipc` | Synchronous messages |
 | `loader/` | The UEFI application (`k0-loader`, target `aarch64-unknown-uefi`) that embeds a built kernel image and starts it: UEFI calls, the flow, and the final cache flush, MMU off and jump |
-| `userspace/root-task` | The first program and its self-tests, and the wiring and self-test of the signing oracle (`oracle.rs`) |
+| `userspace/root-task` | The first program and its self-tests, and the wiring and self-test of the signing oracle (`oracle.rs`), and the start of the terminal service (`service.rs`) |
+| `userspace/k0-term` | The operator terminal: line editing, command parsing and the requests to the vault |
 | `userspace/k0-vault` | The signing oracle service: protocol and fixed policy, the request handling, and the boundary around the crypto crate |
-| `tools/` | QEMU runner (also for `.efi` files), boot test, boot matrix, boot log reader, host test, loader build (`build-loader.sh`), PE and instruction order check (`pe-check.py`) |
+| `tools/` | QEMU runner (also for `.efi` files), boot test, boot matrix, terminal session test (`term-test.py`), boot log reader, host test, loader build (`build-loader.sh`), PE and instruction order check (`pe-check.py`) |
 | `ci/` | The CI build and test image (`Dockerfile`) and the threat model (`threat_model.md`) |
 | `vendor/` | Third-party crates kept in the repository (`sha2`, `ed25519-dalek` and their dependencies) |
