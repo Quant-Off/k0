@@ -167,14 +167,19 @@ fn read_madt(t: &[u8], boot_mpidr: u64) -> Result<Madt, AcpiError> {
             // 항목(40바이트)에는 리디스트리뷰터와 MPIDR 필드가 없음
             0xB if len >= 40 => {
                 let field = |o| le64(entry, o).ok_or(AcpiError::BadMadt);
-                if le32(entry, 12).ok_or(AcpiError::BadMadt)? & 1 != 0 {
-                    let base = field(32)?;
-                    match m.cpu_base {
-                        None if !m.cpu_mismatch => m.cpu_base = Some(base),
-                        Some(b) if b == base => {}
-                        _ => {
-                            m.cpu_mismatch = true;
-                            m.cpu_base = None;
+                let flags = le32(entry, 12).ok_or(AcpiError::BadMadt)?;
+                // 비트 0은 켜짐, 비트 3은 나중에 켤 수 있음(ACPI 6.3). 리디스트리뷰터
+                // 프레임은 둘 다에서 모으고, CPU 인터페이스 주소는 켜진 것만 봄
+                if flags & 0x9 != 0 {
+                    if flags & 1 != 0 {
+                        let base = field(32)?;
+                        match m.cpu_base {
+                            None if !m.cpu_mismatch => m.cpu_base = Some(base),
+                            Some(b) if b == base => {}
+                            _ => {
+                                m.cpu_mismatch = true;
+                                m.cpu_base = None;
+                            }
                         }
                     }
                     let gicr = if len >= 76 { field(60)? } else { 0 };
@@ -186,8 +191,9 @@ fn read_madt(t: &[u8], boot_mpidr: u64) -> Result<Madt, AcpiError> {
                         let seen = m.cpu_gicr[..n].iter().any(|r| r.base <= gicr && gicr - r.base < r.size);
                         if seen || gicr.checked_add(frame.size).is_none() {
                             m.cpu_gicr_bad = true;
-                        } else if n > 0 && m.cpu_gicr[n - 1].base + m.cpu_gicr[n - 1].size == gicr {
-                            m.cpu_gicr[n - 1].size += frame.size;
+                        } else if n > 0 && gicr.checked_sub(m.cpu_gicr[n - 1].base + m.cpu_gicr[n - 1].size).is_some_and(|gap| gap == 0 || gap == 0x2_0000) {
+                            // 맞닿았거나(v3) 가상 LPI 프레임 두 장만큼 떨어진(v4) 다음 프레임
+                            m.cpu_gicr[n - 1].size = gicr + frame.size - m.cpu_gicr[n - 1].base;
                         } else if n < MAX_REDIST_REGIONS {
                             m.cpu_gicr[n] = frame;
                             m.cpu_gicr_count += 1;
@@ -270,7 +276,14 @@ fn gic_of(m: &Madt) -> Result<Gic, AcpiError> {
     if redist[..count].iter().any(|r| r.size < 0x2_0000 || !placed(r.base, r.size)) {
         return Err(AcpiError::BadRedistributor);
     }
-    Ok(Gic::V3 { dist: MemRegion { base: dist_base, size: 0x1_0000 }, redist, count })
+    let dist = MemRegion { base: dist_base, size: 0x1_0000 };
+    let all = || core::iter::once(&dist).chain(&redist[..count]);
+    for (i, a) in all().enumerate() {
+        if all().skip(i + 1).any(|b| a.base < b.base + b.size && b.base < a.base + a.size) {
+            return Err(AcpiError::BadRedistributor);
+        }
+    }
+    Ok(Gic::V3 { dist, redist, count })
 }
 
 fn serial_of(t: &[u8]) -> Option<Serial> {
@@ -343,8 +356,9 @@ pub fn read(mem: &impl Memory, rsdp: u64, boot_mpidr: u64) -> Result<Found, Acpi
         if gtdt.is_none() {
             gtdt = table(mem, addr, b"GTDT")?;
         }
+        // 콘솔은 없어도 되므로, 길이나 체크섬이 틀린 SPCR은 없는 것으로 봄
         if spcr.is_none() {
-            spcr = table(mem, addr, b"SPCR")?;
+            spcr = table(mem, addr, b"SPCR").ok().flatten();
         }
     }
 
@@ -392,14 +406,28 @@ impl Found {
     /// # Errors
     /// RAM이나 펌웨어 메모리와 겹치면 `DeviceInMemory`
     pub fn check_devices(&self, map: &crate::memmap::Map<'_>) -> Result<(), AcpiError> {
+        self.devices().try_for_each(|d| Self::outside_memory(&d, map))
+    }
+
+    /// 콘솔이 메모리 위에 있다고 적혀 있으면 콘솔만 버린 결과를 주는 함수입니다.
+    /// 콘솔은 없어도 부팅할 수 있으므로 거부 사유로 삼지 않습니다.
+    ///
+    /// # Arguments
+    /// `map` - UEFI 메모리 맵
+    pub fn without_console_in_memory(mut self, map: &crate::memmap::Map<'_>) -> Self {
+        if self.serial.is_some_and(|s| Self::outside_memory(&s.reg, map).is_err()) {
+            self.serial = None;
+        }
+        self
+    }
+
+    fn outside_memory(d: &MemRegion, map: &crate::memmap::Map<'_>) -> Result<(), AcpiError> {
         let align = crate::memmap::ALIGN;
-        for d in self.devices() {
-            let start = d.base & !(align - 1);
-            let end = d.base.checked_add(d.size).and_then(|e| e.checked_add(align - 1)).ok_or(AcpiError::DeviceInMemory)?
-                & !(align - 1);
-            if map.iter().any(|m| !m.is_mmio() && m.start < end && start < m.end) {
-                return Err(AcpiError::DeviceInMemory);
-            }
+        let start = d.base & !(align - 1);
+        let end = d.base.checked_add(d.size).and_then(|e| e.checked_add(align - 1)).ok_or(AcpiError::DeviceInMemory)?
+            & !(align - 1);
+        if map.iter().any(|m| !m.is_mmio() && m.start < end && start < m.end) {
+            return Err(AcpiError::DeviceInMemory);
         }
         Ok(())
     }

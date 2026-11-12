@@ -95,6 +95,7 @@ unsafe fn flush_to_memory(range: &Range<u64>) {
 ///
 /// # Arguments
 /// `block` - 로더가 할당한 블록 전체(DTB 버퍼, 이미지 영역, 부트 윈도우 자리)
+/// `work` - 로더가 쓰던 작업 공간(커널이 RAM으로 받으므로 함께 비움)
 /// `entry` - 블록 안 커널 이미지의 시작 주소
 /// `dtb` - 블록 안 DTB의 시작 주소
 ///
@@ -102,7 +103,7 @@ unsafe fn flush_to_memory(range: &Range<u64>) {
 /// ExitBootServices가 성공한 뒤에만 부를 수 있습니다. `block`은 이 로더가
 /// 할당한 메모리여야 하고, `entry`에는 이 CPU에서 실행할 수 있는 커널 Image가
 /// 복사돼 있어야 합니다.
-pub unsafe fn enter_kernel(block: &Range<u64>, entry: u64, dtb: u64) -> ! {
+pub unsafe fn enter_kernel(block: &Range<u64>, work: &Range<u64>, entry: u64, dtb: u64) -> ! {
     // SAFETY: 부트 서비스가 끝났으므로 인터럽트를 받을 곳이 없음. 트램펄린도
     //         처음에 다시 마스크함
     unsafe { asm!("msr daifset, #0xf", options(nomem, nostack)) };
@@ -110,6 +111,7 @@ pub unsafe fn enter_kernel(block: &Range<u64>, entry: u64, dtb: u64) -> ! {
     // SAFETY: 두 구간 모두 이 로더의 메모리(할당한 블록과 자신의 .text)임
     unsafe {
         flush_to_memory(block);
+        flush_to_memory(work);
         flush_to_memory(&trampoline);
         // 복사한 커널 코드에 대해 남아 있을 수 있는 명령 캐시 항목을 버림
         asm!("ic ialluis", "dsb ish", "isb", options(nostack));

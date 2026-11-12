@@ -1021,6 +1021,53 @@ mod acpi_tables {
     }
 
     #[test]
+    fn checksums_lengths_and_overlaps_are_enforced() {
+        let read_of = |t: &Tables| read(t, RSDP, 0);
+        // XSDT의 체크섬
+        let mut t = machine(&qemu_v3());
+        let n = t.blobs.len();
+        t.blobs[n - 2].1[40] ^= 1;
+        assert_eq!(read_of(&t).err(), Some(AcpiError::BadXsdt));
+        // RSDP: 앞 20바이트 체크섬, 확장 체크섬, 길이
+        let mut t = machine(&qemu_v3());
+        t.blobs[n - 1].1[9] ^= 1;
+        assert_eq!(read_of(&t).err(), Some(AcpiError::BadRsdp));
+        let mut t = machine(&qemu_v3());
+        t.blobs[n - 1].1[33] ^= 1;
+        assert_eq!(read_of(&t).err(), Some(AcpiError::BadRsdp));
+        for len in [0u32, 35, 5000] {
+            let mut t = machine(&qemu_v3());
+            t.blobs[n - 1].1[20..24].copy_from_slice(&len.to_le_bytes());
+            assert_eq!(read_of(&t).err(), Some(AcpiError::BadRsdp));
+        }
+        // 길이가 상한을 넘는 테이블
+        let mut big = qemu_v3()[0].clone();
+        big[4..8].copy_from_slice(&(2u32 << 20).to_le_bytes());
+        assert_eq!(read_of(&with(qemu_v3(), 0, big)).err(), Some(AcpiError::BadTable));
+        // 체크섬이 틀린 SPCR, 주소 계산이 넘치는 SPCR: 콘솔 없이 진행
+        let mut bad = spcr(0x03, 0, 32, 3, 0x900_0000);
+        bad[60] ^= 1;
+        assert_eq!(read_of(&with(qemu_v3(), 2, bad)).map(|f| f.serial), Ok(None));
+        assert_eq!(read_of(&with(qemu_v3(), 2, spcr(0x03, 0, 32, 3, u64::MAX - 3))).map(|f| f.serial), Ok(None));
+        // 정렬이 맞지 않는 프레임, 서로 겹치는 프레임
+        let odd = madt(&[gicd(0x800_1000, 3), gicr(0x80a_0000, 0xf6_0000)]);
+        assert_eq!(read_of(&with(qemu_v3(), 0, odd)).err(), Some(AcpiError::BadDistributor));
+        let small = madt(&[gicd(0x800_0000, 3), gicr(0x80a_0000, 0x1_0000)]);
+        assert_eq!(read_of(&with(qemu_v3(), 0, small)).err(), Some(AcpiError::BadRedistributor));
+        let same = madt(&[gicd(0x800_0000, 3), gicr(0x80a_0000, 0x4_0000), gicr(0x80c_0000, 0x4_0000)]);
+        assert_eq!(read_of(&with(qemu_v3(), 0, same)).err(), Some(AcpiError::BadRedistributor));
+        let on_dist = madt(&[gicd(0x800_0000, 3), gicr(0x800_0000, 0x4_0000)]);
+        assert_eq!(read_of(&with(qemu_v3(), 0, on_dist)).err(), Some(AcpiError::BadRedistributor));
+        // 콘솔만 메모리 위에 있으면 콘솔만 버림
+        let found = read_of(&machine(&qemu_v3())).unwrap();
+        let bytes = map_bytes(&[(0, 0x900_0000, 1, WB)], 48);
+        let kept = found.without_console_in_memory(&Map::new(&bytes, 48).unwrap());
+        assert_eq!((kept.serial, kept.gic), (None, found.gic));
+        let bytes = map_bytes(maps::QEMU_EDK2_512M, 48);
+        assert_eq!(found.without_console_in_memory(&Map::new(&bytes, 48).unwrap()), found);
+    }
+
+    #[test]
     fn redistributors_can_come_from_the_cpu_entries() {
         // GICR 항목 없이 CPU마다 프레임 주소를 적는 형태. 맞닿은 프레임은 한 구간이 됨
         let cpus = |n: u64| -> Vec<Vec<u8>> {
@@ -1032,6 +1079,21 @@ mod acpi_tables {
             other => panic!("{other:?}"),
         }
         assert!(discover_blob(&tree(&found)).is_ok());
+        // GICv4는 프레임 간격이 256KiB. CPU 8개도 한 구간으로 이어짐
+        let v4: Vec<Vec<u8>> =
+            [gicd(0x800_0000, 4)].into_iter().chain((0..8).map(|i| gicc(true, 0, 0x80a_0000 + i * 0x4_0000, i))).collect();
+        match read(&with(qemu_v3(), 0, madt(&v4)), RSDP, 3).unwrap().gic {
+            Gic::V3 { redist, count, .. } => assert_eq!((count, redist[0]), (1, mem(0x80a_0000, 7 * 0x4_0000 + 0x2_0000))),
+            other => panic!("{other:?}"),
+        }
+        // 켤 수 있다고만 표시된 CPU의 프레임도 구간에 들어감
+        let mut later = gicc(false, 0, 0x80c_0000, 1);
+        later[12] = 0x8;
+        let m = madt(&[gicd(0x800_0000, 3), gicc(true, 0, 0x80a_0000, 0), later]);
+        match read(&with(qemu_v3(), 0, m), RSDP, 0).unwrap().gic {
+            Gic::V3 { redist, count, .. } => assert_eq!((count, redist[0]), (1, mem(0x80a_0000, 0x4_0000))),
+            other => panic!("{other:?}"),
+        }
         // 부트 CPU의 항목이 없으면 커널이 자기 프레임을 찾지 못하므로 거부
         assert_eq!(read(&with(qemu_v3(), 0, madt(&cpus(2))), RSDP, 7).err(), Some(AcpiError::BadRedistributor));
         // 같은 프레임을 두 CPU가 말하면 거부

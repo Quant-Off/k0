@@ -167,6 +167,12 @@ fn tree_from_acpi(l: &mut Loader, map_buffer: &mut [u8], tree: &'static mut [u8]
     let info = l.fw.memory_map(map_buffer).map_err(|e| Refusal::Firmware("GetMemoryMap", e))?;
     let map = Map::new(&map_buffer[..info.size], info.stride).map_err(|e| Refusal::Prepare(PrepareError::Plan(e)))?;
     let found = acpi::read(&MapMemory { map }, rsdp as u64, mpidr()).map_err(Refusal::Acpi)?;
+    // 콘솔이 메모리 위에 있다고 적혀 있으면 콘솔만 버리고, 나머지 디바이스는 거부 사유
+    let with_console = found.serial.is_some();
+    let found = found.without_console_in_memory(&map);
+    if with_console && found.serial.is_none() {
+        let _ = writeln!(l.con, "k0-loader: the SPCR console lies in memory, continuing without it");
+    }
     found.check_devices(&map).map_err(Refusal::Acpi)?;
     // 메모리 노드의 자리표시는 로더가 가진 작업 공간의 한 단위. 재작성이 버림
     let placeholder = MemRegion { base: tree.as_ptr() as u64 & !(ALIGN - 1), size: ALIGN };
@@ -358,7 +364,8 @@ fn exit_and_enter(l: &mut Loader, mut ready: Ready) -> Result<core::convert::Inf
                 wipe(&mut l.seed);
                 // SAFETY: 부트 서비스가 끝났고, 블록은 이 로더가 할당해 채운
                 //         메모리이며, 이미지는 헤더와 해시와 그래뉼 지원을 확인함
-                unsafe { enter_kernel(&ready.block(), ready.image.start, ready.dtb.start) }
+                let work = l.work.map_or(0..0, |w| w.base..w.base + w.count as u64 * PAGE);
+                unsafe { enter_kernel(&ready.block(), &work, ready.image.start, ready.dtb.start) }
             }
             Status::INVALID_PARAMETER => {}
             _ => park(),

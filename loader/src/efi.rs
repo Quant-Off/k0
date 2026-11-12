@@ -367,6 +367,10 @@ pub struct MapMemory<'a> {
 
 impl k0_efi::acpi::Memory for MapMemory<'_> {
     fn bytes(&self, addr: u64, len: usize) -> Option<&[u8]> {
+        // 0번지는 주소가 아니라 "없음"으로 봄
+        if addr == 0 {
+            return None;
+        }
         let end = addr.checked_add(len as u64)?;
         // 로더·부트 서비스·런타임 서비스의 코드와 데이터, 빈 메모리, ACPI 재사용과 NVS
         let readable = |kind: u32| matches!(kind, 1..=7 | 9 | 10);

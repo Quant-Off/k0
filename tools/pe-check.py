@@ -4,7 +4,7 @@
 부팅 시험이 보여 주지 못하는 두 가지를 봅니다.
 1. Secure Boot와 메모리 보호가 있는 펌웨어가 받아들이는 형태인지:
    ARM64 EFI 응용 프로그램, NX_COMPAT, 쓰기와 실행이 함께 되는 섹션 없음.
-2. 커널로 넘어가기 전에 블록과 트램펄린의 캐시를 비우는 호출이 둘 다 있고,
+2. 커널로 넘어가기 전에 블록, 작업 공간, 트램펄린의 캐시를 비우는 호출이 모두 있고,
    그 뒤에 명령 캐시를 버리고, MMU를 끄는 명령의 순서가 맞는지.
    QEMU의 TCG에는 캐시가 없어 이 명령이 빠져도 부팅이 되므로, 자동으로는
    여기서만 잡을 수 있습니다. 비우는 범위가 옳은지와 실제 하드웨어에서 옳게
@@ -61,7 +61,7 @@ def main():
         return int(m.group(1), 16) if m else None
 
     # 캐시를 비우는 함수는 하나뿐이고(dc civac가 든 함수), 커널로 넘어가는 함수는
-    # 명령 캐시를 버리기 전에 그 함수를 두 번(블록, 트램펄린) 불러야 함
+    # 명령 캐시를 버리기 전에 그 함수를 세 번(블록, 작업 공간, 트램펄린) 불러야 함
     flush_at = [i for i, c in enumerate(code) if c.startswith("dc civac,")]
     targets = sorted({t for t in map(call_target, code) if t is not None})
     if len(flush_at) != 1:
@@ -82,8 +82,8 @@ def main():
                 if c == "ret":
                     break
                 calls += call_target(c) == entry
-            if entry is None or calls < 2:
-                problems.append(f"the block and the trampoline must both be flushed before ic ialluis (found {calls} calls)")
+            if entry is None or calls < 3:
+                problems.append(f"the block, the work area and the trampoline must all be flushed before ic ialluis (found {calls} calls)")
     for el in ("EL1", "EL2"):
         write = where(f"msr SCTLR_{el}, x4")
         if len(write) != 1:
