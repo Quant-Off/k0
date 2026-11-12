@@ -205,8 +205,17 @@ pass uefi-16k        "$efi16" K0_BOOT_REUSE=skip K0_QEMU_CPU=max
 pass uefi-rng        "$efi4" K0_BOOT_REUSE=skip K0_QEMU_EXTRA="-device virtio-rng-pci" K0_BOOT_REQUIRE="k0-loader: entropy from the firmware|k0: entropy dtb=72B"
 # 이동식 매체 경로: FAT 드라이브의 EFI/BOOT/BOOTAA64.EFI (부트 매니저 대기가 붙음)
 pass uefi-esp        "$efi4" K0_BOOT_REUSE=skip K0_QEMU_ESP=1
-# 펌웨어가 디바이스 트리를 주지 않는 기본 구성(ACPI)과, 그래뉼이 없는 CPU는 로더가 거부
-refuse_serial uefi-no-dtb     "$efi4" "the firmware provides no device tree" K0_QEMU_MACHINE=virt,gic-version=3
+# ACPI: 펌웨어가 디바이스 트리를 주지 않는 QEMU의 기본 구성(acpi=off 없음). 로더가
+# ACPI 정적 테이블(MADT, GTDT, SPCR)로 디바이스 트리를 만들어 같은 경로로 부팅
+acpi="k0-loader: device tree built from ACPI tables"
+pass uefi-acpi-gic3-el1 "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=3 K0_BOOT_REQUIRE="$acpi"
+pass uefi-acpi-gic3-el2 "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on K0_BOOT_REQUIRE="$acpi"
+pass uefi-acpi-gic2-el1 "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=2 K0_BOOT_REQUIRE="$acpi"
+pass uefi-acpi-smp4     "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=3 K0_QEMU_SMP=4 K0_BOOT_REQUIRE="$acpi"
+pass uefi-acpi-16k      "$efi16" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=3 K0_QEMU_CPU=max K0_BOOT_REQUIRE="$acpi"
+# ACPI에는 펌웨어의 씨앗이 없으므로 엔트로피는 펌웨어 난수 프로토콜의 32바이트뿐
+pass uefi-acpi-rng      "$efi4" K0_BOOT_REUSE=skip K0_QEMU_MACHINE=virt,gic-version=3 K0_QEMU_EXTRA="-device virtio-rng-pci" K0_BOOT_REQUIRE="$acpi|k0: entropy dtb=32B"
+# 그래뉼이 없는 CPU는 로더가 거부
 refuse_serial uefi-16k-on-a72 "$efi16" "this cpu has no 16K translation granule"
 # 내장한 커널 이미지의 한 바이트가 바뀐 로더는 해시 불일치로 거부
 if want uefi-corrupt $only; then
@@ -226,6 +235,7 @@ if [ "${K0_MATRIX_HVF:-0}" = 1 ]; then
     pass uefi-hvf-el1 "$efi4" K0_BOOT_REUSE=skip K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
     pass uefi-hvf-el2 "$efi4" K0_BOOT_REUSE=skip K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_QEMU_MACHINE=virt,gic-version=3,acpi=off,virtualization=on
     pass uefi-hvf-16k "$efi16" K0_BOOT_REUSE=skip K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
+    pass uefi-hvf-acpi "$efi4" K0_BOOT_REUSE=skip K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_QEMU_MACHINE=virt,gic-version=3 K0_BOOT_REQUIRE="$acpi"
     pass hvf-el1     "$img4" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
     pass hvf-el2     "$img4" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on
     pass hvf-16k     "$img16" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
