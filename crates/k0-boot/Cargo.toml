@@ -9,6 +9,10 @@ publish.workspace = true
 default = ["roottask"]
 # 루트 태스크 이미지를 빌드해 내장함. 커널이 씀
 roottask = []
+# 루트 태스크 이미지에 키 볼트(서명 오라클)를 넣음. build.rs가 이 feature를
+# 보고 루트 태스크의 빌드에 같은 이름의 feature를 넘김
+vault = ["roottask"]
+vault-ed25519 = ["vault"]
 # 테스트용 DTB 빌더와 퍼즈 도우미를 다른 크레이트의 테스트에 공개함(std 필요)
 test-support = []
 

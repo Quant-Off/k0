@@ -12,6 +12,7 @@ members = [
     "crates/k0-abi",
     "crates/k0-efi",
     "userspace/root-task",
+    "userspace/k0-vault",
     "loader",
 ]
 # UEFI 로더는 타겟이 달라(aarch64-unknown-uefi) 기본 빌드 대상에서 뺌.

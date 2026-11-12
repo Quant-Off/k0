@@ -1,0 +1,16 @@
+[package]
+name = "k0-vault"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# 알고리즘은 feature로 더하기만 합니다. 아무것도 주지 않으면 서명 알고리즘이
+# 하나도 없는 볼트가 됩니다(모든 서명 요청을 "지원하지 않는 알고리즘"으로 거부).
+[features]
+ed25519 = ["dep:ed25519-dalek", "dep:zeroize"]
+
+[dependencies]
+k0-abi = { path = "../../crates/k0-abi" }
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["zeroize"], optional = true }
+zeroize = { version = "1", default-features = false, optional = true }

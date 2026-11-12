@@ -134,7 +134,8 @@ fn flag_register_bits_are_all_accounted_for() {
 
 #[test]
 fn bootinfo_layout_is_stable() {
-    assert_eq!(bootinfo::VERSION, 2);
+    assert_eq!(bootinfo::VERSION, 3);
+    assert_eq!(bootinfo::SEED_RNG_SEED_BYTES & bootinfo::SEED_RNDR, 0);
     assert_eq!(size_of::<bootinfo::Header>(), 32);
     assert_eq!(offset_of!(bootinfo::Header, version), 0);
     assert_eq!(offset_of!(bootinfo::Header, frame_size), 8);

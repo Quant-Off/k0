@@ -22,7 +22,7 @@ mod roottask;
 pub mod testing;
 mod window;
 
-pub use entropy::derive_pac_keys;
+pub use entropy::{derive_pac_keys, derive_root_seed};
 pub use fdt::walk::{be32, be64, read_cells, Cursor, Fdt, Token};
 pub use fdt::{
     dtb_span, parse, parse_blob, BootError, BootInfo, MemRegion, MAX_DTB_SIZE, MAX_ENTROPY, MAX_MEM_REGIONS,

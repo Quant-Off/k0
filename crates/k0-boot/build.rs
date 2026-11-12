@@ -145,7 +145,20 @@ fn main() {
     // 바깥 cargo와의 락 충돌을 피하려고 전용 타겟 디렉터리에서 빌드
     let rt_target = out_dir.join("root-task-target");
     let cargo = env::var("CARGO").unwrap();
-    let status = Command::new(&cargo)
+    // 이 크레이트의 feature를 루트 태스크의 같은 이름 feature로 넘김. 넘기는
+    // feature가 달라지면 cargo가 이 스크립트를 다시 돌림(feature는 스크립트의
+    // 입력이므로)
+    let mut features = Vec::new();
+    for (var, name) in [
+        ("CARGO_FEATURE_VAULT", "vault"),
+        ("CARGO_FEATURE_VAULT_ED25519", "vault-ed25519"),
+    ] {
+        if env::var_os(var).is_some() {
+            features.push(name);
+        }
+    }
+    let mut build = Command::new(&cargo);
+    build
         .current_dir(workspace)
         .env("CARGO_TARGET_DIR", &rt_target)
         .args([
@@ -155,7 +168,11 @@ fn main() {
             "--release",
             "--target",
             "aarch64-unknown-none-softfloat",
-        ])
+        ]);
+    if !features.is_empty() {
+        build.args(["--features", &features.join(",")]);
+    }
+    let status = build
         .status()
         .expect("root-task 빌드 실행 실패");
     assert!(status.success(), "root-task 빌드 실패");
@@ -229,8 +246,13 @@ fn main() {
     );
     fs::write(out_dir.join("roottask_gen.rs"), generated).unwrap();
 
+    // 디렉토리를 주면 cargo가 그 안의 모든 파일을 봄. 볼트의 소스가 바뀌어도
+    // 낡은 이미지가 그대로 내장되지 않게 함
     for rel in [
-        "userspace/root-task/src/main.rs",
+        "userspace/root-task/src",
+        "userspace/k0-vault/src",
+        "userspace/k0-vault/Cargo.toml",
+        "Cargo.lock",
         "userspace/root-task/Cargo.toml",
         "userspace/root-task/build.rs",
         "userspace/root-task/user.ld",

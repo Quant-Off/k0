@@ -19,7 +19,7 @@ pub mod user;
 pub use paging::{
     alias_object, alias_tables_for, can_read, can_write, device_pages, enable_paging, image_pa,
     image_range, map_device, map_dtb, map_kernel_window, null_user_root, pa_bits, probe_clear,
-    probe_map, reserve_tables, table_pool_usage, table_reserve_usage, KernelLayout, Mmu,
+    probe_map, reserve_tables, table_pool_usage, table_reserve_usage, wipe_ro_alias, KernelLayout, Mmu,
     MmuError, GRANULE, KERNEL_IMAGE_VA, KERNEL_VA_OFFSET, MAX_TABLE_RESERVES, PA_CEILING,
 };
 pub use user::{

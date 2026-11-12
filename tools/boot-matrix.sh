@@ -35,6 +35,13 @@ cargo build -p k0-kernel --offline --target-dir target/quiet || exit 2
 cargo build -p k0-kernel --offline --no-default-features --features granule-16k --target-dir target/quiet16 || exit 2
 cargo build -p k0-kernel --offline --features console-pl011 --target-dir target/pl011 || exit 2
 cargo build -p k0-kernel --offline --features console-16550 --target-dir target/u16550 || exit 2
+# 키 볼트(서명 오라클)를 넣은 이미지들: Ed25519 포함(4K, 16K), 알고리즘 없음
+cargo build -p k0-kernel --offline --features console,vault-ed25519 --target-dir target/vault || exit 2
+cargo build -p k0-kernel --offline --no-default-features --features granule-16k,console,vault-ed25519 --target-dir target/vault16 || exit 2
+cargo build -p k0-kernel --offline --features console,vault --target-dir target/vaultna || exit 2
+imgvault="$root/target/vault/aarch64-unknown-none-softfloat/debug/k0-kernel"
+imgvault16="$root/target/vault16/aarch64-unknown-none-softfloat/debug/k0-kernel"
+imgvaultna="$root/target/vaultna/aarch64-unknown-none-softfloat/debug/k0-kernel"
 # UEFI 로더: 위에서 빌드한 바로 그 커널을 내장함
 efi4="$(tools/build-loader.sh "$img4")" || exit 2
 efi16="$(tools/build-loader.sh "$img16")" || exit 2
@@ -158,6 +165,40 @@ fi
 
 # 콘솔 드라이버 심볼: feature가 코드에 그대로 반영되는지 이미지의 심볼로 확인
 # 있어야 하는 심볼을 먼저 요구해서 심볼을 못 읽는 경우에 헛통과하지 않게 함
+# 볼트의 코드가 feature대로만 들어가는지, 그리고 쓰기 가능한 static을 쓰지
+# 않는지 루트 태스크의 ELF에서 확인합니다. 격리 태스크의 주소 공간에는 이미지의
+# .data와 .bss가 없어서, 볼트나 암호 구현이 static에 쓰면 그 태스크가 죽습니다.
+if want vault-symbols $only; then
+    ran=$((ran + 1))
+    host="$(rustc -vV | sed -n 's/^host: //p')"
+    nm="$(rustc --print sysroot)/lib/rustlib/${host}/bin/llvm-nm"
+    # 같은 타겟 디렉토리에 예전 빌드의 것이 남아 있을 수 있으므로 가장 새 것을 봄
+    rt() { find "$root/target/$1" -path '*root-task-target*' -name root-task -type f -exec ls -t {} + 2>/dev/null | head -n 1; }
+    crypto='dalek|sha2|subtle'
+    bad=""
+    for spec in ":0:0" "vault:1:1" "vaultna:1:0"; do
+        dir="${spec%%:*}"; rest="${spec#*:}"; want_vault="${rest%%:*}"; want_alg="${rest#*:}"
+        elf="$(rt "$dir" 2>/dev/null)"
+        [ -n "$dir" ] || elf="$(rt aarch64-unknown-none-softfloat)"
+        if [ -z "$elf" ]; then bad="$bad no-root-task-elf($dir)"; continue; fi
+        s="$("$nm" -C "$elf" 2>&1)" || { bad="$bad llvm-nm-failed($dir)"; continue; }
+        v=0; printf '%s\n' "$s" | grep -q 'k0_vault::' && v=1
+        a=0; printf '%s\n' "$s" | grep -Eq "$crypto" && a=1
+        [ "$v" = "$want_vault" ] || bad="$bad vault-code=$v($dir)"
+        [ "$a" = "$want_alg" ] || bad="$bad crypto-code=$a($dir)"
+        # 쓰기 가능한 데이터(d, D, b, B)에 볼트나 암호 구현의 심볼이 없어야 함
+        if printf '%s\n' "$s" | awk '$2 ~ /^[dDbB]$/' | grep -Eq "k0_vault::|$crypto"; then
+            bad="$bad writable-static($dir)"
+        fi
+    done
+    if [ -z "$bad" ]; then
+        echo "matrix: vault-symbols pass"
+    else
+        echo "matrix: vault-symbols FAIL (${bad# })"
+        failed="$failed vault-symbols"
+    fi
+fi
+
 if want console-symbols $only; then
     ran=$((ran + 1))
     host="$(rustc -vV | sed -n 's/^host: //p')"
@@ -195,6 +236,13 @@ fi
 # 인터럽트 컨트롤러와 진입 EL
 pass gic3-el1        "$img4" K0_BOOT_REQUIRE="k0: console drivers [pl011 16550]" K0_BOOT_CONSOLE_PAGE=mapped
 pass gic3-el1-a53    "$img4" K0_QEMU_CPU=cortex-a53
+# 키 볼트: 서명 오라클의 자가 검증까지 통과해야 함. 위반하는 클라이언트 둘이
+# 폴트로 종료되므로 폴트 줄이 8개임
+pass vault           "$imgvault" K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE="k0: dtb seeds wiped 40B|root: oracle tests pass"
+pass vault-max       "$imgvault" K0_QEMU_CPU=max K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE="rndr=on|root: boot seed from rng-seed bytes 0x0000000000000020 and rndr|root: oracle tests pass"
+pass vault-el2       "$imgvault" K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE="root: oracle tests pass"
+pass vault-16k       "$imgvault16" K0_QEMU_CPU=max K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE="root: oracle tests pass"
+pass vault-no-alg    "$imgvaultna" K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE="root: oracle tests pass"
 pass gic3-el1-max    "$img4" K0_QEMU_CPU=max K0_BOOT_REQUIRE="rndr=on|k0: pac=on bti=present pan=on"
 pass gic3-el2        "$img4" K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on
 pass gic3-el2-max    "$img4" K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on K0_QEMU_CPU=max
@@ -354,6 +402,7 @@ if [ "${K0_MATRIX_HVF:-0}" = 1 ]; then
     pass uefi-hvf-16k "$efi16" K0_BOOT_REUSE=skip K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
     pass uefi-hvf-acpi "$efi4" K0_BOOT_REUSE=skip K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_QEMU_MACHINE=virt,gic-version=3 K0_BOOT_REQUIRE="$acpi"
     pass hvf-el1     "$img4" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
+    pass hvf-vault   "$imgvault" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_BOOT_FAULTS=8 K0_BOOT_REQUIRE="root: oracle tests pass"
     pass hvf-el2     "$img4" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_QEMU_MACHINE=virt,gic-version=3,virtualization=on
     pass hvf-16k     "$img16" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host
     pass hvf-quiet   "$imgquiet" K0_QEMU_ACCEL=hvf K0_QEMU_CPU=host K0_BOOT_MEMLOG=0x40080000 K0_BOOT_SERIAL=empty K0_BOOT_CONSOLE_PAGE=unmapped K0_BOOT_REQUIRE="$quietreq"

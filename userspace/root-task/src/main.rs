@@ -36,6 +36,9 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "vault")]
+mod oracle;
+
 use k0_abi::bootinfo::slot;
 use k0_abi::{bootinfo, err, ipc, obj, perm, rights, syscall};
 
@@ -693,8 +696,37 @@ fn frames_in(d: &bootinfo::CapDesc, frame_size: u64) -> u64 {
     if first >= end { 0 } else { (end - first) / frame_size }
 }
 
+/// 커널이 진입 레지스터로 넘긴 부트 시드(워드 넷)와 그 재료 정보
+///
+/// 시드는 서비스(키 볼트)에 넘기기 위한 것이고 루트 태스크는 출력하지
+/// 않습니다. 넘긴 뒤에는 [take_boot_seed]가 이 자리를 지웁니다.
+static BOOT_SEED: [AtomicU64; 4] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+static SEED_INFO: AtomicU64 = AtomicU64::new(0);
+
+/// 부트 시드를 꺼내고 보관하던 자리를 지우는 함수입니다. 두 번째부터는 0만
+/// 나옵니다.
+#[allow(dead_code)]
+fn take_boot_seed() -> ([u8; 32], u64) {
+    let mut seed = [0u8; 32];
+    for (chunk, word) in seed.chunks_exact_mut(8).zip(&BOOT_SEED) {
+        chunk.copy_from_slice(&word.swap(0, Ordering::Relaxed).to_le_bytes());
+    }
+    (seed, SEED_INFO.load(Ordering::Relaxed))
+}
+
 #[unsafe(no_mangle)]
-extern "C" fn _start() -> ! {
+extern "C" fn _start(s0: u64, s1: u64, s2: u64, s3: u64, seed_info: u64) -> ! {
+    // 시드는 레지스터로만 오므로 다른 일을 하기 전에 옮겨 둠
+    for (slot, word) in BOOT_SEED.iter().zip([s0, s1, s2, s3]) {
+        slot.store(word, Ordering::Relaxed);
+    }
+    SEED_INFO.store(seed_info, Ordering::Relaxed);
+
     // 출력에도 Console 케이퍼빌리티가 필요함. 고정 슬롯이라 바로 쓸 수 있지만
     // 레이아웃 버전이 다르면 그 가정도 믿을 수 없으므로 출력 없이 끝냄
     let hdr = bootinfo::VA as *const bootinfo::Header;
@@ -711,6 +743,13 @@ extern "C" fn _start() -> ! {
         sys1(syscall::EXIT, 1);
     }
     put_str("root: hello from EL0\n");
+    // 시드 자체는 찍지 않고 재료만 알림
+    put_str("root: boot seed from rng-seed bytes ");
+    put_hex(seed_info & bootinfo::SEED_RNG_SEED_BYTES);
+    put_str(if seed_info & bootinfo::SEED_RNDR != 0 { " and rndr\n" } else { " without rndr\n" });
+    // 시드를 쓸 서비스가 없는 이미지에서는 보관하지 않고 바로 지움
+    #[cfg(not(feature = "vault"))]
+    let _ = take_boot_seed();
     check(
         "bootinfo frame size",
         frame_size > 0 && frame_size.is_power_of_two(),
@@ -782,6 +821,8 @@ extern "C" fn _start() -> ! {
     test_reuse(&b);
     test_sched_ipc_fault(&b);
     test_isolation(&b);
+    #[cfg(feature = "vault")]
+    oracle::test_oracle(&b);
     test_reserve(&b);
 
     put_str("root: sched tests pass\n");

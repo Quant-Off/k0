@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 /// # Arguments
 /// `dtb_entropy` - /chosen에서 수집한 바이트(비어 있을 수 있음)
 /// `extra` - 아키텍처 재료(CNTPCT, RNDR 값 등)
+#[inline(never)]
 pub fn derive_pac_keys(dtb_entropy: &[u8], extra: &[u64]) -> [u64; 10] {
     let mut keys = [0u64; 10];
     let mut i = 0;
@@ -43,6 +44,33 @@ pub fn derive_pac_keys(dtb_entropy: &[u8], extra: &[u64]) -> [u64; 10] {
         counter += 1;
     }
     keys
+}
+
+/// 엔트로피 재료를 혼합해 루트 태스크에 넘길 시드 32바이트를 파생하는
+/// 함수입니다.
+///
+/// PAC 키와 같은 재료를 받더라도 도메인 문자열이 달라 서로 독립인 값이
+/// 나옵니다. 한쪽을 알아도 다른 쪽을 계산할 수 없습니다(SHA-256의 안전성에
+/// 귀속). 결과는 가장 좋은 재료보다 나을 수 없으므로, 호출자는 어떤 재료가
+/// 있었는지를 시드와 함께 알려야 합니다.
+///
+/// 호출한 쪽의 프레임에 합쳐지지 않게 해 두었습니다(PAC 키 파생도 같음).
+/// 해시 상태가 이 함수의 프레임에만 남아야, 커널이 EL0로 넘어가기 전에 살아
+/// 있는 프레임 아래를 지울 때 함께 지워집니다.
+///
+/// # Arguments
+/// `dtb_entropy` - /chosen에서 수집한 바이트(비어 있을 수 있음)
+/// `extra` - 아키텍처 재료(카운터, RNDR 값 등)
+#[inline(never)]
+pub fn derive_root_seed(dtb_entropy: &[u8], extra: &[u64]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"k0-root-task-seed-v1");
+    h.update((dtb_entropy.len() as u64).to_le_bytes());
+    h.update(dtb_entropy);
+    for w in extra {
+        h.update(w.to_le_bytes());
+    }
+    h.finalize().into()
 }
 
 #[cfg(test)]

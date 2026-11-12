@@ -120,7 +120,7 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     let image = k0_mm::image_range();
     let kernel_image = image.start as usize..image.end as usize;
     map_dtb(&mut con, dtb_phys);
-    let bootinfo = match k0_boot::parse(
+    let mut bootinfo = match k0_boot::parse(
         dtb_phys,
         kernel_image.clone(),
         k0_mm::KERNEL_VA_OFFSET as usize,
@@ -173,6 +173,25 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     if bootinfo.entropy().is_empty() && rndr.is_none() {
         // 재료가 카운터뿐이면 키가 추측 가능한 수준이라 명시적으로 드러냄
         let _ = writeln!(con, "k0: WARNING pac key entropy low (counter only)");
+    }
+
+    // 루트 태스크에 넘길 시드. PAC 키와 같은 DTB 재료를 쓰지만 도메인이 달라
+    // 서로 독립이고, RNDR이 있으면 여기에만 쓰는 256비트를 따로 뽑아 넣음
+    let mut fresh = [0u64; 4];
+    let mut rndr_full = true;
+    for w in fresh.iter_mut() {
+        match k0_arch::hardening::rndr() {
+            Some(v) => *w = v,
+            None => rndr_full = false,
+        }
+    }
+    let mut root_seed =
+        k0_boot::derive_root_seed(bootinfo.entropy(), &[cntpct, fresh[0], fresh[1], fresh[2], fresh[3]]);
+    let seed_info = (bootinfo.rng_seed_len() as u64 & k0_abi::bootinfo::SEED_RNG_SEED_BYTES)
+        | if rndr_full { k0_abi::bootinfo::SEED_RNDR } else { 0 };
+    for w in fresh.iter_mut() {
+        // SAFETY: w는 이 스택 프레임의 유효한 배열 원소임
+        unsafe { core::ptr::write_volatile(w, 0) };
     }
 
     let hard = k0_arch::hardening::enable(&pac_keys);
@@ -408,6 +427,18 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     // 루트 태스크를 자기 CNode와 주소 공간에 묶음. 다른 태스크와 똑같이 TCB의
     // 내장 슬롯에 두 케이퍼빌리티의 복사본을 넣음
     let tcb = root.tcb;
+    // 시드는 루트 태스크의 진입 레지스터로 넘김(x0-x3 = 시드, x4 = 재료 정보).
+    // 저장된 컨텍스트의 사본은 루트 태스크가 처음 커널에 들어올 때 그때의
+    // 레지스터로 덮이고, 이 스택의 사본은 여기서 지움
+    for (i, chunk) in root_seed.chunks_exact(8).enumerate() {
+        tcb.ctx.x[i] = u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8]));
+    }
+    tcb.ctx.x[4] = seed_info;
+    for b in root_seed.iter_mut() {
+        // SAFETY: b는 이 스택 프레임의 유효한 배열 원소임
+        unsafe { core::ptr::write_volatile(b, 0) };
+    }
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     let tcb_ptr = core::ptr::from_mut(tcb);
     let bound = match (
         cnode.slot(k0_cap::boot_slot::CNODE),
@@ -455,8 +486,12 @@ extern "C" fn kernel_main(dtb_phys: usize) -> ! {
 
     check_user_wx(&mut con, segs, &hard);
 
+    // DTB를 읽는 일이 전부 끝났으므로 거기 남은 시드와 그 사본을 지움
+    wipe_dtb_seeds(&mut con, &mut bootinfo);
+
     print_device_pages(&mut con);
     let _ = writeln!(con, "k0: entering root task (el0)");
+    scrub_boot_stack();
     // SAFETY: 주소 공간 설치와 컨텍스트 준비가 끝난 발산 지점에서의 이양이고,
     //         tcb_ptr은 부트 윈도우의 루트 TCB 프레임으로 이후 해제되지 않음
     unsafe { k0_sched::handoff(&mut *tcb_ptr) }
@@ -467,6 +502,67 @@ struct ImageMap {
     pa: u64,
     va: u64,
     len: u64,
+}
+
+/// DTB에 남은 시드 값과 커널이 가진 그 사본을 지우는 함수입니다.
+///
+/// 파서가 기록한 구간(`rng-seed`와 `kaslr-seed`의 값 전체)을 0으로 덮고, 읽기
+/// 전용 별칭으로 다시 읽어 확인한 뒤에만 지웠다고 알립니다. 시드로 PAC 키와
+/// 루트 태스크의 시드를 이미 만든 뒤이므로, 남겨 두면 나중에 그 메모리를 읽는
+/// 쪽이 둘을 다시 계산할 수 있습니다. 구간은 파서가 blob 안이라고 확인한
+/// 것이고 DTB는 선언된 메모리 안에 있다는 검증을 통과한 뒤입니다.
+///
+/// 커널이 닿을 수 없는 사본(펌웨어가 가진 원본, UEFI 로더의 버퍼)은 지우지
+/// 못합니다.
+fn wipe_dtb_seeds(con: &mut EarlyCon, bootinfo: &mut k0_boot::BootInfo) {
+    let base = bootinfo.dtb.start as u64;
+    let mut wiped = 0;
+    let mut clean = true;
+    for &(offset, len) in bootinfo.seed_spans() {
+        let start = base + offset as u64;
+        if k0_mm::wipe_ro_alias(start..start + len as u64).is_err() {
+            clean = false;
+            continue;
+        }
+        // SAFETY: DTB 전체가 읽기 전용 별칭으로 매핑돼 있고 구간은 그 안임
+        let left = unsafe {
+            core::slice::from_raw_parts((start + k0_mm::KERNEL_VA_OFFSET) as *const u8, len)
+        };
+        if left.iter().any(|&b| b != 0) {
+            clean = false;
+        } else {
+            wiped += len;
+        }
+    }
+    bootinfo.wipe_entropy();
+    if clean {
+        let _ = writeln!(con, "k0: dtb seeds wiped {wiped}B");
+    } else {
+        let _ = writeln!(con, "k0: WARNING dtb seeds not wiped");
+    }
+}
+
+/// 부트 스택에서 지금 쓰는 부분 아래를 전부 0으로 덮는 함수입니다.
+///
+/// 시드를 해시하던 함수들의 지역 변수와 해시 상태가 이미 끝난 프레임에
+/// 남아 있을 수 있어서, EL0로 넘어가기 직전에 한꺼번에 지웁니다. 이 스택은
+/// 이후 시스템 콜 스택으로 다시 쓰입니다. 지금 살아 있는 프레임(kernel_main과
+/// 이 함수)은 지우지 못하므로 최선의 노력입니다.
+#[inline(never)]
+fn scrub_boot_stack() {
+    let sp: u64;
+    // SAFETY: 스택 포인터를 읽기만 함
+    unsafe { core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack)) };
+    let bottom = &raw const __boot_stack_bottom as u64;
+    // 이 함수 자신의 프레임과 벡터가 쓸 자리를 남김
+    let top = sp.saturating_sub(256) & !7;
+    let mut p = bottom;
+    while p < top {
+        // SAFETY: [bottom, top)은 부트 스택에서 현재 프레임보다 아래의 쓰지
+        //         않는 구간이고 8바이트 정렬임
+        unsafe { core::ptr::write_volatile(p as *mut u64, 0) };
+        p += 8;
+    }
 }
 
 /// untyped로 넘길 구간을 구하고, 구간마다 꼬리에서 커널 몫을 떼어 두는

@@ -68,3 +68,38 @@ fn key_words_are_distinct() {
         }
     }
 }
+
+fn hex(s: &str) -> Vec<u8> {
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+}
+
+#[test]
+fn root_seed_matches_independent_known_answers() {
+    // Python hashlib로 따로 계산한 값
+    assert_eq!(
+        derive_root_seed(&[], &[]).to_vec(),
+        hex("1fd07e587112efbf09cabed0587f70aab66fc7b863becf6e10a78021986bef4e")
+    );
+    assert_eq!(
+        derive_root_seed(&virt_seed(), &[0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210]).to_vec(),
+        hex("d0b6a805e0d9a276642dc45946a20ba8c3abb62bf37055395d038ac812855d55")
+    );
+}
+
+#[test]
+fn root_seed_is_independent_of_the_pac_keys_and_follows_every_input() {
+    let seed = virt_seed();
+    let base = derive_root_seed(&seed, &[7, 9]);
+    // 같은 재료에서 나온 PAC 키의 어느 워드도 시드에 나타나지 않음
+    for k in derive_pac_keys(&seed, &[7, 9]) {
+        assert!(!base.windows(8).any(|w| w == k.to_le_bytes()));
+    }
+    let mut flipped = seed.clone();
+    flipped[39] ^= 1;
+    assert_ne!(derive_root_seed(&flipped, &[7, 9]), base);
+    assert_ne!(derive_root_seed(&seed, &[7, 8]), base);
+    assert_ne!(derive_root_seed(&seed[..39], &[7, 9]), base);
+    // 길이 접두사가 DTB 바이트와 뒤따르는 워드를 구분함
+    let tail = u64::from_le_bytes(seed[32..40].try_into().unwrap());
+    assert_ne!(derive_root_seed(&seed[..32], &[tail, 7, 9]), base);
+}

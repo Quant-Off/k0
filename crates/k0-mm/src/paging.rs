@@ -755,6 +755,89 @@ impl Pool {
     }
 }
 
+/// 읽기 전용 별칭으로 매핑된 RAM의 한 구간을 0으로 덮는 함수입니다.
+///
+/// DTB에 남은 시드를 지우는 데 씁니다. 구간이 걸친 페이지마다 별칭의 리프를
+/// 잠깐 쓰기 가능으로 바꿨다가 되돌립니다. 같은 물리 페이지에 속성이 다른
+/// 두 번째 매핑을 만들지 않으려고 기존 리프를 그 자리에서 바꾸며, 바꿀
+/// 때마다 무효 엔트리와 TLB 무효화를 거칩니다(break-before-make). 덮은 뒤에는
+/// 그 캐시 라인을 메모리까지 내보내고 캐시에서 비웁니다. 그래서 호출자가 그
+/// 구간을 다시 읽으면 캐시에 남은 값이 아니라 메모리의 값을 보게 됩니다.
+///
+/// # Arguments
+/// `range` - 지울 물리 구간(정렬 불필요). 전부 [map_dtb]가 매핑한 페이지
+/// 안이어야 함
+///
+/// # Errors
+/// MMU 비활성 시 `NotEnabled`, 구간의 페이지가 매핑돼 있지 않으면
+/// `MissingTable`, 읽기 전용 별칭이 아닌 다른 매핑이면 `Overlap`
+pub fn wipe_ro_alias(range: Range<u64>) -> Result<(), MmuError> {
+    let g = GRANULE as u64;
+    // SAFETY: 부트 코어의 초기화 시퀀스에서만 호출되어 이 가변 참조는 유일함
+    let pool = unsafe { &mut *POOL.0.get() };
+    if !pool.enabled {
+        return Err(MmuError::NotEnabled);
+    }
+    let ctr: u64;
+    // SAFETY: CTR_EL0 읽기는 부작용이 없음
+    unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
+    let line = 4u64 << ((ctr >> 16) & 0xF);
+    let root1 = pool.root1;
+    let mut at = range.start;
+    while at < range.end {
+        let page = at & !(g - 1);
+        let end = range.end.min(page + g);
+        let va = page + KERNEL_VA_OFFSET;
+        let (t, i) = pool.leaf_of(root1, va)?;
+        let ro = page | Perm::Ro.attrs();
+        if pool.tbl(t)[i] != ro {
+            return Err(MmuError::Overlap);
+        }
+        pool.tbl_mut(t)[i] = 0;
+        flush_leaf(va);
+        pool.tbl_mut(t)[i] = page | Perm::Rw.attrs();
+        // SAFETY: 방금 이 페이지를 쓰기 가능으로 바꿨고, 구간은 그 페이지
+        //         안이며 커널만 접근함. 배리어는 새 엔트리를 워커가 보게 하고,
+        //         dc cvac는 캐시 유지 보수만 함
+        unsafe {
+            asm!("dsb ishst", "isb", options(nostack));
+            core::ptr::write_bytes((at + KERNEL_VA_OFFSET) as *mut u8, 0, (end - at) as usize);
+            let mut p = (at + KERNEL_VA_OFFSET) & !(line - 1);
+            while p < end + KERNEL_VA_OFFSET {
+                asm!("dc civac, {}", in(reg) p, options(nostack));
+                p += line;
+            }
+            asm!("dsb ish", options(nostack));
+        }
+        pool.tbl_mut(t)[i] = 0;
+        flush_leaf(va);
+        pool.tbl_mut(t)[i] = ro;
+        // SAFETY: 되돌린 엔트리를 워커가 보기 전에 쓰기를 완료시킴
+        unsafe { asm!("dsb ishst", "isb", options(nostack)) };
+        at = end;
+    }
+    Ok(())
+}
+
+/// 무효로 만든 리프의 변환을 TLB에서 지우는 함수입니다.
+///
+/// # Arguments
+/// `va` - 그 리프가 변환하던 가상 주소
+fn flush_leaf(va: u64) {
+    // SAFETY: 무효 엔트리 쓰기를 완료시킨 뒤 해당 VA의 마지막 레벨 변환만
+    //         지우고, 그 완료를 기다림 (TLBI의 피연산자는 VA를 12비트 내린 값)
+    unsafe {
+        asm!(
+            "dsb ishst",
+            "tlbi vale1is, {va}",
+            "dsb ish",
+            "isb",
+            va = in(reg) (va >> 12) & ((1 << 44) - 1),
+            options(nostack),
+        );
+    }
+}
+
 /// 디바이스 레지스터가 있는 물리 페이지를 디바이스 창에 매핑하는 함수입니다.
 ///
 /// `pa`가 속한 그래뉼 페이지 하나를 Device 속성으로 매핑하고 `pa`에 해당하는

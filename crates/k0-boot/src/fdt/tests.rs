@@ -701,3 +701,86 @@ fn malformed_branches_the_kernel_does_not_read_are_tolerated() {
         .end();
     assert!(run(&b.build()).is_ok());
 }
+
+#[test]
+fn seed_spans_cover_the_whole_values_in_the_blob() {
+    // 엔트로피 사본은 상한까지만 담지만, 구간은 값 전체를 덮어야 지울 때
+    // 남는 바이트가 없음
+    let blob = Board {
+        rng_seed: Some(vec![0xA5; 96]),
+        kaslr_seed: Some(vec![0x5A; 8]),
+        ..Board::qemu_virt()
+    }
+    .blob();
+    let info = run(&blob).unwrap();
+    assert_eq!(info.entropy().len(), MAX_ENTROPY);
+    assert_eq!(info.rng_seed_len(), MAX_ENTROPY, "only rng-seed bytes that were used are counted");
+    let spans = info.seed_spans();
+    assert_eq!(spans.len(), 2);
+    assert_eq!(spans[0].1, 96);
+    assert_eq!(spans[1].1, 8);
+    assert!(blob[spans[0].0..spans[0].0 + 96].iter().all(|&b| b == 0xA5));
+    assert!(blob[spans[1].0..spans[1].0 + 8].iter().all(|&b| b == 0x5A));
+
+    // 구간을 0으로 덮은 blob에는 시드 바이트가 어디에도 남지 않고, 다시
+    // 파싱해도 같은 메모리 맵이 나옴
+    let mut wiped = blob.clone();
+    for &(off, len) in spans {
+        wiped[off..off + len].fill(0);
+    }
+    assert!(!wiped.windows(8).any(|w| w == [0xA5; 8] || w == [0x5A; 8]));
+    let again = run(&wiped).unwrap();
+    assert_eq!(again.memory(), info.memory());
+    assert!(again.entropy().iter().all(|&b| b == 0));
+}
+
+#[test]
+fn rng_seed_length_does_not_count_the_kaslr_seed() {
+    let info = run(&Board {
+        rng_seed: None,
+        kaslr_seed: Some(vec![9; 8]),
+        ..Board::qemu_virt()
+    }
+    .blob())
+    .unwrap();
+    assert_eq!(info.entropy().len(), 8);
+    assert_eq!(info.rng_seed_len(), 0);
+    assert_eq!(info.seed_spans().len(), 1);
+
+    let info = run(&Board {
+        rng_seed: Some(vec![3; 32]),
+        kaslr_seed: None,
+        ..Board::qemu_virt()
+    }
+    .blob())
+    .unwrap();
+    assert_eq!(info.rng_seed_len(), 32);
+}
+
+#[test]
+fn wiping_the_entropy_copy_leaves_nothing_to_derive_from() {
+    let mut info = run(&Board {
+        rng_seed: Some(vec![0xEE; 32]),
+        ..Board::qemu_virt()
+    }
+    .blob())
+    .unwrap();
+    assert_eq!(info.rng_seed_len(), 32);
+    info.wipe_entropy();
+    assert!(info.entropy().is_empty());
+    assert_eq!(info.rng_seed_len(), 0);
+}
+
+#[test]
+fn a_second_chosen_node_is_refused() {
+    // 시드가 어느 노드에 있는지 모호하면 쓴 뒤에 전부 지웠다고 말할 수 없음
+    let mut b = Builder::new();
+    b.begin("")
+        .begin("memory").prop("device_type", b"memory\0")
+        .prop("reg", &reg(&[(0x4000_0000, 0x1000)], 2, 1))
+        .end()
+        .begin("chosen").prop("rng-seed", &[7; 16]).end()
+        .begin("chosen").prop("rng-seed", &[8; 16]).end()
+        .end();
+    assert_eq!(run(&b.build()).err(), Some(BootError::DuplicateChosen));
+}

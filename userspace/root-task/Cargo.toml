@@ -7,3 +7,10 @@ publish.workspace = true
 
 [dependencies]
 k0-abi = { path = "../../crates/k0-abi" }
+k0-vault = { path = "../k0-vault", optional = true }
+
+# 키 볼트(서명 오라클)는 선택 기능입니다. `vault`는 서비스와 그 자가 검증을
+# 넣고, 알고리즘은 따로 더합니다. 아무것도 기본으로 켜지지 않습니다.
+[features]
+vault = ["dep:k0-vault"]
+vault-ed25519 = ["vault", "k0-vault/ed25519"]

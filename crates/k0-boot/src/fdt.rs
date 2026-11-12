@@ -31,6 +31,9 @@ pub const MAX_MEM_REGIONS: usize = 8;
 /// 저장 가능한 예약 구간(memreserve + /reserved-memory) 수의 상한
 pub const MAX_RSV_REGIONS: usize = 32;
 
+/// 시드 값이 놓인 구간의 최대 수(`rng-seed`와 `kaslr-seed` 하나씩)
+pub const MAX_SEED_SPANS: usize = 2;
+
 /// /chosen에서 수집하는 엔트로피 바이트 상한 (rng-seed + kaslr-seed)
 pub const MAX_ENTROPY: usize = 72;
 
@@ -58,9 +61,48 @@ pub struct BootInfo {
     reserved_count: usize,
     entropy: [u8; MAX_ENTROPY],
     entropy_len: usize,
+    /// 엔트로피에 들어간 `rng-seed` 바이트 수(`kaslr-seed`는 세지 않음)
+    rng_seed_len: usize,
+    /// DTB 안에서 시드 값이 놓인 구간들(blob 시작으로부터의 오프셋, 길이)
+    seed_spans: [(usize, usize); MAX_SEED_SPANS],
+    seed_span_count: usize,
+    chosen_seen: bool,
 }
 
 impl BootInfo {
+    /// 엔트로피에 들어간 `rng-seed` 바이트 수를 주는 함수입니다.
+    ///
+    /// 시드의 품질을 말할 때 쓰는 값입니다. `kaslr-seed`는 8바이트뿐이라
+    /// 여기에 세지 않습니다.
+    pub fn rng_seed_len(&self) -> usize {
+        self.rng_seed_len
+    }
+
+    /// DTB 안에서 시드 값(`rng-seed`, `kaslr-seed`)이 놓인 구간을 주는
+    /// 함수입니다. 각 항목은 (DTB 시작으로부터의 오프셋, 길이)이고 값 전체를
+    /// 덮습니다(엔트로피 사본은 앞의 일부만 담을 수 있음).
+    ///
+    /// 커널이 시드를 쓴 뒤 DTB에 남은 원본을 지우는 데 씁니다.
+    pub fn seed_spans(&self) -> &[(usize, usize)] {
+        &self.seed_spans[..self.seed_span_count]
+    }
+
+    /// 엔트로피 사본을 지우는 함수입니다. 이후 [BootInfo::entropy]는 빈
+    /// 구간을 줍니다.
+    ///
+    /// 시드를 다 쓴 뒤에 불러, 나중의 코드가 지워진 시드를 재료로 삼는 일이
+    /// 없게 합니다.
+    pub fn wipe_entropy(&mut self) {
+        for b in self.entropy.iter_mut() {
+            // SAFETY: b는 이 구조체 안의 유효한 바이트임. volatile이라 소거가
+            //         최적화로 사라지지 않음
+            unsafe { core::ptr::write_volatile(b, 0) };
+        }
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        self.entropy_len = 0;
+        self.rng_seed_len = 0;
+    }
+
     pub fn memory(&self) -> &[MemRegion] {
         &self.regions[..self.region_count]
     }
@@ -103,6 +145,9 @@ pub enum BootError {
     UnsupportedRanges,
     MemoryLimited,
     BadInitrd,
+    /// `/chosen` 노드가 둘 이상임. 시드가 어느 노드에 있는지 모호해져 쓴 뒤에
+    /// 전부 지웠다고 말할 수 없음
+    DuplicateChosen,
 }
 
 /// DTB 헤더만 검사해 blob이 차지하는 물리 범위를 얻는 함수입니다.
@@ -220,6 +265,10 @@ pub fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError>
         reserved_count: 0,
         entropy: [0; MAX_ENTROPY],
         entropy_len: 0,
+        rng_seed_len: 0,
+        seed_spans: [(0, 0); MAX_SEED_SPANS],
+        seed_span_count: 0,
+        chosen_seen: false,
     };
 
     fdt.memreserve(|base, size| push_reserved(&mut info, base, size))?;
@@ -249,9 +298,24 @@ pub fn parse_blob(blob: &[u8], dtb: Range<usize>) -> Result<BootInfo, BootError>
                     if node.has(P::UsableMemoryRange) {
                         return Err(BootError::MemoryLimited);
                     }
+                    if info.chosen_seen {
+                        return Err(BootError::DuplicateChosen);
+                    }
+                    info.chosen_seen = true;
                     for p in [P::RngSeed, P::KaslrSeed] {
                         if let Some(value) = node.get(p) {
-                            push_entropy(value, &mut info);
+                            let taken = push_entropy(value, &mut info);
+                            if matches!(p, P::RngSeed) {
+                                info.rng_seed_len = taken;
+                            }
+                            // 값은 blob 안의 조각이므로 주소 차이가 곧 오프셋임.
+                            // 노드 하나에 같은 프로퍼티가 둘일 수 없고 /chosen도
+                            // 하나뿐이라 칸이 모자랄 수 없음
+                            let offset = value.as_ptr() as usize - blob.as_ptr() as usize;
+                            if !value.is_empty() && offset + value.len() <= blob.len() {
+                                info.seed_spans[info.seed_span_count] = (offset, value.len());
+                                info.seed_span_count += 1;
+                            }
                         }
                     }
                     push_initrd(node, &mut info)?;
@@ -355,11 +419,13 @@ fn push_initrd(node: &Node<'_>, info: &mut BootInfo) -> Result<(), BootError> {
 /// /chosen의 엔트로피 프로퍼티를 상한까지 수집하는 함수입니다.
 ///
 /// 내용은 검증하지 않고(해시 혼합 재료일 뿐) 넘치는 바이트는 버립니다.
-fn push_entropy(value: &[u8], info: &mut BootInfo) {
+/// 수집한 바이트 수를 반환합니다.
+fn push_entropy(value: &[u8], info: &mut BootInfo) -> usize {
     let cap = MAX_ENTROPY - info.entropy_len;
     let n = value.len().min(cap);
     info.entropy[info.entropy_len..info.entropy_len + n].copy_from_slice(&value[..n]);
     info.entropy_len += n;
+    n
 }
 
 /// 다른 모듈의 테스트 도구가 blob 하나의 메모리 맵을 보기 위한 통로입니다.

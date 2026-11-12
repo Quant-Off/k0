@@ -32,6 +32,11 @@ granule-16k = [
 console-pl011 = ["k0-arch/console-pl011"]
 console-16550 = ["k0-arch/console-16550"]
 console = ["console-pl011", "console-16550"]
+# 루트 태스크 이미지에 키 볼트(서명 오라클)를 넣음. 알고리즘은 따로 더함
+#   vault          볼트 서비스와 그 자가 검증(서명 알고리즘 없음)
+#   vault-ed25519  위에 Ed25519를 더함
+vault = ["k0-boot/vault"]
+vault-ed25519 = ["vault", "k0-boot/vault-ed25519"]
 
 # 커널 크레이트는 외부(third-party) 의존성 0, 워크스페이스 크레이트만 허용
 # 외부가 필요해진 경우: vendored + 해시 고정
