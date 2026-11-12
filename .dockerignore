@@ -1,1 +1,30 @@
-target/
+# Nothing enters the CI image unless it is listed here. Build output, editor and tool state,
+# local notes and logs stay out, whatever they are called. `.git` is kept: the threat model asks
+# reporters to quote `git -C /src rev-parse HEAD` from inside the container.
+# A new top-level entry that the build or the tests need must be added below.
+*
+!.cargo
+!.git
+!.gitattributes
+!.gitignore
+!.github
+!Cargo.lock
+!Cargo.toml
+!LICENSE
+!rust-toolchain.toml
+!assets
+!ci
+!crates
+!design
+!kernel
+!loader
+!tools
+!userspace
+!vendor
+!*.md
+# Local files that .gitignore also keeps out, at any depth inside the listed directories
+**/NO-COMMIT*
+**/target
+**/.DS_Store
+**/*.log
+**/*.rs.bk
