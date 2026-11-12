@@ -816,3 +816,321 @@ fn fuzz_prepare_end_to_end() {
         assert!(rejected > 0, "no case was ever rejected");
     }
 }
+
+// ACPI 정적 테이블에서 디바이스 트리를 만드는 경로의 테스트
+
+mod acpi_tables {
+    use super::*;
+    use crate::acpi::{read, AcpiError, Found, Gic, Memory, Uart};
+    use crate::synth::synthesize;
+    use k0_boot::{ConsoleKind, Intc};
+    use std::cell::Cell;
+
+    /// 주소마다 테이블 이미지를 둔 가짜 물리 메모리입니다. 이미지 밖을 읽으려는
+    /// 요청은 거절하고, 요청 횟수를 셉니다.
+    struct Tables {
+        blobs: Vec<(u64, Vec<u8>)>,
+        reads: Cell<usize>,
+    }
+
+    impl Memory for Tables {
+        fn bytes(&self, addr: u64, len: usize) -> Option<&[u8]> {
+            self.reads.set(self.reads.get() + 1);
+            let (base, blob) = self.blobs.iter().find(|(b, v)| *b <= addr && addr - *b <= v.len() as u64)?;
+            blob.get((addr - base) as usize..)?.get(..len)
+        }
+    }
+
+    fn fix(mut t: Vec<u8>, at: usize, range: usize) -> Vec<u8> {
+        t[at] = 0;
+        let sum = t[..range].iter().fold(0u8, |a, &b| a.wrapping_add(b));
+        t[at] = 0u8.wrapping_sub(sum);
+        t
+    }
+
+    fn sdt(sig: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut t = vec![0u8; 36];
+        t[..4].copy_from_slice(sig);
+        t[4..8].copy_from_slice(&((36 + body.len()) as u32).to_le_bytes());
+        t.extend_from_slice(body);
+        let len = t.len();
+        fix(t, 9, len)
+    }
+
+    fn gicc(enabled: bool, cpu: u64, gicr: u64, mpidr: u64) -> Vec<u8> {
+        let mut e = vec![0u8; 80];
+        (e[0], e[1]) = (0xB, 80);
+        e[12..16].copy_from_slice(&u32::from(enabled).to_le_bytes());
+        e[32..40].copy_from_slice(&cpu.to_le_bytes());
+        e[60..68].copy_from_slice(&gicr.to_le_bytes());
+        e[68..76].copy_from_slice(&mpidr.to_le_bytes());
+        e
+    }
+
+    fn gicd(base: u64, version: u8) -> Vec<u8> {
+        let mut e = vec![0u8; 24];
+        (e[0], e[1], e[20]) = (0xC, 24, version);
+        e[8..16].copy_from_slice(&base.to_le_bytes());
+        e
+    }
+
+    fn gicr(base: u64, len: u32) -> Vec<u8> {
+        let mut e = vec![0u8; 16];
+        (e[0], e[1]) = (0xE, 16);
+        e[4..12].copy_from_slice(&base.to_le_bytes());
+        e[12..16].copy_from_slice(&len.to_le_bytes());
+        e
+    }
+
+    fn madt(entries: &[Vec<u8>]) -> Vec<u8> {
+        let mut body = vec![0u8; 8];
+        entries.iter().for_each(|e| body.extend_from_slice(e));
+        sdt(b"APIC", &body)
+    }
+
+    fn gtdt(gsiv: u32, flags: u32) -> Vec<u8> {
+        let mut body = vec![0u8; 68];
+        body[28..32].copy_from_slice(&gsiv.to_le_bytes());
+        body[32..36].copy_from_slice(&flags.to_le_bytes());
+        sdt(b"GTDT", &body)
+    }
+
+    fn spcr(interface: u8, space: u8, width: u8, access: u8, addr: u64) -> Vec<u8> {
+        let mut body = vec![0u8; 44];
+        (body[0], body[4], body[5], body[7]) = (interface, space, width, access);
+        body[8..16].copy_from_slice(&addr.to_le_bytes());
+        sdt(b"SPCR", &body)
+    }
+
+    const RSDP: u64 = 0x5cb4_3000;
+
+    /// 테이블들을 RSDP와 XSDT로 엮어 가짜 메모리에 놓습니다.
+    fn machine(tables: &[Vec<u8>]) -> Tables {
+        let mut blobs = Vec::new();
+        let mut xsdt_body = Vec::new();
+        for (i, t) in tables.iter().enumerate() {
+            let at = 0x5cb5_0000 + 0x1_0000 * i as u64;
+            xsdt_body.extend_from_slice(&at.to_le_bytes());
+            blobs.push((at, t.clone()));
+        }
+        let xsdt_at = 0x5cb4_8000u64;
+        blobs.push((xsdt_at, sdt(b"XSDT", &xsdt_body)));
+        let mut r = vec![0u8; 36];
+        r[..8].copy_from_slice(b"RSD PTR ");
+        r[15] = 2;
+        r[20..24].copy_from_slice(&36u32.to_le_bytes());
+        r[24..32].copy_from_slice(&xsdt_at.to_le_bytes());
+        blobs.push((RSDP, fix(fix(r, 8, 20), 32, 36)));
+        Tables { blobs, reads: Cell::new(0) }
+    }
+
+    fn qemu_v3() -> Vec<Vec<u8>> {
+        vec![
+            madt(&[gicd(0x800_0000, 3), gicc(true, 0, 0, 0), gicr(0x80a_0000, 0xf6_0000)]),
+            gtdt(27, 0),
+            spcr(0x03, 0, 32, 3, 0x900_0000),
+        ]
+    }
+
+    fn qemu_v2() -> Vec<Vec<u8>> {
+        vec![madt(&[gicd(0x800_0000, 2), gicc(true, 0x801_0000, 0, 0)]), gtdt(27, 0), spcr(0x03, 0, 32, 3, 0x900_0000)]
+    }
+
+    fn tree(found: &Found) -> Vec<u8> {
+        let mut out = vec![0xAAu8; 4096];
+        let len = synthesize(found, mem(0x5c00_0000, ALIGN), &mut out).unwrap();
+        out.truncate(len);
+        out
+    }
+
+    fn with(base: Vec<Vec<u8>>, index: usize, table: Vec<u8>) -> Tables {
+        let mut t = base;
+        t[index] = table;
+        machine(&t)
+    }
+
+    #[test]
+    fn the_tables_of_qemu_describe_the_platform_its_device_tree_describes() {
+        // GICv3: 커널이 QEMU의 디바이스 트리에서 찾는 것과 완전히 같은 플랫폼
+        let found = read(&machine(&qemu_v3()), RSDP, 0x8000_0000).unwrap();
+        let made = tree(&found);
+        assert_eq!(discover_blob(&made), discover_blob(&virt3().blob()));
+        // 메모리 노드에는 자리표시 하나뿐이고 예약은 없음
+        let info = parse_blob(&made, 0..made.len()).unwrap();
+        assert_eq!((info.memory(), info.reserved().len()), (&[mem(0x5c00_0000, ALIGN)][..], 0));
+
+        // GICv2: 프레임 크기는 테이블에 없어 Linux의 값을 쓰므로 주소와 나머지를 비교
+        let found = read(&machine(&qemu_v2()), RSDP, 0).unwrap();
+        let (got, want) = (discover_blob(&tree(&found)).unwrap(), discover_blob(&virt2().blob()).unwrap());
+        assert_eq!((got.platform.console, got.platform.timer.intid), (want.platform.console, want.platform.timer.intid));
+        match (got.platform.intc, want.platform.intc) {
+            (Intc::GicV2 { dist, cpu }, Intc::GicV2 { dist: d, cpu: c }) => {
+                assert_eq!((dist.base, cpu.base, dist.size, cpu.size), (d.base, c.base, 0x1000, 0x2000));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_table_rule_refuses_its_violation() {
+        let read_of = |t: &Tables| read(t, RSDP, 0);
+        assert_eq!(read(&machine(&qemu_v3()), 0x1000, 0).err(), Some(AcpiError::Unreadable));
+        // 체크섬이 틀린 테이블, 서명이 틀린 RSDP
+        let mut bad = qemu_v3()[0].clone();
+        bad[50] ^= 1;
+        assert_eq!(read_of(&with(qemu_v3(), 0, bad)).err(), Some(AcpiError::BadTable));
+        let mut t = machine(&qemu_v3());
+        t.blobs.last_mut().unwrap().1[0] = b'X';
+        assert_eq!(read_of(&t).err(), Some(AcpiError::BadRsdp));
+        // 필요한 테이블이 없음(SPCR은 없어도 됨)
+        assert_eq!(read_of(&machine(&qemu_v3()[1..])).err(), Some(AcpiError::NoMadt));
+        assert_eq!(read_of(&machine(&[qemu_v3()[0].clone()])).err(), Some(AcpiError::NoGtdt));
+        assert_eq!(read_of(&machine(&qemu_v3()[..2])).unwrap().serial, None);
+        // GIC 버전, 디스트리뷰터 수, 항목 길이
+        for v in [1u8, 5, 255] {
+            let m = madt(&[gicd(0x800_0000, v), gicr(0x80a_0000, 0x2_0000)]);
+            assert_eq!(read_of(&with(qemu_v3(), 0, m)).err(), Some(AcpiError::UnsupportedGic(v)));
+        }
+        let two = madt(&[gicd(0x800_0000, 3), gicd(0x900_0000, 3), gicr(0x80a_0000, 0x2_0000)]);
+        assert_eq!(read_of(&with(qemu_v3(), 0, two)).err(), Some(AcpiError::BadDistributor));
+        let none = madt(&[gicr(0x80a_0000, 0x2_0000)]);
+        assert_eq!(read_of(&with(qemu_v3(), 0, none)).err(), Some(AcpiError::BadDistributor));
+        let mut short = gicd(0x800_0000, 3);
+        short[1] = 0;
+        assert_eq!(read_of(&with(qemu_v3(), 0, madt(&[short]))).err(), Some(AcpiError::BadMadt));
+        let mut long = gicd(0x800_0000, 3);
+        long[1] = 200;
+        assert_eq!(read_of(&with(qemu_v3(), 0, madt(&[long]))).err(), Some(AcpiError::BadMadt));
+        // GICv2: CPU 인터페이스 주소가 없거나 CPU마다 다름
+        let m = madt(&[gicd(0x800_0000, 2), gicc(true, 0x801_0000, 0, 0), gicc(true, 0x802_0000, 0, 1)]);
+        assert_eq!(read_of(&with(qemu_v2(), 0, m)).err(), Some(AcpiError::BadCpuInterface));
+        let m = madt(&[gicd(0x800_0000, 2), gicc(false, 0x801_0000, 0, 0)]);
+        assert_eq!(read_of(&with(qemu_v2(), 0, m)).err(), Some(AcpiError::BadCpuInterface));
+        // 리디스트리뷰터: 5개 구간, 길이 0, 아무 기술도 없음
+        let five: Vec<Vec<u8>> =
+            [gicd(0x800_0000, 3)].into_iter().chain((0..5).map(|i| gicr(0x900_0000 + i * 0x100_0000, 0x2_0000))).collect();
+        assert_eq!(read_of(&with(qemu_v3(), 0, madt(&five))).err(), Some(AcpiError::BadRedistributor));
+        let empty = madt(&[gicd(0x800_0000, 3), gicr(0x80a_0000, 0)]);
+        assert_eq!(read_of(&with(qemu_v3(), 0, empty)).err(), Some(AcpiError::BadRedistributor));
+        let bare = madt(&[gicd(0x800_0000, 3), gicc(true, 0, 0, 0)]);
+        assert_eq!(read_of(&with(qemu_v3(), 0, bare)).err(), Some(AcpiError::BadRedistributor));
+        // 타이머 인터럽트는 PPI(16에서 31)여야 함
+        for gsiv in [0u32, 15, 32, 1056] {
+            assert_eq!(read_of(&with(qemu_v3(), 1, gtdt(gsiv, 0))).err(), Some(AcpiError::BadTimer));
+        }
+    }
+
+    #[test]
+    fn redistributors_can_come_from_the_cpu_entries() {
+        // GICR 항목 없이 CPU마다 프레임 주소를 적는 형태. 맞닿은 프레임은 한 구간이 됨
+        let cpus = |n: u64| -> Vec<Vec<u8>> {
+            [gicd(0x800_0000, 3)].into_iter().chain((0..n).map(|i| gicc(true, 0, 0x80a_0000 + i * 0x2_0000, i))).collect()
+        };
+        let found = read(&with(qemu_v3(), 0, madt(&cpus(4))), RSDP, 0x8000_0002).unwrap();
+        match found.gic {
+            Gic::V3 { redist, count, .. } => assert_eq!((count, redist[0]), (1, mem(0x80a_0000, 0x8_0000))),
+            other => panic!("{other:?}"),
+        }
+        assert!(discover_blob(&tree(&found)).is_ok());
+        // 부트 CPU의 항목이 없으면 커널이 자기 프레임을 찾지 못하므로 거부
+        assert_eq!(read(&with(qemu_v3(), 0, madt(&cpus(2))), RSDP, 7).err(), Some(AcpiError::BadRedistributor));
+        // 같은 프레임을 두 CPU가 말하면 거부
+        let dup = madt(&[gicd(0x800_0000, 3), gicc(true, 0, 0x80a_0000, 0), gicc(true, 0, 0x80a_0000, 1)]);
+        assert_eq!(read(&with(qemu_v3(), 0, dup), RSDP, 0).err(), Some(AcpiError::BadRedistributor));
+        // GICR 항목이 있으면 CPU 항목의 주소는 보지 않음
+        let both = madt(&[gicd(0x800_0000, 0), gicc(true, 0, 0x700_0000, 0), gicr(0x80a_0000, 0xf6_0000)]);
+        match read(&with(qemu_v3(), 0, both), RSDP, 0).unwrap().gic {
+            Gic::V3 { redist, count, .. } => assert_eq!((count, redist[0].base), (1, 0x80a_0000)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_console_is_taken_only_when_the_kernel_has_a_driver_for_it() {
+        let serial = |t: Vec<u8>| read(&with(qemu_v3(), 2, t), RSDP, 0).unwrap();
+        assert_eq!(serial(spcr(0x0E, 0, 32, 3, 0x900_0000)).serial.map(|s| s.kind), Some(Uart::Sbsa));
+        assert_eq!(serial(spcr(0x0D, 0, 32, 3, 0x900_0000)).serial.map(|s| s.kind), Some(Uart::Sbsa));
+        // 16550은 폭 8비트에 바이트 접근일 때만. 커널은 간격 1바이트로 발견함
+        let found = serial(spcr(0x12, 0, 8, 1, 0x900_0000));
+        assert_eq!(found.serial.map(|s| s.kind), Some(Uart::Ns16550));
+        let kind = discover_blob(&tree(&found)).unwrap().platform.console.map(|c| c.kind);
+        assert_eq!(kind, Some(ConsoleKind::Ns16550 { reg_shift: 0, io_width: 1 }));
+        // 레지스터 간격을 알 수 없는 16550, 드라이버가 없는 종류, I/O 공간, 주소 0: 콘솔 없이 진행
+        for t in [spcr(0x12, 0, 32, 3, 0x900_0000), spcr(0x10, 0, 32, 3, 0x900_0000), spcr(0x03, 1, 8, 1, 0x3f8), spcr(0x03, 0, 32, 3, 0)] {
+            let found = serial(t);
+            assert_eq!(found.serial, None);
+            let d = discover_blob(&tree(&found)).unwrap();
+            assert!(d.platform.console.is_none() && d.no_console.is_some());
+        }
+    }
+
+    #[test]
+    fn devices_named_by_the_tables_must_not_lie_in_memory() {
+        let found = read(&machine(&qemu_v3()), RSDP, 0).unwrap();
+        let check = |descs: &[D]| {
+            let bytes = map_bytes(descs, 48);
+            found.check_devices(&Map::new(&bytes, 48).unwrap())
+        };
+        // 맵에 없는 주소(QEMU), 디바이스 레지스터로 올라 있는 주소는 괜찮음
+        assert_eq!(check(maps::QEMU_EDK2_512M), Ok(()));
+        assert_eq!(check(&[(11, 0x900_0000, 1, 1 | 1 << 63)]), Ok(()));
+        // 빈 메모리, 런타임 데이터, 예약 메모리 위의 콘솔이나 GIC는 거부
+        for kind in [CONV, RT_DATA, 0, 4] {
+            assert_eq!(check(&[(kind, 0x900_0000, 1, WB)]), Err(AcpiError::DeviceInMemory));
+            assert_eq!(check(&[(kind, 0x8ff_c000, 1, WB)]), Err(AcpiError::DeviceInMemory));
+            assert_eq!(check(&[(kind, 0x8f0_0000, 0x800, WB)]), Err(AcpiError::DeviceInMemory));
+        }
+    }
+
+    #[test]
+    fn fuzz_acpi_with_mutated_tables() {
+        let (only, stream, cases) = fuzz_cases(20_000);
+        let (mut accepted, mut rejected) = (0u64, 0u64);
+        for i in 0..cases {
+            let seed = only.unwrap_or_else(|| splitmix(stream.wrapping_add(i)));
+            let r = catch_unwind(AssertUnwindSafe(|| {
+                let mut rng = Rng::new(seed);
+                let mut t = machine(&if rng.below(2) == 0 { qemu_v3() } else { qemu_v2() });
+                if rng.below(8) != 0 {
+                    let n = t.blobs.len();
+                    let blob = &mut t.blobs[rng.index(n)].1;
+                    mutate(&mut rng, blob);
+                    // 길이와 체크섬 검사를 지나 안쪽 규칙까지 닿도록 절반은 체크섬을 다시 맞춤
+                    if rng.below(2) == 0 && blob.len() > 36 && &blob[..4] != b"RSD " {
+                        let len = blob.len();
+                        blob[4..8].copy_from_slice(&(len as u32).to_le_bytes());
+                        *blob = fix(std::mem::take(blob), 9, len);
+                    }
+                }
+                let result = read(&t, RSDP, rng.below(4));
+                // 항목 수가 한정돼 있으므로 읽기 횟수도 한정됨
+                assert!(t.reads.get() < 16_000, "{} reads", t.reads.get());
+                let Ok(found) = result else { return false };
+                // 받아들인 값은 커널이 발견하는 트리가 되고, 같은 값을 말함
+                assert!((16..=31).contains(&found.timer_gsiv));
+                let d = discover_blob(&tree(&found)).expect("kernel discovery");
+                assert_eq!(d.platform.timer.intid, found.timer_gsiv);
+                match (&found.gic, &d.platform.intc) {
+                    (Gic::V2 { dist, cpu }, Intc::GicV2 { dist: a, cpu: b }) => {
+                        assert_eq!((dist.base, cpu.base), (a.base, b.base))
+                    }
+                    (Gic::V3 { dist, count, .. }, Intc::GicV3 { dist: a, redist_count, .. }) => {
+                        assert_eq!((dist.base, *count), (a.base, *redist_count))
+                    }
+                    other => panic!("{other:?}"),
+                }
+                true
+            }));
+            match r {
+                Ok(true) => accepted += 1,
+                Ok(false) => rejected += 1,
+                Err(_) => panic!("fuzz case failed, reproduce with K0_FUZZ_CASE={seed:#x} (case {i})"),
+            }
+        }
+        eprintln!("fuzz: {cases} ACPI table cases, accepted {accepted}, rejected {rejected}");
+        if only.is_none() && cases >= 1000 {
+            assert!(accepted * 10 >= cases, "too few table sets were accepted");
+            assert!(rejected * 10 >= cases, "too few table sets were rejected");
+        }
+    }
+}

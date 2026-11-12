@@ -103,6 +103,11 @@ pub struct Guid(pub [u8; 16]);
 pub const DTB_TABLE: Guid =
     Guid([0xd5, 0x21, 0xb6, 0xb1, 0x9c, 0xf1, 0xa5, 0x41, 0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
 
+/// 펌웨어가 ACPI 2.0 이상의 RSDP를 넘길 때 구성 테이블에 쓰는 GUID
+/// (8868e871-e4f1-11d3-bc22-0080c73c8881)
+pub const ACPI_TABLE: Guid =
+    Guid([0x71, 0xe8, 0x68, 0x88, 0xf1, 0xe4, 0xd3, 0x11, 0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81]);
+
 /// EFI_RNG_PROTOCOL의 GUID (3152bca5-eade-433d-862e-c01cdc291f44)
 const RNG_PROTOCOL: Guid =
     Guid([0xa5, 0xbc, 0x52, 0x31, 0xde, 0xea, 0x3d, 0x43, 0x86, 0x2e, 0xc0, 0x1c, 0xdc, 0x29, 0x1f, 0x44]);
@@ -349,6 +354,26 @@ impl fmt::Write for Console {
             flush(&mut buffer, &mut used);
         }
         Ok(())
+    }
+}
+
+/// 메모리 맵이 허락하는 범위만 읽게 해 주는 통로입니다. ACPI 테이블의 주소는
+/// 펌웨어가 준 값이라 틀릴 수 있으므로, 맵에 RAM이나 펌웨어 메모리로 올라 있는
+/// 한 디스크립터 안에 통째로 든 범위만 읽습니다. 디바이스 레지스터와 맵에 없는
+/// 주소는 읽지 않습니다.
+pub struct MapMemory<'a> {
+    pub map: k0_efi::memmap::Map<'a>,
+}
+
+impl k0_efi::acpi::Memory for MapMemory<'_> {
+    fn bytes(&self, addr: u64, len: usize) -> Option<&[u8]> {
+        let end = addr.checked_add(len as u64)?;
+        // 로더·부트 서비스·런타임 서비스의 코드와 데이터, 빈 메모리, ACPI 재사용과 NVS
+        let readable = |kind: u32| matches!(kind, 1..=7 | 9 | 10);
+        self.map.iter().find(|d| readable(d.kind) && d.start <= addr && end <= d.end)?;
+        // SAFETY: 범위 전체가 펌웨어의 메모리 맵에 메모리로 올라 있는 한
+        //         디스크립터 안에 있고, UEFI는 그런 메모리를 identity로 매핑해 둠
+        Some(unsafe { core::slice::from_raw_parts(addr as *const u8, len) })
     }
 }
 

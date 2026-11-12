@@ -133,6 +133,14 @@ pub fn current_el() -> u64 {
     (v >> 2) & 3
 }
 
+/// 이 CPU의 MPIDR_EL1을 읽는 함수입니다.
+pub fn mpidr() -> u64 {
+    let v: u64;
+    // SAFETY: 식별 레지스터 읽기는 부작용이 없음
+    unsafe { asm!("mrs {}, mpidr_el1", out(reg) v, options(nomem, nostack)) };
+    v
+}
+
 /// ID_AA64MMFR0_EL1을 읽는 함수입니다.
 pub fn mmfr0() -> u64 {
     let v: u64;

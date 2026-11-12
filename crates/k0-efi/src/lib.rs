@@ -11,14 +11,18 @@
 //! - [verify]: 계획과 다른 방법으로 결과를 다시 확인
 //! - [prepare]: 위를 묶고 커널의 파서와 검증을 미리 돌림
 //! - [image]: 내장한 커널 Image의 헤더 확인
+//! - [acpi], [synth]: 펌웨어가 디바이스 트리를 주지 않을 때 ACPI 정적 테이블에서
+//!   디바이스를 읽어 트리를 만듦
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod acpi;
 pub mod fdtw;
 pub mod image;
 pub mod memmap;
 pub mod prepare;
+pub mod synth;
 pub mod verify;
 
 #[cfg(test)]

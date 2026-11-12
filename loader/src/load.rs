@@ -9,14 +9,16 @@ use core::fmt::{self, Write};
 use core::ops::Range;
 
 use k0_boot::{Fdt, MemRegion, BOOT_WINDOW_SIZE};
-use k0_efi::fdtw::root_cells;
+use k0_efi::acpi::{self, AcpiError};
+use k0_efi::fdtw::{root_cells, WriteError};
 use k0_efi::image::{check_image, ImageError};
 use k0_efi::memmap::{Limits, Map, PlanError, ALIGN};
 use k0_efi::prepare::{firmware_dtb_size, prepare, PrepareError, Prepared, Request, Work};
+use k0_efi::synth::synthesize;
 use sha2::{Digest, Sha256};
 
-use crate::efi::{wipe, Console, Firmware, Handle, Status, SystemTable, DTB_TABLE, PAGE};
-use crate::handoff::{current_el, enter_kernel, mmfr0, park};
+use crate::efi::{wipe, Console, Firmware, Handle, MapMemory, Status, SystemTable, ACPI_TABLE, DTB_TABLE, PAGE};
+use crate::handoff::{current_el, enter_kernel, mmfr0, mpidr, park};
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/kernel_gen.rs"));
@@ -34,6 +36,8 @@ const EXIT_ATTEMPTS: usize = 4;
 const MAP_SLACK: usize = 32;
 /// 로더가 `rng-seed`에 더하는 바이트 수
 const SEED_LEN: usize = 32;
+/// ACPI에서 합성한 디바이스 트리를 두는 버퍼의 크기(트리는 1KiB에 못 미침)
+const TREE_BYTES: usize = 16 * 1024;
 
 /// 부팅을 거부하는 이유를 나타내는 열거형입니다.
 enum Refusal {
@@ -42,6 +46,8 @@ enum Refusal {
     ImageCorrupt,
     Granule,
     NoDeviceTree,
+    Acpi(AcpiError),
+    Synthesize(WriteError),
     BadDeviceTree,
     DeviceTreeInBlock,
     Firmware(&'static str, Status),
@@ -56,9 +62,9 @@ impl fmt::Display for Refusal {
             Refusal::ImageChanged => f.write_str("embedded kernel image differs from the one checked at build time"),
             Refusal::ImageCorrupt => f.write_str("embedded kernel image is corrupt (sha-256 mismatch)"),
             Refusal::Granule => write!(f, "this cpu has no {}K translation granule", KERNEL_GRANULE / 1024),
-            Refusal::NoDeviceTree => f.write_str(
-                "the firmware provides no device tree (ACPI-only firmware is not supported, QEMU needs -machine acpi=off)",
-            ),
+            Refusal::NoDeviceTree => f.write_str("the firmware provides neither a device tree nor ACPI tables"),
+            Refusal::Acpi(e) => write!(f, "ACPI tables: {e:?}"),
+            Refusal::Synthesize(e) => write!(f, "device tree from ACPI tables: {e:?}"),
             Refusal::BadDeviceTree => f.write_str("the firmware device tree has a bad header"),
             Refusal::DeviceTreeInBlock => f.write_str("the firmware device tree lies in memory the firmware gave to the loader"),
             Refusal::Firmware(what, status) => write!(f, "{what} failed: {status:?}"),
@@ -154,15 +160,35 @@ fn firmware_dtb(fw: &Firmware) -> Result<&'static [u8], Refusal> {
     Ok(unsafe { core::slice::from_raw_parts(ptr, size) })
 }
 
+/// ACPI 정적 테이블을 읽어 디바이스 트리를 만드는 함수입니다. 펌웨어가 디바이스
+/// 트리를 주지 않을 때만 부릅니다.
+fn tree_from_acpi(l: &mut Loader, map_buffer: &mut [u8], tree: &'static mut [u8]) -> Result<&'static [u8], Refusal> {
+    let rsdp = l.fw.configuration_table(&ACPI_TABLE).ok_or(Refusal::NoDeviceTree)?;
+    let info = l.fw.memory_map(map_buffer).map_err(|e| Refusal::Firmware("GetMemoryMap", e))?;
+    let map = Map::new(&map_buffer[..info.size], info.stride).map_err(|e| Refusal::Prepare(PrepareError::Plan(e)))?;
+    let found = acpi::read(&MapMemory { map }, rsdp as u64, mpidr()).map_err(Refusal::Acpi)?;
+    found.check_devices(&map).map_err(Refusal::Acpi)?;
+    // 메모리 노드의 자리표시는 로더가 가진 작업 공간의 한 단위. 재작성이 버림
+    let placeholder = MemRegion { base: tree.as_ptr() as u64 & !(ALIGN - 1), size: ALIGN };
+    let len = synthesize(&found, placeholder, tree).map_err(Refusal::Synthesize)?;
+    let console = if found.serial.is_some() { "MADT, GTDT and SPCR" } else { "MADT and GTDT, no usable SPCR console" };
+    let _ = writeln!(l.con, "k0-loader: device tree built from ACPI tables ({console})");
+    Ok(&tree[..len])
+}
+
 /// 맵 버퍼와 계획의 작업 공간을 한 번에 할당하는 함수입니다.
 fn allocate_work(
     l: &mut Loader,
-) -> Result<(&'static mut [u8], &'static mut [u64], &'static mut [MemRegion], &'static mut [MemRegion]), Refusal> {
+) -> Result<
+    (&'static mut [u8], &'static mut [u64], &'static mut [MemRegion], &'static mut [MemRegion], &'static mut [u8]),
+    Refusal,
+> {
     let info = l.fw.memory_map_size().map_err(|e| Refusal::Firmware("GetMemoryMap", e))?;
     let descriptors = info.size / info.stride + MAP_SLACK;
     let map_bytes = align_up((descriptors * info.stride) as u64, 8) as usize;
     let (np, nr, nh) = Work::need(descriptors);
-    let total = map_bytes + np * 8 + (nr + nh) * core::mem::size_of::<MemRegion>();
+    // 맨 끝에 ACPI에서 합성한 디바이스 트리를 둘 자리 하나
+    let total = map_bytes + np * 8 + (nr + nh) * core::mem::size_of::<MemRegion>() + TREE_BYTES;
     let count = align_up(total as u64, PAGE) as usize / PAGE as usize;
     let base = l
         .fw
@@ -184,6 +210,7 @@ fn allocate_work(
             core::slice::from_raw_parts_mut(points, np),
             core::slice::from_raw_parts_mut(ranges, nr),
             core::slice::from_raw_parts_mut(holes, nh),
+            core::slice::from_raw_parts_mut(holes.add(nh) as *mut u8, TREE_BYTES),
         ))
     }
 }
@@ -215,7 +242,13 @@ fn prepare_now(l: &Loader, r: &mut Ready) -> Result<(Prepared, usize), Refusal> 
 /// 부트 서비스를 끝내기 직전까지의 모든 준비를 하는 함수입니다.
 fn get_ready(l: &mut Loader) -> Result<Ready, Refusal> {
     check_kernel()?;
-    let firmware_dtb = firmware_dtb(&l.fw)?;
+    let (map_buffer, points, ranges, holes, tree) = allocate_work(l)?;
+    // 펌웨어가 디바이스 트리를 주면 그것을, 아니면 ACPI 정적 테이블에서 만든 것을 씀
+    let (firmware_dtb, synthesized) = match firmware_dtb(&l.fw) {
+        Ok(dtb) => (dtb, false),
+        Err(Refusal::NoDeviceTree) => (tree_from_acpi(l, map_buffer, tree)?, true),
+        Err(e) => return Err(e),
+    };
     let fdt = Fdt::new(firmware_dtb).map_err(|e| Refusal::Prepare(PrepareError::FirmwareDtb(e)))?;
     let (addr_cells, size_cells) = root_cells(&fdt).map_err(|e| Refusal::Prepare(PrepareError::Rewrite(e)))?;
     let mut below = Limits::from_cells(addr_cells, size_cells).max_addr;
@@ -223,8 +256,6 @@ fn get_ready(l: &mut Loader) -> Result<Ready, Refusal> {
     l.seed_len = if l.fw.random(&mut l.seed) { SEED_LEN } else { 0 };
     let entropy = if l.seed_len != 0 { "from the firmware" } else { "none from the firmware" };
     let _ = writeln!(l.con, "k0-loader: entropy {entropy}");
-
-    let (map_buffer, points, ranges, holes) = allocate_work(l)?;
 
     // 재작성기는 문자열 블록을 버퍼 끝에 모았다가 옮기므로 입력의 두 배면 넉넉함
     let dtb_cap = align_up(2 * firmware_dtb.len() as u64 + 64 * 1024, ALIGN);
@@ -254,7 +285,8 @@ fn get_ready(l: &mut Loader) -> Result<Ready, Refusal> {
         // 펌웨어가 준 DTB가 방금 받은 메모리와 겹치면 펌웨어의 맵이 틀린 것.
         // 읽으면서 덮어쓰게 되므로 진행하지 않음
         let source = firmware_dtb.as_ptr() as u64..firmware_dtb.as_ptr() as u64 + firmware_dtb.len() as u64;
-        let work = l.work.map_or(0..0, |w| w.base..w.base + w.count as u64 * PAGE);
+        // 합성한 트리는 로더의 작업 공간 안에 있으므로 그쪽 검사는 펌웨어 트리에만 함
+        let work = l.work.filter(|_| !synthesized).map_or(0..0, |w| w.base..w.base + w.count as u64 * PAGE);
         let taken = raw..raw + count as u64 * PAGE;
         if [&taken, &work].iter().any(|r| source.start < r.end && r.start < source.end) {
             return Err(Refusal::DeviceTreeInBlock);
