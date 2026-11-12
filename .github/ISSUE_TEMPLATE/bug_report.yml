@@ -27,6 +27,22 @@ body:
         - Other
     validations:
       required: true
+  - type: dropdown
+    id: boot-path
+    attributes:
+      label: Boot path
+      description: How the kernel was started. The UEFI loader is built by `tools/build-loader.sh`.
+      options:
+        - Directly (QEMU -kernel with the kernel Image, or a boot loader that passes a device tree)
+        - Through the K0 UEFI loader
+        - Not applicable (host unit tests)
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware build
+      description: Only for the UEFI loader. Firmware name and version, for example `qemu-efi-aarch64 2022.11` or Homebrew EDK2 `stable202408`, and the QEMU version.
   - type: textarea
     id: what
     attributes:

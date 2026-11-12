@@ -37,8 +37,8 @@ K0 builds fully offline. Every third-party crate is vendored under `vendor/`, an
 
 You need:
 
-- `rustup`. The pinned toolchain in `rust-toolchain.toml` (Rust 1.89.0 with `rust-src`, `llvm-tools` and the `aarch64-unknown-none-softfloat` target) is installed automatically on first use.
-- `qemu-system-aarch64` with its firmware ROMs. On Debian and Ubuntu this means the `qemu-system-arm` and `ipxe-qemu` packages. On macOS, `brew install qemu`.
+- `rustup`. The pinned toolchain in `rust-toolchain.toml` (Rust 1.89.0 with `rust-src`, `llvm-tools` and the `aarch64-unknown-none-softfloat` and `aarch64-unknown-uefi` targets) is installed automatically on first use.
+- `qemu-system-aarch64` with its firmware ROMs. On Debian and Ubuntu this means the `qemu-system-arm` and `ipxe-qemu` packages. On macOS, `brew install qemu`. To boot through the UEFI loader you also need UEFI firmware for QEMU: Homebrew's `qemu` includes it, and on Debian and Ubuntu it is the `qemu-efi-aarch64` package.
 - A host C compiler and linker for build scripts (`gcc` or Xcode command line tools).
 
 The file [ci/Dockerfile](ci/Dockerfile) is a complete, tested recipe for this environment.
@@ -49,13 +49,16 @@ The file [ci/Dockerfile](ci/Dockerfile) is a complete, tested recipe for this en
 cargo virt                                   # build the generic image and boot it on QEMU virt
 cargo build -p k0-kernel --offline           # build the generic 4 KiB image only
 cargo build -p k0-kernel --offline --no-default-features --features granule-16k --target-dir target/g16   # 16 KiB image
+tools/build-loader.sh                        # put the built kernel into the UEFI loader, prints the .efi path
 ```
+
+`tools/build-loader.sh` needs the kernel built first. See "Booting through UEFI" in [USAGE.md](USAGE.md#booting-through-uefi) for how to run it, and [design/en/uefi.md](design/en/uefi.md) for how the loader works.
 
 The kernel never exits. Once the root task finishes its self-tests, it yields forever and the kernel prints `k0: tick N` once a second. Stop QEMU with `Ctrl-A X`.
 
 ## Testing
 
-Run all three before you open a pull request. If you change the boot path, a driver or the device tree code, also run `tools/boot-matrix.sh`. CI runs it, and [USAGE.md](USAGE.md) describes its rows.
+Run all three before you open a pull request. If you change the boot path, a driver, the device tree code or the UEFI loader, also run `tools/boot-matrix.sh`. CI runs it, and [USAGE.md](USAGE.md) describes its rows.
 
 ```sh
 tools/host-test.sh                           # unit tests and DTB fuzzing on the host
@@ -63,7 +66,7 @@ cargo build -p k0-kernel --offline
 tools/qemu-boot-test.sh                      # boot under QEMU and check the self-tests
 ```
 
-`tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap` and `k0-boot` on any host. The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
+`tools/host-test.sh` runs the tests of `k0-abi`, `k0-cap`, `k0-boot` and `k0-efi` on any host (214 tests on an AArch64 host, 154 elsewhere). The tests of `k0-mm` contain AArch64 inline assembly, so they only run on an AArch64 host (Apple Silicon or Linux arm64). The script runs them for both the 4 KiB and the 16 KiB granule.
 
 `tools/qemu-boot-test.sh` boots the debug kernel, checks the boot log line by line in a fixed order, fails on any error marker, and stops QEMU as soon as the root task reports `root: sched tests pass`. Set `K0_BOOT_TIMEOUT` (seconds) on slow machines.
 
@@ -74,6 +77,15 @@ K0_BOOT_REQUIRE='rndr=on|k0: pac=on bti=present pan=on' \
   tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel -cpu max
 ```
 
+To boot through the UEFI loader, pass the `.efi` file from `tools/build-loader.sh` instead of the kernel. The test then judges from the loader's first line on, because the firmware prints its own messages before it.
+
+```sh
+tools/build-loader.sh
+tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.efi
+```
+
+Two things in the loader cannot be tested by QEMU: the cache flush and the MMU switch-off before the jump, because QEMU's software emulation has no caches. `tools/pe-check.py <file>.efi` checks the form of the PE file and that these instructions and both flush calls are present, in the right order. It does not prove that they are right on real hardware, so a change to `loader/src/handoff.rs` needs a reviewer who knows the architecture rules.
+
 ### Where each part is tested
 
 | Area | Host unit tests | Boot self-tests in the root task |
@@ -81,23 +93,31 @@ K0_BOOT_REQUIRE='rndr=on|k0: pac=on bti=present pan=on' \
 | `k0-abi` constants and shared layouts | yes | indirectly |
 | `k0-cap` untyped bootstrap and retype | yes | yes |
 | `k0-boot` DTB parser, PAC key derivation, root task image | yes, plus fuzzing | yes |
+| `k0-efi` memory plan from the UEFI memory map, DTB rewrite, independent check | yes, plus fuzzing | yes, through the `uefi-*` rows of the boot matrix |
+| `loader` (UEFI application: firmware calls, cache flush, MMU off, jump) | no | yes, through the `uefi-*` rows, plus the static check `tools/pe-check.py` |
 | `k0-mm` page tables and W^X attributes | yes, on AArch64 hosts | yes |
 | `k0-arch`, `k0-task`, `k0-sched`, `k0-ipc` | no | yes |
 
 `k0-arch` assembles with ELF-only directives and the scheduler and IPC paths read system registers, so they are only exercised by booting. If you change them, extend the root task self-tests in `userspace/root-task/src/main.rs` and add the new pass line to the expected list in `tools/qemu-boot-test.sh`.
 
-### Fuzzing the DTB parser
+### Fuzzing the DTB parser and the loader's planning
 
 The DTB parser treats the device tree as untrusted input. Its fuzzer is a deterministic mutation fuzzer that needs no extra crates. It generates random device trees, checks that the parser returns exactly what the generator described, then mutates the blob and checks that the parser never panics and that every accepted result stays within its limits. It does not use coverage feedback.
 
 ```sh
 host="$(rustc -vV | sed -n 's/^host: //p')"
-K0_FUZZ_ITERS=5000000 cargo test --release --offline --target "$host" -p k0-boot fuzz -- --nocapture
+K0_FUZZ_ITERS=5000000 cargo test --release --offline --target "$host" -p k0-boot -p k0-efi fuzz -- --nocapture
 ```
 
 The same command also runs the discovery fuzzer, which mutates four board-shaped trees and checks that `discover` never panics and that every accepted platform descriptor keeps its invariants.
 
-`K0_FUZZ_SEED` changes the base seed. Different base seeds give unrelated streams of cases. When a case fails, the test prints a `K0_FUZZ_CASE=0x...` value. Run the same command with that variable set to replay only that case and dump the input.
+With `-p k0-efi` it runs three more fuzzers, which work the same way. The UEFI memory map and the firmware device tree are untrusted input to the loader too.
+
+- `fuzz_plan_with_random_maps` builds random UEFI memory maps (overlaps, odd types, zero-length entries) and checks that the plan passes the independent verifier and that every address it keeps lies in usable memory, outside every hole.
+- `fuzz_rewrite_with_mutated_trees` mutates device trees and checks that the rewrite either refuses or produces a well-formed tree that the kernel's parser accepts with exactly the memory that was asked for.
+- `fuzz_prepare_end_to_end` mixes both: measured memory maps with a few changed descriptors and mutated trees go through the whole preparation, and the result must be accepted by the kernel's parser with no memory inside a descriptor that is not usable.
+
+`K0_FUZZ_ITERS`, `K0_FUZZ_SEED` and `K0_FUZZ_CASE` work the same for all of them. `K0_FUZZ_SEED` changes the base seed. Different base seeds give unrelated streams of cases. When a case fails, the test prints a `K0_FUZZ_CASE=0x...` value. Run the same command with that variable set to replay only that case and dump the input.
 
 ### Running exactly what CI runs
 
@@ -126,7 +146,7 @@ Run this from a clean checkout, because the build context includes everything in
 - One logical change per commit. A reviewer should be able to read each commit on its own.
 - Keep the subject line short and plain. Korean or English are both fine. Do not use type prefixes such as `feat:` or `fix:`.
 - In the pull request, say what changed, why, and how you tested it. Link the issue if there is one.
-- CI must pass. It builds the 4 KiB and the 16 KiB image, runs the host tests on x86-64 and AArch64, and runs the boot matrix (`tools/boot-matrix.sh`) under QEMU.
+- CI must pass. It builds the 4 KiB and the 16 KiB image and the UEFI loader, runs the host tests on x86-64 and AArch64, and runs the boot matrix (`tools/boot-matrix.sh`) under QEMU, including the rows that boot through the UEFI loader.
 
 ## AI-assisted contributions
 

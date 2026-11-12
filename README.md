@@ -9,7 +9,7 @@ English | [한국어](README_KR.md)
 K0 is a small operating system kernel for 64-bit ARM (AArch64) computers, written in Rust. It is a microkernel: the kernel does only what has to be done inside the kernel, above all keeping programs apart, and everything else is meant to run as ordinary programs on top of it. A program can use only the resources it holds a key for. These keys are called capabilities, and the design follows the seL4 kernel.
 
 > [!IMPORTANT]
-> One K0 image is meant to boot wherever the hardware and the boot loader meet the contract in [INTRODUCTION.md](INTRODUCTION.md). So far it has been booted on several QEMU machines and on real Apple cores as a hypervisor guest. It has not been booted on any real board. Today K0 is a research platform for the isolation core of high-security systems. It boots and checks its own security properties, but it does no useful work of its own yet.
+> One K0 image is meant to boot wherever the hardware and the boot loader meet the contract in [INTRODUCTION.md](INTRODUCTION.md). The contract is the Linux arm64 boot protocol, and a UEFI loader (`loader/`) can start the kernel from firmware that provides a device tree. So far it has been booted on several QEMU machines, directly and through UEFI firmware (EDK2, also under UEFI Secure Boot), and on real Apple cores as a hypervisor guest. It has not been booted on any real board or on any firmware other than EDK2. Today K0 is a research platform for the isolation core of high-security systems. It boots and checks its own security properties, but it does no useful work of its own yet.
 
 ## Security status
 

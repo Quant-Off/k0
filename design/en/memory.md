@@ -54,7 +54,7 @@ The linker script supports this split. `kernel/build.rs` generates it from one t
 
 The DTB is mapped read-only through the alias only after its header has been checked, and the kernel reads the platform description from it. A device page is mapped only after the platform descriptor has been checked against the memory map: a device range that overlaps RAM, the kernel image or the DTB is refused, and so is a physical address beyond the CPU's address width. Device pages go into the device window one page at a time, so a large register range (for example the GICv3 redistributors) is never mapped as a whole. See [exceptions.md](exceptions.md) for the interrupt controller.
 
-The boot frame window is 2 MiB of RAM that the kernel picks inside the memory map: first right after the kernel image (after the DTB if they overlap), and if there is no room above, from the lowest memory upward.
+The boot frame window is 2 MiB of RAM that the kernel picks inside the memory map (`boot_window` in `crates/k0-boot/src/window.rs`, which the UEFI loader also runs before the jump): first right after the kernel image (after the DTB if they overlap), and if there is no room above, from the lowest memory upward.
 
 ## Guard pages
 

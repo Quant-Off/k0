@@ -14,7 +14,7 @@ Some of these features are groundwork, not working protection yet. The sections 
 
 `derive_pac_keys` produces the ten 64-bit words that make up the PAC keys: an instruction key pair A and B, a data key pair A and B, and the generic key, two words each. It mixes three inputs:
 
-- the bytes of `rng-seed` and `kaslr-seed` from the DTB's `/chosen` node (up to 72 bytes, possibly none),
+- the bytes of `rng-seed` and `kaslr-seed` from the DTB's `/chosen` node (up to 72 bytes, possibly none). Under UEFI the UEFI loader adds 32 bytes from `EFI_RNG_PROTOCOL` to `rng-seed` when the firmware has it, and these stay readable in the DTB in memory (see [uefi.md](uefi.md)),
 - the system counter `CNTPCT_EL0`, and
 - one value from the `RNDR` random number instruction, if the CPU implements FEAT_RNG and the instruction succeeds.
 
@@ -98,4 +98,4 @@ The panic handler masks all interrupts and parks the core. Debug builds print th
 - The same PAC keys serve EL0 and EL1 and every task. Once code starts signing pointers, a task could forge pointers the kernel accepts. Per-task or per-level keys are not implemented.
 - BTI is not enabled.
 - The root task check proves integrity against accidents and limited tampering, not authenticity.
-- No real board has been tried. CI uses QEMU only. One manual run on 2026-11-11 used QEMU with HVF on an ARM Mac.
+- No real board has been tried. CI uses QEMU only. Manual runs on 2026-11-11 and 2026-11-12 used QEMU with HVF on an ARM Mac.

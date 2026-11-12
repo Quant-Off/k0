@@ -13,6 +13,7 @@
 - Rust 설치 도구 `rustup`. 첫 빌드 때 K0가 쓰는 컴파일러와 도구 묶음(툴체인: Rust 1.89.0과 `rust-toolchain.toml`에 적힌 구성 요소)을 알아서 내려받습니다.
 - 펌웨어 파일을 포함한 `qemu-system-aarch64`. macOS에서는 `brew install qemu`, Debian이나 Ubuntu에서는 `qemu-system-arm`과 `ipxe-qemu` 패키지를 설치합니다.
 - 빌드 스크립트용 C 컴파일러. macOS는 Xcode 명령줄 도구, 그 밖에는 `gcc`.
+- UEFI로 부팅할 때만(아래 참고) 필요한 QEMU용 UEFI 펌웨어. Homebrew의 `qemu`에는 이미 들어 있습니다. Debian이나 Ubuntu에서는 `qemu-efi-aarch64` 패키지를 설치합니다.
 
 외부 라이브러리는 전부 `vendor/` 폴더에 들어 있어서, 툴체인을 한 번 설치한 뒤에는 빌드에 인터넷 연결이 필요 없습니다.
 
@@ -94,18 +95,85 @@ tools/boot-log.py <커널 ELF> <적재 주소> <QEMU 모니터 소켓>
 
 적재 주소는 이미지를 올린 물리 주소입니다. 이미지를 고치지 않은 QEMU `virt`에서는 `0x40080000`입니다.
 
+## UEFI로 부팅
+
+UEFI는 많은 컴퓨터에서 펌웨어가 프로그램을 시작하는 표준 방식입니다. 펌웨어가 디스크에서 확장자가 `.efi`인 프로그램 파일을 읽어 실행하고, 그 프로그램에 기계의 구성을 알려 줍니다. 로더는 기계를 준비한 다음 다른 프로그램을 시작하는 일 하나만 하는 작은 프로그램입니다. K0에는 자체 UEFI 로더(`crates/k0-efi`와 `loader/`)가 있습니다. 로더가 커널을 안에 품고 있어서, 펌웨어에는 `.efi` 파일 하나만 있으면 됩니다. 커널은 바뀌지 않으며 UEFI 없이 부팅할 때와 똑같이 시작합니다.
+
+```sh
+cargo build -p k0-kernel --offline
+tools/build-loader.sh
+tools/qemu-virt-runner.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.efi
+```
+
+`tools/build-loader.sh`는 이미 빌드된 커널을 로더 안에 넣습니다. 인자가 없으면 위의 디버그 4 KiB 커널을 씁니다. 결과 파일의 경로를 출력하며, 커널 파일 이름 뒤에 `.efi`가 붙은 것입니다. 다른 커널은 경로를 인자로 주면 됩니다. 예를 들어 "16 KiB 빌드"의 커널입니다. 러너는 EDK2 펌웨어(QEMU가 올릴 수 있는 UEFI 펌웨어)와 머신 `virt,gic-version=3,acpi=off`로 QEMU를 시작합니다. 펌웨어는 Homebrew의 QEMU에서 먼저 찾고, 없으면 `/usr/share/AAVMF/AAVMF_CODE.fd`를 씁니다. QEMU를 끄려면 `Ctrl-A`를 누른 다음 `X`를 누르세요.
+
+시험하려면 `.efi` 파일을 부팅 테스트에 주면 됩니다.
+
+```sh
+tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.efi
+```
+
+부팅 테스트는 로더의 첫 줄부터 판정합니다. 그 앞에 펌웨어가 자기 메시지를 출력하고, 그 안에 `failed` 같은 낱말이 섞여 있기 때문입니다. 머신을 바꿔서 맞는 크기의 untyped 영역이 없는 메모리 배치가 되면 "자동 테스트"에 적은 대로 `K0_BOOT_REUSE=skip`을 주세요.
+
+아래 변수는 UEFI 경로에서만 쓰입니다. 나머지 `K0_QEMU_*` 변수는 전과 같이 동작합니다.
+
+| 변수 | 뜻 |
+| --- | --- |
+| `K0_QEMU_FIRMWARE` | UEFI 펌웨어 이미지 경로. 기본값은 위에서 설명한 탐색 |
+| `K0_QEMU_ESP` | 값이 있으면 로더를 `-kernel`로 넘기지 않고 FAT 드라이브에서 부팅함. 실제 컴퓨터가 이동식 디스크로 부팅하는 방식과 같음. 러너가 `<파일>.efi.esp` 폴더로 드라이브를 만들고 로더를 `EFI/BOOT/BOOTAA64.EFI`에 둠. AArch64에서 부팅 가능한 이동식 드라이브의 표준 경로임 |
+| `K0_QEMU_EXTRA` | QEMU에 더 넘길 인자. 공백으로 나눔. 예를 들어 `-device virtio-rng-pci`는 펌웨어에 난수 장치를 줌 |
+| `K0_LOADER_FEATURES` | `tools/build-loader.sh`에 넘기는 로더의 cargo feature. 하나뿐이며 `refuse-halt`입니다. 아래에서 설명 |
+
+FAT 드라이브 경로는 이렇게 시험합니다.
+
+```sh
+K0_QEMU_ESP=1 tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.efi
+```
+
+### 로더가 출력하는 것
+
+먼저 펌웨어 메시지가 나옵니다. 그다음 `k0-loader:`로 시작하는 로더의 줄이 나오고, 이어서 커널 자신의 줄이 나옵니다.
+
+| 줄 | 뜻 |
+| --- | --- |
+| `k0-loader: start at el1, kernel image 664 KiB with 4K granule, sha-256 b4554f24` | 로더가 이 예외 레벨에서 돌고 있고, 안에 든 커널의 크기, 페이지 크기, SHA-256의 앞부분을 보여 줌 |
+| `k0-loader: entropy none from the firmware` | 펌웨어에 난수 장치가 없음(있으면 `entropy from the firmware`가 나오고 로더가 그 난수를 커널에 넘김) |
+| `k0-loader: platform con=pl011@0x9000000 gic=v3@0x8000000 ...` | 커널이 디바이스 트리에서 찾은 콘솔, 인터럽트 컨트롤러, 타이머 |
+| `k0-loader: memory 8 regions, 478 of 478 MiB usable kept, 0 ranges dropped, 27 MiB of boot services memory left unused` | 커널에 알려 줄 RAM. 부트 서비스 메모리는 일부러 쓰지 않음 |
+| `k0-loader: image at 0x5c410000, dtb at 0x5c1fc000` | 로더가 커널과 디바이스 트리를 둔 주소. 메모리에서 부트 로그를 읽어야 할 때 적어 두세요 |
+| `k0-loader: exiting boot services` | 커널이 시작되기 전 마지막 줄. 이후 펌웨어는 손을 뗌 |
+
+숫자는 머신과 빌드마다 다릅니다. `k0-loader: the kernel will have no console (...)` 줄은 커널이 지원하는 콘솔을 찾지 못했다는 경고이고, `k0-loader: panic at <파일>:<줄>`은 로더의 버그입니다.
+
+### 로더가 거부할 때
+
+로더는 펌웨어에서 벗어나기 전에 확인할 수 있는 것을 전부 확인합니다. 하나라도 실패하면 `k0-loader: refused: <사유>`를 출력하고, 가져온 메모리를 지운 뒤 돌려주고, 펌웨어에 오류를 반환합니다. 그러면 펌웨어는 보통 다음 부팅 항목을 시도합니다. K0가 아니면 부팅하지 않아야 하는 기계라면 `K0_LOADER_FEATURES=refuse-halt tools/build-loader.sh`로 빌드하세요. 그러면 로더가 되돌아가지 않고 멈춥니다. 로더가 펌웨어를 떠나기 시작한 뒤에는 어떤 실패든 멈춥니다.
+
+| 사유 | 뜻 |
+| --- | --- |
+| `the firmware provides no device tree (ACPI-only firmware is not supported, QEMU needs -machine acpi=off)` | 펌웨어가 디바이스 트리를 주지 않음. K0는 아직 ACPI를 읽지 못함. EDK2를 쓰는 QEMU는 `acpi=off`일 때만 디바이스 트리를 주는데 QEMU 기본 머신은 ACPI가 켜져 있으므로, 예를 들어 `K0_QEMU_MACHINE=virt,gic-version=3`은 거부됨. ACPI 읽기는 다음 계획 |
+| `this cpu has no 16K translation granule` | 16 KiB 페이지를 지원하지 않는 CPU에서 16 KiB 커널을 돌림. `K0_QEMU_CPU=max`를 쓰세요 |
+| `embedded kernel image is corrupt (sha-256 mismatch)` | 파일 안의 커널이 빌드 뒤에 바뀜 |
+| `the firmware device tree ...` 또는 `device tree for the kernel: ...` | 펌웨어의 디바이스 트리가 깨졌거나 커널이 받지 않는 내용이 있음([design/kr/uefi_KR.md](design/kr/uefi_KR.md) 참고) |
+
+UEFI에서 K0를 시작해도 되는 것은 이 로더뿐입니다. 커널은 펌웨어의 디바이스 트리도 그대로 받아들이지만, QEMU에서 그 트리에는 펌웨어가 아직 쓰는 메모리가 RAM으로 적혀 있습니다. 로더는 메모리 설명을 UEFI 메모리 맵에서 새로 만든 것으로 바꿔 넣습니다. 로더의 설계, 한계, 무엇을 막고 무엇을 막지 못하는지는 [design/kr/uefi_KR.md](design/kr/uefi_KR.md)에, 보안 모델에서의 위치는 [SECURITY_KR.md](SECURITY_KR.md)에 있습니다.
+
+로더에는 자체 서명 검사가 없습니다. 안에 든 커널의 SHA-256은 파일이 깨졌는지만 잡습니다. 누가 만든 파일인지 확인해야 한다면 펌웨어의 Secure Boot를 쓰세요. 키는 직접 등록해야 하며, 그러면 펌웨어가 커널을 포함한 `.efi` 파일 전체를 검사합니다.
+
+시험한 범위는 이렇습니다. `tools/boot-matrix.sh`의 UEFI 행(아래 참고)을 CI가 EDK2를 쓰는 QEMU에서 돌립니다. 2026-11-12에는 손으로 Apple M5 Pro에서 HVF로 `uefi-hvf-el1`, `uefi-hvf-el2`, `uefi-hvf-16k` 행을 돌렸고, 서명한 로더를 펌웨어 하나(QEMU 7.2의 Debian EDK2 2022.11)의 Secure Boot에서 시험했습니다. 서명 없는 로더, 변조한 로더, 다른 키로 서명한 로더는 펌웨어가 거부했습니다. 실제 보드, U-Boot 같은 다른 펌웨어, KVM, UEFI에서의 고정 빌드, 실제 하드웨어에서의 캐시 비우기는 시험하지 못했습니다.
+
 ## 자동 테스트
 
 ```sh
 tools/host-test.sh                    # 내 컴퓨터에서 단위 테스트와 디바이스 트리 퍼징
 cargo build -p k0-kernel --offline    # 커널 빌드
 tools/qemu-boot-test.sh               # QEMU에서 부팅하고 자가 테스트를 전부 확인
-tools/boot-matrix.sh                  # 지원하는 구성을 전부 부팅(16 KiB 이미지와 고정 이미지도 빌드함)
+tools/boot-matrix.sh                  # 지원하는 구성을 전부 부팅(16 KiB 이미지, 고정 이미지, UEFI 로더 이미지도 빌드함)
 ```
 
-- `tools/host-test.sh`는 호스트 테스트 183개를 실행합니다(x86-64 컴퓨터에서는 123개). 커널의 부분 하나하나를 내 컴퓨터에서 일반 프로그램처럼 돌리는 작은 테스트(단위 테스트)입니다. 퍼징도 합니다. 디바이스 트리 파서에 무작위로 망가뜨린 입력을 넣어 충돌을 찾는 방법입니다. 메모리 관리 테스트는 ARM 명령을 쓰기 때문에 ARM 컴퓨터(Apple Silicon Mac이나 Linux arm64)에서만 돕니다.
+- `tools/host-test.sh`는 호스트 테스트 214개를 실행합니다(x86-64 컴퓨터에서는 154개). 커널의 부분 하나하나를 내 컴퓨터에서 일반 프로그램처럼 돌리는 작은 테스트(단위 테스트)입니다. 퍼징도 합니다. 디바이스 트리 파서와 UEFI 로더의 계획 코드에 무작위로 망가뜨린 입력을 넣어 충돌을 찾는 방법입니다. 214개는 `k0-abi` 12개, `k0-cap` 41개, `k0-boot` 76개, `k0-efi` 25개, `k0-mm` 30개씩 두 페이지 크기분입니다. 메모리 관리 테스트는 ARM 명령을 쓰기 때문에 ARM 컴퓨터(Apple Silicon Mac이나 Linux arm64)에서만 돌고, x86-64의 개수는 그 60개를 뺀 것입니다.
 - `tools/qemu-boot-test.sh`는 커널을 부팅하고, 로그를 정해진 순서대로 한 줄씩 확인하고, 에러 줄이 하나라도 나오면 실패하고, 일부러 일으킨 폴트 줄의 개수를 정확히 맞춘 뒤 QEMU를 끕니다. 성공하면 `boot-test: pass`를 출력하고 전체 로그를 `target/qemu-boot-test.log`에 남깁니다. 머신은 위의 `K0_QEMU_*` 변수에서 가져오며, 맞는 크기의 untyped 영역이 없는 메모리 배치에서는 루트 태스크가 재사용 시험을 건너뛰므로 그때는 `K0_BOOT_REUSE=skip`을 받습니다.
-- `tools/boot-matrix.sh`는 K0가 지원한다고 말하는 구성마다 커널을 부팅해서 결과를 확인합니다. GICv3와 GICv2의 QEMU virt를 EL1과 EL2로, CPU 모델 세 가지, 코어 4개, 16 KiB 이미지, 다른 적재 주소, `xlnx-versal-virt`, 고정 이미지, 이미지가 물리 타이머를 건드리지 않는지 정적 검사입니다. 거부해야 하는 구성은 메모리에 남은 부트 로그에서 사유를 읽습니다. 행 이름을 인자로 주면 그 행만 돌립니다. CI가 이것을 실행합니다. Apple Silicon Mac에서는 `K0_MATRIX_HVF=1 tools/boot-matrix.sh`로 QEMU의 HVF 가속기를 통해 실제 CPU 코어에서 커널을 돌리는 행을 더할 수 있습니다.
+- `tools/boot-matrix.sh`는 K0가 지원한다고 말하는 구성마다 커널을 부팅해서 결과를 확인합니다. GICv3와 GICv2의 QEMU virt를 EL1과 EL2로, CPU 모델 세 가지, 코어 4개, 16 KiB 이미지, 다른 적재 주소, `xlnx-versal-virt`, 고정 이미지, 이미지가 물리 타이머를 건드리지 않는지 정적 검사입니다. `uefi-*` 행은 EDK2 위에서 UEFI 로더를 거쳐 커널을 부팅합니다. GICv3와 GICv2를 EL1과 EL2로, `max` CPU, 코어 4개, 16 KiB 이미지, 펌웨어의 난수 장치, FAT 드라이브 경로입니다. 정적 검사(`tools/pe-check.py`)는 로더 파일의 형식과, QEMU로는 시험할 수 없는 캐시와 MMU 명령의 순서를 확인합니다. 거부해야 하는 구성은 메모리에 남은 부트 로그에서 사유를 읽고, 로더는 직렬 로그에서 읽습니다. ACPI가 켜진 경우, `cortex-a72`에서의 16 KiB 커널, 한 바이트를 바꾼 커널입니다. 행 이름을 인자로 주면 그 행만 돌립니다. CI가 이것을 실행합니다. Apple Silicon Mac에서는 `K0_MATRIX_HVF=1 tools/boot-matrix.sh`로 QEMU의 HVF 가속기를 통해 실제 CPU 코어에서 커널을 (UEFI 로더를 거치는 경우도 포함해) 돌리는 행을 더할 수 있습니다.
 
 QEMU의 기본 CPU 모델에는 PAC, PAN, RNDR이 없습니다. 이것까지 시험하려면 `max` 모델로 부팅하고 해당 로그 줄을 요구하세요.
 
@@ -125,3 +193,7 @@ GitHub도 풀 리퀘스트와 `main` 푸시가 있을 때마다 이 테스트를
 | 느린 컴퓨터에서 부팅 테스트가 시간 초과 | 시간을 늘림. 예: `K0_BOOT_TIMEOUT=300 tools/qemu-boot-test.sh` |
 | 16 KiB 이미지가 `cortex-a72`에서 부팅되지 않음 | 정상입니다. 그 CPU는 16 KiB 페이지를 지원하지 않습니다. `K0_QEMU_CPU=max`를 쓰세요 |
 | 부팅이 일찍 멈추고 아무것도 출력되지 않음 | 지원하는 콘솔이 없을 수 있습니다. `tools/boot-log.py`로 메모리에서 부트 로그를 읽으세요 |
+| `runner: no UEFI firmware found, set K0_QEMU_FIRMWARE` | "준비물"에 적힌 대로 펌웨어를 설치하거나, `K0_QEMU_FIRMWARE`에 EDK2 `aarch64` 코드 이미지 경로를 지정 |
+| `build-loader: kernel ELF not found` | 먼저 `cargo build -p k0-kernel --offline`로 커널을 빌드 |
+| `k0-loader: refused: the firmware provides no device tree ...` | QEMU의 ACPI가 켜져 있음. `acpi=off`인 머신을 쓰세요. `.efi` 파일에 대한 러너의 기본값이 그렇습니다 |
+| 화면에 펌웨어 메시지나 펌웨어 메뉴만 나옴 | 펌웨어가 로더를 시작하지 못했거나, 로더가 거부해서 펌웨어가 다음으로 넘어간 것입니다. `k0-loader:` 줄이 있는지 보세요. 없다면 `.efi` 파일이 있는지, `K0_QEMU_ESP`를 썼다면 드라이브가 보이는지 확인 |

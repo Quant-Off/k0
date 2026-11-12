@@ -63,6 +63,29 @@ What is still NOT provided on `main`:
 
 Even on `main`, treat running untrusted code as experimental. The isolation is exercised by the host tests and the boot self-tests, and the availability limits above still apply. Isolation bypasses on `main` are welcome reports.
 
+## The UEFI loader
+
+`loader/` is a UEFI application that embeds a built kernel and starts it with the usual boot contract, and `crates/k0-efi` holds its logic. The kernel does not change. What the loader does and why it exists are in [design/en/uefi.md](design/en/uefi.md). The security-relevant facts:
+
+- The loader decides what the kernel will treat as RAM. Only free memory and loader memory count. Everything else never does: boot services memory, runtime memory, unknown types, overlapping descriptors, reservations and devices found in the firmware device tree. It drops the firmware tree's own memory description, because on QEMU with EDK2 that tree declares all 512 MiB as RAM although firmware regions lie inside, and an unmodified kernel would hand about 5.5 MiB of firmware memory to user space. It then checks its own result with a second classifier and with the kernel's own parser and validation before it jumps.
+- A firmware device tree that the kernel's parser would refuse, and firmware with no device tree, are refused by the loader before boot services end. It prints `k0-loader: refused: <reason>`, wipes what it allocated and returns an error to the firmware.
+- The SHA-256 of the embedded kernel is a corruption check, not a signature. The loader has no signature code. Authenticity comes only from Secure Boot in the firmware, which verifies the whole loader file with the kernel inside it, using keys the owner enrols. This was tried once with test keys (see "Where it has run" in [INTRODUCTION.md](INTRODUCTION.md)). The Microsoft third-party route (shim) is not prepared.
+
+Limits and residual risks of the loader:
+
+1. The firmware runs before the loader at the same or a higher privilege. The loader guards against firmware that is wrong, not firmware that is hostile.
+2. Only this loader may start the kernel under UEFI. A generic UEFI boot loader that passes the firmware device tree through hands firmware memory to user space.
+3. The embedded hash does not prove who built the kernel (see above).
+4. A refusal returns to the firmware, which tries its next boot option. A machine that must boot K0 or nothing needs a loader built with the feature `refuse-halt`, which parks instead. After the first attempt to exit boot services, every failure parks.
+5. QEMU cannot test the cache flush and MMU-off sequence: TCG has no caches, and HVF did not expose a missing flush either. It rests on the architecture rules, on the sequence Linux used when it entered the kernel with the MMU off, and on `tools/pe-check.py`, which checks that the instructions and both flush calls are present, not that they are right on real hardware.
+6. A pinned build (`K0_PIN`) under UEFI is untested. The pin line includes the RAM range, which under UEFI depends on the firmware build and the RAM size. A mismatch stops the kernel with nothing on the screen. The reason is in the kernel's boot log in memory, and the loader prints the address needed to read it (`k0-loader: image at 0x..., dtb at 0x...`).
+7. Boot services memory is never used, but nothing stops a device that firmware left running from writing to other memory after the firmware services end. K0 has no IOMMU support.
+8. The entropy the loader adds stays readable in the device tree in memory for the whole run. Without `EFI_RNG_PROTOCOL` the kernel gets only what the firmware device tree carried.
+9. The kernel never calls UEFI runtime services: no variable access, no reset or power-off through firmware. Runtime regions stay unused.
+10. Firmware that describes device registers as `EfiReservedMemoryType` (instead of leaving them out of the map or typing them as MMIO) makes the loader refuse, and one malformed descriptor makes it refuse the whole map. Both fail closed.
+11. The paths that move the block to another place and that free memory after a refusal could not be exercised under QEMU.
+12. The loader file is not reproducible bit for bit across build directories. The embedded kernel hash that the loader prints is.
+
 ## Known advisories
 
 The following advisories are tracked as GitHub Security Advisories in this repository. The first two were published on 2026-11-07. GHSA-hj3f-38h9-hrpj is still an unpublished draft, so its identifier does not resolve publicly yet, and this table is its public record until it is published. All of them affect version 0.1.0 and earlier, and none has a fixed version yet.
@@ -82,12 +105,12 @@ Please do not open a public issue for a security problem.
 - Preferred: open a draft security advisory at <https://github.com/Quant-Off/k0/security/advisories/new>.
 - Alternative: email the maintainer at <qtfelix@qu4nt.space>. Include the affected commit hash, the platform (QEMU machine and CPU model, hypervisor, or board), the entry level (EL1 or EL2), the page size (4 KiB or 16 KiB), the `k0: platform ...` line from the boot log, and a reproduction if you have one.
 
-Isolation gaps in `v0.1.0` and earlier commits, and the availability and resource limits listed under "What is still NOT provided on `main`", are already known and do not need to be filed again. Isolation bypasses on the current `main` branch are welcome, for example a task reaching another task's memory or capabilities, a revoked capability that keeps working, or a stale mapping that survives unmap, revoke or address space destruction. Reports about anything else, including boot-time memory map validation, exception handling, scheduler policy, and IPC state machines, are welcome.
+Isolation gaps in `v0.1.0` and earlier commits, and the availability and resource limits listed under "What is still NOT provided on `main`", are already known and do not need to be filed again. Isolation bypasses on the current `main` branch are welcome, for example a task reaching another task's memory or capabilities, a revoked capability that keeps working, or a stale mapping that survives unmap, revoke or address space destruction. Reports about the UEFI loader are welcome too, for example a memory map or device tree that makes it hand the kernel memory that firmware still uses, or a refusal that does not happen. Reports about anything else, including boot-time memory map validation, exception handling, scheduler policy, and IPC state machines, are welcome.
 
 ## Scope
 
-In scope: everything under `kernel/`, `crates/`, and `userspace/root-task/`.
+In scope: everything under `kernel/`, `crates/` (including `crates/k0-efi`), `loader/` and `userspace/root-task/`. The UEFI loader is part of the boot chain, but it is code of this repository, so its handling of the memory map, the device tree and the kernel image is in scope.
 
-Out of scope: the boot chain before the kernel entry point (for example firmware, the boot loader and the hypervisor), and the integrity of the kernel image itself. Kernel image signing is the boot chain's responsibility.
+Out of scope: the rest of the boot chain before the kernel entry point (for example firmware, any other boot loader and the hypervisor), and the integrity of the kernel image itself. Kernel image signing is the boot chain's responsibility. Under UEFI that means Secure Boot in the firmware, because the loader's SHA-256 check is not a signature (see "The UEFI loader").
 
-The kernel checks the embedded root task image against a SHA-256 hash at every boot. This is a corruption check, not a signature check. The reference hash lives in the same kernel image as the root task, so anyone who can modify the kernel image can change both. Reports that rely on modifying the kernel image are therefore out of scope.
+The kernel checks the embedded root task image against a SHA-256 hash at every boot. This is a corruption check, not a signature check. The reference hash lives in the same kernel image as the root task, so anyone who can modify the kernel image can change both. Reports that rely on modifying the kernel image, or the kernel embedded in the loader, are therefore out of scope.

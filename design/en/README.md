@@ -17,6 +17,7 @@ Read them in this order the first time. It follows the order in which the kernel
 | [user-address-space.md](user-address-space.md) | `AddrSpace` objects and their registry, user permissions, `MAP` and `UNMAP` without the kernel allocating tables, and how mappings are cleaned up when capabilities are removed |
 | [capabilities.md](capabilities.md) | Per-task CNodes, rights and badges, the derivation list, untyped memory, retype and its failure guarantees, revoke and delete, and what task isolation does and does not cover |
 | [dtb.md](dtb.md) | The device tree as hostile input: what the parser reads, its limits, and how it is fuzzed |
+| [uefi.md](uefi.md) | The UEFI loader: why it sits outside the kernel, its flow, which memory it refuses to call RAM, the device tree rewrite, the self-check before the jump, what QEMU cannot test, and what has been booted |
 | [hardening.md](hardening.md) | PAC key derivation, PAN, closing EL0 access to counters, debug and PMU, and the root task integrity check, including what each does not protect yet |
 | [exceptions.md](exceptions.md) | The vector table, saving user state, system call dispatch, and fault isolation |
 | [scheduling.md](scheduling.md) | TCBs and their bound CNode and address space, task creation and teardown, the round-robin scheduler, and timer preemption |
