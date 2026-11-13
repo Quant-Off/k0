@@ -7,9 +7,19 @@
 //! 컨텍스트에서만 실행되고, 벡터가 사용자 컨텍스트를 현재 TCB에 저장한
 //! 상태에서 전환이 일어나므로 전환은 `__current_context` 포인터 갱신과
 //! TTBR0 교체(주소 공간이 다를 때만, ASID 미사용이라 전체 TLB 무효화
-//! 동반)로 끝납니다. 선점 신호는 진입 페이즈 2의 타이머 틱입니다.
-//! IPC 블록은 [block_and_switch]로 현재 태스크를 준비 큐 밖(엔드포인트
-//! 대기 큐나 reply 링크)에서 재우고, 깨우기는 [enqueue]입니다.
+//! 동반)로 끝납니다. IPC 블록은 [block_and_switch]로 현재 태스크를 준비 큐
+//! 밖(엔드포인트 대기 큐나 reply 링크)에서 재우고, 깨우기는 [enqueue]입니다.
+//!
+//! 선점 신호는 타이머 틱이고 판정은 [on_tick]이 합니다. 타이머는 전환할 때
+//! 다시 걸지 않으므로, 틱이 실행 중인 태스크를 무조건 끊으면 틱 직전에 양보한
+//! 태스크가 뒤에 선 태스크에게 주기의 끝자락만 주고 다음 주기를 통째로 다시
+//! 받습니다. 그래서 틱과 틱 사이에 CPU를 받은 태스크는 처음 맞는 틱 하나를
+//! 넘깁니다. 틱의 판정으로 CPU를 받은 태스크는 주기의 처음에 들어온 것이라
+//! 다음 틱에서 끊깁니다. 어느 쪽이든 CPU를 받은 태스크는 스스로 내놓지 않는
+//! 한 온전한 한 주기 전에는 끊기지 않습니다. 규칙 자체는 k0-slice 크레이트에
+//! 있고 호스트에서 시험합니다. 여기서는 현재 태스크가 바뀌는 유일한 자리인
+//! `switch_to`가 들어온 경위를 규칙에 알려 줍니다. 깨어나는 것만으로는 면제가
+//! 생기지 않습니다(깨어난 태스크는 준비 큐의 끝에 설 뿐임).
 //!
 //! 기한이 있는 IPC 대기자는 준비 큐나 대기 큐와 별개인 기한 목록에도
 //! 들어갑니다([arm_timeout]). 블록된 태스크가 블록 상태를 벗어나는 길은
@@ -30,6 +40,7 @@
 
 use core::cell::UnsafeCell;
 
+use k0_slice::{Entry, Slice, Verdict};
 use k0_task::{TaskState, Tcb, TcbQueue};
 
 /// 스케줄러 상태 구조체입니다. `current`는 TCB의 커널 VA(0 = 없음)입니다.
@@ -42,6 +53,9 @@ struct Sched {
     /// 않으므로 실제보다 이를 수 있고(그러면 한 번 헛되이 훑을 뿐), 늦을 수는
     /// 없음
     timed_min: u64,
+    /// 현재 태스크가 다음 틱 하나를 넘길 수 있는지. `current`를 바꾸는 자리
+    /// (handoff와 switch_to)에서만 다시 정하고 [on_tick]만 씀
+    slice: Slice,
 }
 
 struct SyncCell(UnsafeCell<Sched>);
@@ -56,6 +70,7 @@ static SCHED: SyncCell = SyncCell(UnsafeCell::new(Sched {
     ready: TcbQueue::new(),
     timed: 0,
     timed_min: 0,
+    slice: Slice::new(),
 }));
 
 /// 준비 큐 꼬리에 TCB를 붙이는 함수입니다.
@@ -84,10 +99,18 @@ unsafe fn pop(s: &mut Sched) -> u64 {
 /// 벡터의 복귀 경로(`__user_restore`)가 `__current_context`를 다시 읽기
 /// 때문에 포인터 갱신만으로 전환이 완성됩니다.
 ///
+/// 현재 태스크가 바뀌는 자리는 이 함수와 handoff뿐이므로 틱 면제도 여기서
+/// 정합니다. 경위를 인자로 반드시 받으며, 앞 태스크가 남긴 값은 버립니다.
+///
+/// # Arguments
+/// `next` - 준비 큐에서 꺼낸 TCB의 커널 VA
+/// `how` - 그 태스크가 CPU를 받는 경위(틱의 판정인지, 틱 사이의 전환인지)
+///
 /// # Safety
 /// `next`는 준비 큐에서 나온 유효한 TCB여야 하고, 현재 태스크의 컨텍스트
 /// 저장이 끝난 예외 컨텍스트여야 합니다(벡터가 보장).
-unsafe fn switch_to(s: &mut Sched, next: u64) {
+unsafe fn switch_to(s: &mut Sched, next: u64, how: Entry) {
+    s.slice.entered(how);
     let t = next as *mut Tcb;
     // SAFETY: 함수 계약대로 t는 유효한 TCB임
     unsafe {
@@ -251,6 +274,8 @@ pub unsafe fn handoff(tcb: &'static mut Tcb) -> ! {
     // SAFETY: 이양 직전의 단일 부트 코어라 접근이 배타적임
     let s = unsafe { &mut *SCHED.0.get() };
     s.current = core::ptr::from_mut(tcb) as u64;
+    // 부팅 중에도 타이머는 돌고 있어서 루트 태스크는 주기의 중간에 들어옴
+    s.slice.entered(Entry::Between);
     k0_arch::usermode::set_current(&raw mut tcb.ctx);
     // SAFETY: 함수 계약대로 컨텍스트와 주소 공간이 준비된 발산 경로에서 호출됨
     unsafe { k0_arch::usermode::enter_user() }
@@ -279,28 +304,72 @@ pub unsafe fn enqueue(tcb: *mut Tcb) {
     }
 }
 
-/// 현재 태스크를 큐 꼬리로 돌리고 다음 태스크를 실행하는 함수입니다.
+/// 현재 태스크를 큐 꼬리로 돌리고 준비 큐의 머리를 실행하는 함수입니다.
+/// 준비된 다른 태스크가 없으면 아무 일도 하지 않고 false를 줍니다.
 ///
-/// 라운드 로빈 전환점이며 YIELD와 타이머 선점이 공유합니다. 준비된 다른
-/// 태스크가 없으면 아무 일도 하지 않고 현재 태스크가 계속됩니다.
+/// # Arguments
+/// `how` - 머리의 태스크가 CPU를 받는 경위
 ///
 /// # Safety
 /// 시스템 콜/IRQ 컨텍스트에서 벡터의 컨텍스트 저장이 끝난 뒤에만 호출해야
-/// 합니다.
-pub unsafe fn rotate() {
-    // SAFETY: 함수 계약대로 접근이 배타적임
-    let s = unsafe { &mut *SCHED.0.get() };
+/// 하고, 현재 태스크는 실행 중(Running)이어야 합니다.
+unsafe fn rotate_as(s: &mut Sched, how: Entry) -> bool {
     // SAFETY: 큐 링크는 이 모듈만 만지므로 유효함
     let next = unsafe { pop(s) };
     if next == 0 {
-        return;
+        return false;
     }
     let cur = s.current;
     // SAFETY: current는 handoff/switch_to가 유지하는 유효한 TCB이고 next는
     //         방금 큐에서 나옴
     unsafe {
         push(s, cur as *mut Tcb);
-        switch_to(s, next);
+        switch_to(s, next, how);
+    }
+    true
+}
+
+/// 현재 태스크가 CPU를 내놓는 함수입니다(YIELD).
+///
+/// 현재 태스크를 큐 꼬리로 돌리고 다음 태스크를 실행합니다. 준비된 다른
+/// 태스크가 없으면 아무 일도 하지 않고 현재 태스크가 계속되며, 그때는 틱
+/// 면제도 생기거나 사라지지 않습니다. 넘겨받은 태스크는 주기의 중간에
+/// 들어오므로 처음 맞는 틱 하나를 넘깁니다.
+///
+/// # Safety
+/// 시스템 콜 컨텍스트에서 벡터의 컨텍스트 저장이 끝난 뒤에만 호출해야
+/// 합니다.
+pub unsafe fn rotate() {
+    // SAFETY: 함수 계약대로 접근이 배타적이고 계약을 rotate_as로 중계함
+    unsafe {
+        let _ = rotate_as(&mut *SCHED.0.get(), Entry::Between);
+    }
+}
+
+/// 실행 중인 태스크를 끊고 들어온 타이머 틱을 판정하는 함수입니다.
+///
+/// 현재 태스크가 틱 사이에 CPU를 받았고 그 뒤로 틱을 맞은 적이 없으면 이번
+/// 틱은 그 면제를 쓰는 것으로 끝나고 현재 태스크가 계속됩니다. 그렇지 않으면
+/// 현재 태스크를 큐 꼬리로 돌리고 다음 태스크를 실행합니다(준비된 태스크가
+/// 없으면 그대로 계속). 틱에서 CPU를 받은 태스크는 주기의 처음에 들어온
+/// 것이므로 면제가 없습니다.
+///
+/// 틱마다 정확히 한 번, 기한이 지난 대기자를 깨운 뒤에 불러야 합니다. 커널이
+/// 실행할 태스크 없이 기다리는 동안의 틱에는 부르지 않습니다(그때는 끊을
+/// 태스크가 없고, 깨어난 태스크는 [resume_from_idle]이 들여보냄).
+///
+/// # Safety
+/// EL0에서 진입한 IRQ의 핸들러에서 벡터의 컨텍스트 저장이 끝난 뒤에만
+/// 호출해야 합니다(현재 태스크가 실행 중이던 문맥).
+pub unsafe fn on_tick() {
+    // SAFETY: 함수 계약대로 접근이 배타적임
+    let s = unsafe { &mut *SCHED.0.get() };
+    if s.slice.on_tick() == Verdict::Keep {
+        return;
+    }
+    // SAFETY: 함수 계약을 rotate_as로 중계함
+    unsafe {
+        let _ = rotate_as(s, Entry::Tick);
     }
 }
 
@@ -314,14 +383,58 @@ pub unsafe fn current() -> *mut Tcb {
     s.current as *mut Tcb
 }
 
-/// 블록 표시를 마친 현재 태스크를 두고 다음 태스크로 전환하는 함수입니다.
+/// 현재 태스크를 준비 큐에 되돌리지 않고 준비 큐의 머리로 전환하는
+/// 함수입니다. 준비된 태스크가 없으면 false를 줍니다.
+///
+/// # Arguments
+/// `how` - 머리의 태스크가 CPU를 받는 경위
+///
+/// # Safety
+/// [rotate]와 동일합니다.
+unsafe fn switch_next(s: &mut Sched, how: Entry) -> bool {
+    // SAFETY: 큐 링크는 유효함
+    let next = unsafe { pop(s) };
+    if next == 0 {
+        return false;
+    }
+    // SAFETY: next는 방금 큐에서 나온 유효한 TCB임
+    unsafe { switch_to(s, next, how) };
+    true
+}
+
+/// 블록 표시를 마친(또는 종료된) 현재 태스크를 두고 다음 태스크로 전환하는
+/// 함수입니다.
 ///
 /// 현재 태스크를 준비 큐에 되돌리지 않는 것이 [rotate]와의 차이입니다.
 /// 호출 전에 현재 태스크를 깨울 주체(엔드포인트 대기 큐나 수신자의 reply
 /// 링크)에 걸어 두어야 유실되지 않습니다.
 ///
+/// 넘겨받은 태스크는 주기의 중간에 들어오므로 처음 맞는 틱 하나를 넘깁니다.
+/// 양보뿐 아니라 블록과 종료도 면제를 주어야, 틱 직전에 블록하는 것으로 뒤에
+/// 선 태스크의 몫을 줄이는 길이 막힙니다.
+///
+/// # Errors
+/// 준비된 태스크가 없으면 false를 반환합니다. 호출자는 인터럽트를 기다렸다가
+/// [resume_from_idle]을 불러야 합니다
+///
+/// # Safety
+/// [rotate]와 동일합니다.
+pub unsafe fn block_and_switch() -> bool {
+    // SAFETY: 함수 계약대로 접근이 배타적이고 계약을 switch_next로 중계함
+    unsafe { switch_next(&mut *SCHED.0.get(), Entry::Between) }
+}
+
+/// 실행할 태스크 없이 기다리던 커널이 준비된 태스크로 전환하는 함수입니다.
+///
 /// 블록된 채로 기다리던 현재 태스크 자신이 준비 큐에 돌아와 있으면 그
 /// 태스크로 전환합니다(같은 컨텍스트로 복귀).
+///
+/// 기다리는 동안 틱이 지나갔으면 그 태스크는 틱 처리 직후, 곧 주기의 처음에
+/// 들어오므로 틱 면제가 없습니다. 틱 없이 깨어났으면(콘솔 입력) 주기의 중간에
+/// 들어오는 것이라 면제를 받습니다.
+///
+/// # Arguments
+/// `tick_seen` - 마지막으로 전환을 시도한 뒤로 틱이 지나갔는지
 ///
 /// # Errors
 /// 준비된 태스크가 없으면 false를 반환합니다. 호출자는 다음 인터럽트를
@@ -329,17 +442,9 @@ pub unsafe fn current() -> *mut Tcb {
 ///
 /// # Safety
 /// [rotate]와 동일합니다.
-pub unsafe fn block_and_switch() -> bool {
-    // SAFETY: 함수 계약대로 접근이 배타적임
-    let s = unsafe { &mut *SCHED.0.get() };
-    // SAFETY: 큐 링크는 유효함
-    let next = unsafe { pop(s) };
-    if next == 0 {
-        return false;
-    }
-    // SAFETY: next는 방금 큐에서 나온 유효한 TCB임
-    unsafe { switch_to(s, next) };
-    true
+pub unsafe fn resume_from_idle(tick_seen: bool) -> bool {
+    // SAFETY: 함수 계약대로 접근이 배타적이고 계약을 switch_next로 중계함
+    unsafe { switch_next(&mut *SCHED.0.get(), Entry::after_idle(tick_seen)) }
 }
 
 /// 준비 큐에 있는 TCB를 큐에서 빼내는 함수입니다.

@@ -12,6 +12,7 @@ members = [
     "crates/k0-abi",
     "crates/k0-efi",
     "crates/k0-conin",
+    "crates/k0-slice",
     "userspace/root-task",
     "userspace/k0-vault",
     "userspace/k0-term",
@@ -31,6 +32,7 @@ default-members = [
     "crates/k0-abi",
     "crates/k0-efi",
     "crates/k0-conin",
+    "crates/k0-slice",
     "userspace/root-task",
 ]
 

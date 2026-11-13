@@ -149,8 +149,13 @@ extern "C" fn k0_fault(ctx: &mut Context, esr: u64, far: u64) {
 /// 타이머 틱의 선점 정책 함수입니다. (k0-arch가 EL0 IRQ 경로에서 링크
 /// 계약으로 호출)
 ///
-/// 기한이 지난 IPC 대기자를 먼저 깨운 뒤 다음 태스크로 돌립니다. 틱은 실행
-/// 중인 태스크를 끊고 들어왔으므로 현재 태스크는 기한 목록에 없습니다.
+/// 기한이 지난 IPC 대기자를 먼저 깨운 뒤 현재 태스크를 끊을지 판정합니다. 틱은
+/// 실행 중인 태스크를 끊고 들어왔으므로 현재 태스크는 기한 목록에 없습니다.
+///
+/// 틱이 언제나 다음 태스크로 돌리는 것은 아닙니다. 틱과 틱 사이에 CPU를 받은
+/// 태스크는 처음 맞는 틱 하나를 넘깁니다(`k0_sched::on_tick`). 그래서 틱
+/// 직전에 양보하거나 블록하는 태스크가 뒤에 선 태스크에게 주기의 끝자락만 주는
+/// 일이 없고, CPU를 받은 태스크는 온전한 한 주기 전에는 끊기지 않습니다.
 #[unsafe(no_mangle)]
 extern "C" fn k0_preempt() {
     // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ/FIQ 컨텍스트임
@@ -159,7 +164,7 @@ extern "C" fn k0_preempt() {
         #[cfg(feature = "console-input")]
         k0_ipc::console::wake(None);
         k0_ipc::expire_timeouts(k0_arch::irq::ticks(), None);
-        k0_sched::rotate();
+        k0_sched::on_tick();
     }
 }
 
@@ -240,6 +245,11 @@ fn ipc_or_idle(ctx: &mut Context, switched: bool) -> Option<i64> {
 /// 건 대기자도 입력을 기다리는 태스크도 없으면 이 함수는 돌아오지
 /// 않습니다(틱은 계속 처리함).
 ///
+/// 깨어난 태스크가 틱에서 깨어났는지 틱 사이에 깨어났는지를 스케줄러에 알려
+/// 줍니다. 틱에서 깨어난 태스크는 주기의 처음에 들어오므로 다음 틱에서 끊길 수
+/// 있고, 콘솔 입력으로 틱 사이에 깨어난 태스크는 처음 맞는 틱 하나를 넘깁니다.
+/// 기다리는 동안 틱과 입력이 함께 왔으면 틱으로 봅니다.
+///
 /// # Arguments
 /// `ctx` - 이번 진입을 일으킨 태스크(스케줄러의 현재 태스크)의 컨텍스트
 fn idle_until_ready(ctx: &mut Context) {
@@ -266,13 +276,15 @@ fn idle_until_ready(ctx: &mut Context) {
         //         ctx는 현재 태스크의 컨텍스트이며, 기한이 지난 현재 태스크의
         //         반환값은 이 참조로만 기록됨
         unsafe {
+            let before = k0_arch::irq::ticks();
             k0_arch::irq::wait_for_interrupt();
             // 방금의 인터럽트가 입력을 가져왔으면 기다리는 태스크를 깨움.
             // 대기자가 블록된 현재 태스크 자신일 수 있어 ctx를 넘김
             #[cfg(feature = "console-input")]
             k0_ipc::console::wake(Some(&mut *ctx));
-            k0_ipc::expire_timeouts(k0_arch::irq::ticks(), Some(&mut *ctx));
-            if k0_sched::block_and_switch() {
+            let now = k0_arch::irq::ticks();
+            k0_ipc::expire_timeouts(now, Some(&mut *ctx));
+            if k0_sched::resume_from_idle(now != before) {
                 return;
             }
         }

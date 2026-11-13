@@ -40,6 +40,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 mod oracle;
 #[cfg(feature = "terminal")]
 mod service;
+mod timeslice;
 
 use k0_abi::bootinfo::slot;
 use k0_abi::{bootinfo, err, ipc, obj, perm, rights, syscall};
@@ -88,8 +89,7 @@ static REUSE_BASE: AtomicU64 = AtomicU64::new(0);
 // 격리 태스크에 내줄 다음 스택 자리 번호
 static NEXT_STACK: AtomicU64 = AtomicU64::new(0);
 
-// 두 자식 태스크와 공유하는 진행 카운터 (같은 주소 공간)
-static BUSY_COUNTER: AtomicU64 = AtomicU64::new(0);
+// 자식 태스크와 공유하는 진행 카운터 (같은 주소 공간)
 static EXIT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // IPC 서버·클라이언트 태스크와 공유하는 검증 상태 (같은 주소 공간)
@@ -236,6 +236,23 @@ fn alloc_slot() -> u64 {
     s
 }
 
+/// 검증 하나가 받은 슬롯을 전부 비우고 돌려주는 함수입니다.
+///
+/// `first`부터 지금까지 내준 슬롯의 케이퍼빌리티를 모두 지우고(이미 빈 슬롯은
+/// 건너뜀) 할당 위치를 `first`로 되돌립니다. 그 슬롯의 오브젝트를 더 쓰지 않는
+/// 검증의 끝에서만 부릅니다. 루트 CNode의 슬롯은 뒤에 오는 검증들이 거의 다
+/// 쓰므로, 끝난 검증이 슬롯을 차지한 채로 두지 않습니다.
+///
+/// # Arguments
+/// `first` - 그 검증이 시작할 때의 할당 위치
+fn release_slots(first: u64) {
+    for s in first..NEXT_SLOT.load(Ordering::Relaxed) {
+        let r = cap_delete(s as i64);
+        check("release slot", r == 0 || r == err::BAD_SLOT);
+    }
+    NEXT_SLOT.store(first, Ordering::Relaxed);
+}
+
 fn retype_at(ut: u64, kind: u64, dest: u64) -> i64 {
     sys(syscall::RETYPE, [ut, kind, dest, 0, 0, 0]) as i64
 }
@@ -378,13 +395,6 @@ extern "C" fn child_exit_entry() -> ! {
         if v == CHILD_EXIT_TARGET {
             sys1(syscall::EXIT, 7);
         }
-    }
-}
-
-/// 양보 없이 계속 도는 선점 검증용 자식 태스크의 진입점입니다.
-extern "C" fn child_busy_entry() -> ! {
-    loop {
-        BUSY_COUNTER.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1372,54 +1382,54 @@ fn test_reuse(b: &Boot) {
 fn test_sched_ipc_fault(b: &Boot) {
     let (ut, fs) = (b.ut_main, b.frame_size);
     let f = slot::CONSOLE as i64;
+    // 이 검증이 받는 슬롯은 끝에서 전부 돌려줌
+    let first_slot = NEXT_SLOT.load(Ordering::Relaxed);
 
-    // 자식 스택 배치: +3, +5 그래뉼은 스택 가드로 비워 둠
-    let s1 = retype(ut, obj::FRAME);
-    check("retype stack 1", s1 > 0);
-    check("map stack 1", map(s1, TEST_VA + 4 * fs, perm::RW) == 0);
+    // 자식 스택 배치: +5 그래뉼은 스택 가드로 비워 둠
     let s2 = retype(ut, obj::FRAME);
     check("retype stack 2", s2 > 0);
     check("map stack 2", map(s2, TEST_VA + 6 * fs, perm::RW) == 0);
-    let sp_busy = TEST_VA + 5 * fs;
     let sp_exit = TEST_VA + 7 * fs;
 
-    let tcb_busy = retype(ut, obj::TCB);
-    check("retype tcb busy", tcb_busy > 0);
+    // 구성하지 않고 거부 경로 확인에만 쓰는 TCB
+    let tcb_spare = retype(ut, obj::TCB);
+    check("retype tcb spare", tcb_spare > 0);
     let tcb_exit = retype(ut, obj::TCB);
     check("retype tcb exit", tcb_exit > 0);
-    let entry_busy = child_busy_entry as usize as u64;
     let entry_exit = child_exit_entry as usize as u64;
     let (aspace, cnode) = (slot::ADDR_SPACE as i64, slot::CNODE as i64);
 
     // 거부 경로: 구성 전 재개, 잘못된 케이퍼빌리티, 스택 정렬 위반
-    check("resume unconfigured", tcb_resume(tcb_busy) == err::BAD_STATE);
+    check("resume unconfigured", tcb_resume(tcb_spare) == err::BAD_STATE);
     check(
         "configure bad tcb",
-        tcb_configure(f, entry_busy, sp_busy, aspace, cnode, 0) == err::BAD_CAP,
+        tcb_configure(f, entry_exit, sp_exit, aspace, cnode, 0) == err::BAD_CAP,
     );
     check(
         "configure bad aspace",
-        tcb_configure(tcb_busy, entry_busy, sp_busy, cnode, cnode, 0) == err::BAD_CAP,
+        tcb_configure(tcb_spare, entry_exit, sp_exit, cnode, cnode, 0) == err::BAD_CAP,
     );
     check(
         "configure bad cnode",
-        tcb_configure(tcb_busy, entry_busy, sp_busy, aspace, aspace, 0) == err::BAD_CAP,
+        tcb_configure(tcb_spare, entry_exit, sp_exit, aspace, aspace, 0) == err::BAD_CAP,
     );
     check(
         "configure empty cnode slot",
-        tcb_configure(tcb_busy, entry_busy, sp_busy, aspace, 9999, 0) == err::BAD_SLOT,
+        tcb_configure(tcb_spare, entry_exit, sp_exit, aspace, 9999, 0) == err::BAD_SLOT,
     );
     check(
         "configure bad stack",
-        thread_configure(tcb_busy, entry_busy, sp_busy - 8) == err::BAD_VA,
+        thread_configure(tcb_spare, entry_exit, sp_exit - 8) == err::BAD_VA,
     );
     // 거부된 구성은 TCB를 건드리지 않았어야 함
-    check("still unconfigured", tcb_resume(tcb_busy) == err::BAD_STATE);
+    check("still unconfigured", tcb_resume(tcb_spare) == err::BAD_STATE);
     // 실행 중인 자신의 TCB는 재구성할 수 없음
     check(
         "configure self",
-        thread_configure(slot::TCB as i64, entry_busy, sp_busy) == err::BAD_STATE,
+        thread_configure(slot::TCB as i64, entry_exit, sp_exit) == err::BAD_STATE,
     );
+    // 구성된 적 없는 TCB도 삭제할 수 있음
+    check("delete unconfigured tcb", cap_delete(tcb_spare) == 0);
 
     // 유한 태스크: 실행 -> 목표 도달 -> EXIT -> 루트로 복귀
     check(
@@ -1649,23 +1659,13 @@ fn test_sched_ipc_fault(b: &Boot) {
     check("deleted tcb gone", tcb_resume(tcb_fault) == err::BAD_SLOT);
     put_str("root: fault isolation tests pass\n");
 
-    // 무한 태스크: 양보 없이 돌아도 타이머 선점으로 루트가 복귀해야 함.
-    // 확인 뒤에는 TCB를 삭제해 실행 중이던(준비 큐의) 태스크를 없앰
-    check(
-        "configure tcb busy",
-        thread_configure(tcb_busy, entry_busy, sp_busy) == 0,
-    );
-    check("resume tcb busy", tcb_resume(tcb_busy) == 0);
-    while BUSY_COUNTER.load(Ordering::Relaxed) == 0 {
-        yield_now();
-    }
-    put_str("root: preempt test pass\n");
-    check("delete ready tcb", cap_delete(tcb_busy) == 0);
-    let seen = BUSY_COUNTER.load(Ordering::Relaxed);
-    for _ in 0..4 {
-        yield_now();
-    }
-    check("deleted task stopped", BUSY_COUNTER.load(Ordering::Relaxed) == seen);
+    // 양보 없이 도는 태스크가 타이머에 끊기는지, 그리고 틱 사이에 CPU를 받은
+    // 태스크가 처음 맞는 틱을 넘기는지. 앞선 검증의 태스크는 모두 종료됐으므로
+    // 준비 큐에는 루트뿐임(이 검증의 전제)
+    timeslice::test(b);
+
+    // 여기서 만든 태스크는 모두 끝났고 엔드포인트와 스택도 더 쓰지 않음
+    release_slots(first_slot);
 }
 
 /// 격리된 태스크 하나를 만드는 데 필요한 케이퍼빌리티 묶음 구조체입니다.

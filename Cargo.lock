@@ -194,8 +194,13 @@ version = "0.1.0"
 dependencies = [
  "k0-arch",
  "k0-mm",
+ "k0-slice",
  "k0-task",
 ]
+
+[[package]]
+name = "k0-slice"
+version = "0.1.0"
 
 [[package]]
 name = "k0-task"

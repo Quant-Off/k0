@@ -16,3 +16,4 @@ granule-16k = ["k0-task/granule-16k", "k0-mm/granule-16k"]
 k0-arch = { path = "../k0-arch" }
 k0-mm = { path = "../k0-mm", default-features = false }
 k0-task = { path = "../k0-task", default-features = false }
+k0-slice = { path = "../k0-slice" }
