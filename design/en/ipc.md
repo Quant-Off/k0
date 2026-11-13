@@ -114,7 +114,7 @@ When the original capability of an endpoint is deleted, every task still queued 
 
 Every wait can be bounded. A timeout is the upper 32 bits of the flags register `x1`, counted in scheduler ticks. The tick period is 1 second (a kernel constant), so the tick is the unit of every timeout. The following rules apply.
 
-- **Deadline rule**: a timeout of n ticks ends at the (n+1)-th timer tick after the call. As long as ticks are handled on time, the wait lasts between n and n+1 tick periods.
+- **Deadline rule**: a timeout of n ticks ends at the (n+1)-th timer tick after the call. As long as ticks are handled on time, the wait lasts between n and n+1 tick periods. The timeout makes the task ready at that point. When it runs depends on the ready queue (see [scheduling.md](scheduling.md#timeouts)).
 - **Lower bound, not wall-clock time**: the kernel runs with interrupts masked during every system call, and a long one such as a large `CAP_REVOKE` makes a tick late. The wait is then that much longer.
 - **0 means no deadline**: the task waits until its partner acts, as before.
 - **One deadline for a call**: the deadline of `CALL` covers both phases, waiting for a receiver and then waiting for the reply.
@@ -191,7 +191,7 @@ If no byte is ready, the task waits in the state `BlockedConsole`. The wait work
 Receive interrupts stay off until a task first reads console input with the right. That first read discards what the device holds and stops the periodic `k0: tick N` lines after one line `k0: tick lines off (console input in use)`. Ticks, preemption and timeouts keep working. The receive path and its limits are described in [USAGE.md](../../USAGE.md) and [exceptions.md](exceptions.md).
 
 > [!NOTE]
-> Input waits behind running tasks. There are no priorities, so the latency of a byte is up to one tick per ready task.
+> Input waits behind running tasks. There are no priorities, so the latency of a byte is up to one tick per ready task, plus one more tick when the running task got the CPU between two ticks (see [scheduling.md](scheduling.md)).
 
 ## Errors
 
@@ -257,10 +257,10 @@ The boot test script also requires an exact number of `k0: task fault` lines and
 > [!NOTE]
 > Capability transfer over IPC and notification objects do not exist yet. Timeouts are opt-in per call, so a task that waits without one still waits until its partner acts.
 
-- **Timeouts say when a task becomes ready, not when it runs**: there is no priority and no CPU budget, and the scheduler is round robin with a one-tick slice (see [scheduling.md](scheduling.md)).
+- **Timeouts say when a task becomes ready, not when it runs**: there is no priority and no CPU budget, and the scheduler is round robin on a one-second tick. A task that got the CPU between two ticks keeps it through the next tick, so a woken task can wait one tick period longer than it did before. With k tasks to run before it, a task starts within k + 1 tick periods. These numbers describe this version of the scheduler and are not an interface (see [scheduling.md](scheduling.md)).
 - **Long system calls**: the kernel is not preemptible, so a long call such as `CAP_REVOKE` on an untyped with many objects delays every other task and every timeout.
 - **Fatal stops**: a `k0_arch::fatal` or a kernel panic still stops the machine.
 - **Timing source for EL0**: whether the tick-aligned wake-up can be used for timing attacks has not been analysed. In an image with console input, an outside party can cause interrupts while tasks run (bounded by the reader), and the reader learns arrival times finer than the tick. Other tasks can notice the stolen time. This timing channel is not analysed either.
-- **Input latency**: a `CONSOLE_READ` waiter is woken behind running tasks, so a byte can wait up to a tick per ready task.
+- **Input latency**: a `CONSOLE_READ` waiter is woken behind running tasks, so a byte can wait up to a tick per ready task, plus one more tick when the running task got the CPU between two ticks.
 - **A queued sender**: it delivers once after revocation. A sender that is already waiting on an endpoint keeps the badge of the send that queued it. If its capability is revoked while it waits, its message is still delivered once to the next receiver.
 - **Four words per message**: larger data needs shared memory. The holder of a task's `AddrSpace` capability must map it into that task's address space, since tasks can now run in separate address spaces.

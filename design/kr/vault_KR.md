@@ -156,7 +156,7 @@ $ cargo build -p k0-kernel --features console,vault-ed25519
 - 항상: `badges_map_to_fixed_roles_and_frames`, `each_role_may_do_exactly_its_operations`, `no_frame_is_touched_for_a_request_that_cannot_have_a_body`, `a_request_that_claims_a_body_it_cannot_have_is_refused`, `the_status_word_packs_state_algorithm_and_what_is_built`, `a_call_without_a_known_badge_is_denied`, `malformed_requests_are_refused_whole`, `a_seed_without_real_entropy_makes_no_key`, `the_seed_is_taken_once_and_zeroize_is_final`, `fetch_clamps_the_length_and_publish_writes_header_and_body`, 그리고 `without_an_algorithm_the_vault_takes_no_seed_and_serves_nothing`(마지막 것은 알고리즘이 없을 때만).
 - Ed25519가 있을 때: `the_self_test_passes_and_is_reported`, `key_generation_follows_the_states`, `the_operator_gets_the_public_key_and_never_a_signature`, `a_vault_that_fails_holds_no_secret`, `signatures_verify_and_the_key_follows_the_seed`, `a_public_key_request_carries_no_body`, `unknown_algorithms_are_unsupported`, `nothing_is_served_after_zeroize`, `a_small_order_public_key_is_refused_even_with_a_matching_signature`, `a_failed_vault_refuses_everything_but_status`.
 
-다른 크레이트와 합치면 호스트 테스트는 ARM 호스트에서 354개, 그 외 호스트에서 268개입니다(`k0-mm` 제외).
+다른 크레이트와 합치면 호스트 테스트는 ARM 호스트에서 363개, 그 외 호스트에서 277개입니다(`k0-mm` 제외). 이 가운데 9개는 `k0-slice`의 테스트입니다.
 
 **루트 태스크 자가 테스트**(`userspace/root-task/src/oracle.rs`의 `test_oracle`, `vault`로 빌드한 이미지에만 있음). 다음을 검사합니다.
 
@@ -183,7 +183,7 @@ $ cargo build -p k0-kernel --features console,vault-ed25519
 - **키 하나**: 영속성, 키 가져오기·내보내기, DRBG, 양자 내성 알고리즘이 아직 없습니다. 새 키를 만들려면 재부팅해야 합니다.
 - **서비스 모드에 서명 클라이언트 없음**: 서비스 볼트의 키는 만들어지고 표시되지만 아직 다른 태스크가 쓰지 않습니다. 클라이언트 서명은 자가 테스트가 보여 줍니다.
 - **터미널과 볼트는 죽어도 다시 시작하지 않습니다**: 죽으면 그대로 멈춥니다. 루트 태스크는 신뢰 대상입니다.
-- **가용성은 보호되지 않습니다**: 클라이언트는 엔드포인트 하나를 공유하며 모든 호출에 타임아웃을 써야 합니다([ipc_KR.md](ipc_KR.md) 참고).
+- **가용성은 보호되지 않습니다**: 클라이언트는 엔드포인트 하나를 공유하며 모든 호출에 타임아웃을 써야 합니다([ipc_KR.md](ipc_KR.md) 참고). CPU를 계속 쓰는 태스크 하나 뒤에서는 호출자와 볼트가 왕복 한 번에 스케줄러 모델에서 4틱을 쓰며, 이전에는 2틱이었습니다. 터미널의 호출은 5틱 타임아웃을 쓰고, 고정 이미지의 서비스 모드에는 CPU를 계속 쓰는 태스크가 없습니다.
 - **루트 태스크는 신뢰 대상입니다**: 볼트를 만들고 읽을 수 있습니다.
 - **클라이언트 신원 없음**: 모든 signer가 키 하나를 공유합니다.
 - **엔트로피**: 시드는 입력만큼만 좋습니다. 키는 승인된 난수 비트 생성기에서 나오지 않습니다.

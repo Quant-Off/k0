@@ -137,7 +137,7 @@ The vault side changed with this feature. There are four roles by endpoint badge
 
 ## How it is tested
 
-**Host tests** (`tools/host-test.sh`): `k0-conin` has 15 tests with a fake UART, `k0-term` has 24 with the vault feature and 21 without, and `k0-vault` has 20 with Ed25519 and 11 without. The suite has 354 tests on an ARM host and 268 on other hosts.
+**Host tests** (`tools/host-test.sh`): `k0-conin` has 15 tests with a fake UART, `k0-term` has 24 with the vault feature and 21 without, and `k0-vault` has 20 with Ed25519 and 11 without. The suite has 363 tests on an ARM host and 277 on other hosts (`k0-slice` adds 9).
 
 **Boot matrix**: the new rows are `input-only`, `input-gicv2`, `input-16550`, `input-bad-irq`, the static row `input-symbols` (an image without `console-input` has no receive code and none of the new log lines), `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi` and `hvf-term`. The matrix has 76 rows on a Mac with HVF and 65 in CI.
 
@@ -153,7 +153,7 @@ The vault side changed with this feature. There are four roles by endpoint badge
 - **No authentication**: the serial line is as trusted as whoever can reach it. The operator can erase the key (a denial of service by design) but gets no signature and cannot change policy.
 - **Kernel code driven from outside**: the receive code runs at EL1.
 - **A timing channel that is not analysed**: an outside party can now cause interrupts while tasks run, bounded by the reader. The reader learns arrival times finer than the tick, and other tasks can notice the stolen time.
-- **Latency**: input waits behind running tasks. There are no priorities, so the latency is up to a tick per ready task.
+- **Latency**: input waits behind running tasks. There are no priorities, so the latency is up to a tick per ready task, plus one more tick when the running task got the CPU between two ticks (see [scheduling.md](scheduling.md)).
 - **No input on a 16550 console**: a 16550 console has output and no input.
 - **No measurement under a flood**: no test measures kernel time under a flood on a machine. The bound is argued from the gate and shown in host tests.
 - **Dropped before the prompt**: this counts bytes that reached the UART. An emulator or adapter that holds bytes back delivers them later (QEMU does).

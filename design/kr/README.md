@@ -23,7 +23,7 @@
 | [uefi_KR.md](uefi_KR.md) | UEFI 로더: 커널 밖에 두는 이유, 실행 흐름, RAM으로 인정하지 않는 메모리, 디바이스 트리 재작성, 점프 전 자가 검사, QEMU로 테스트할 수 없는 것, 부팅해 본 환경 |
 | [hardening_KR.md](hardening_KR.md) | PAC 키 파생, PAN, 카운터·디버그·PMU에 대한 EL0 접근 차단, 루트 태스크 무결성 검사와 각각이 아직 보호하지 못하는 것 |
 | [exceptions_KR.md](exceptions_KR.md) | 벡터 테이블, 사용자 상태 저장, 시스템 콜 디스패치, 폴트 격리 |
-| [scheduling_KR.md](scheduling_KR.md) | TCB와 거기에 묶인 CNode, 주소 공간, 태스크 생성과 정리, 라운드 로빈 스케줄러, 타이머 선점 |
+| [scheduling_KR.md](scheduling_KR.md) | TCB와 거기에 묶인 CNode, 주소 공간, 태스크 생성과 정리, 라운드 로빈 스케줄러, 타이머 선점, 두 틱 사이에 실행을 넘겨받은 태스크는 처음 만나는 틱에 끊기지 않는다는 규칙 |
 | [ipc_KR.md](ipc_KR.md) | 엔드포인트와 배지, `SEND`, `RECV`, `CALL`, `REPLY_RECV`, 1회성 응답 자격, 엔드포인트가 삭제될 때 대기 중인 태스크의 처리 |
 | [vault_KR.md](vault_KR.md) | 서명 오라클: 볼트 태스크와 프레임, `CALL` 프로토콜과 nonce, 고정된 배지 정책, 프로바이더 경계, 부팅 시드와 지우기, feature, 테스트, 알려진 공백 |
 | [terminal_KR.md](terminal_KR.md) | 시리얼 입력과 운영자 터미널: 커널이 입력을 받는 이유, 수신 링과 그 한계, `CONSOLE_READ`와 Console 권한, 대기와 깨우기, 터미널의 연결과 적대적 태스크 점검, 화면과 명령 규칙, 테스트, 알려진 공백 |

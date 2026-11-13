@@ -131,7 +131,7 @@ These features only add and are not in `default`, so **every build command must 
   - Address spaces (AddrSpace)
 
   Memory is placed on an address space's map only by showing that address space's key (MAP, UNMAP). Keys carry rights (read, write, execute). A mailbox key can carry a tag that tells the receiver who sent a message (badge). Keys can be copied with the same or fewer rights, or moved between slots (CAP_COPY, CAP_MOVE).
-- **Running tasks**: a task is tied to one key ring and one address space when it is set up (TCB_CONFIGURE) and then started (TCB_RESUME). Tasks take turns, and a timer interrupts a task that runs too long (round-robin scheduling with timer preemption). A task can give up its turn (YIELD) or finish (EXIT).
+- **Running tasks**: a task is tied to one key ring and one address space when it is set up (TCB_CONFIGURE) and then started (TCB_RESUME). Tasks take turns, and a timer interrupts a task that runs too long (round-robin scheduling with timer preemption). A task that was switched in between two timer ticks gets a full period: the first tick it meets does not cut it, so it runs at least one period and at most two before the timer takes the CPU away. This stops a task from using `YIELD` shortly before a tick to shorten the turn of the next task. A task can give up its turn (YIELD) or finish (EXIT).
 - **Messages**: tasks exchange short messages that travel in processor registers. The sender waits until the receiver takes the message (synchronous IPC: SEND, RECV, CALL, REPLY_RECV). Sending needs the write right on the mailbox key and receiving needs the read right. The receiver learns the tag of the sender's key, and the right to reply can be used only once.
 - **Timeouts**: every one of these calls can carry a time limit, counted in timer ticks (one tick is one second). If no partner arrives in time, the call returns an error (`TIMEOUT`, or `REPLY_TIMEOUT` when a `CALL` was delivered but no reply came). Without a limit a task waits as long as it takes. The wait lasts at least the given number of ticks and may be a little longer. The limit says when the task becomes ready again, not when it runs.
 - **Idle**: when no task can run, the kernel no longer stops. It waits for the next interrupt, wakes tasks whose time limit has passed and carries on. If nothing can ever wake a task, the machine stays idle and the boot log says `k0: all tasks stopped (none ready, no timeout pending)`. That line appears only when there is neither a timed waiter nor a task waiting for console input. A terminal image prints nothing there, because waiting for input is its normal state.
@@ -270,13 +270,14 @@ What it does not stop:
   Still open:
 
   - A task that waits without a timeout can wait forever if its partner never acts. Timeouts are used per call, so a server that must stay responsive has to give one on every wait.
-  - There is no priority and no CPU budget. Tasks take turns in equal slices, and a task that holds a lot of free memory can create many tasks and shrink everyone else's share.
+  - There is no priority and no CPU budget. Tasks take turns, and a task that holds a lot of free memory can create many tasks and shrink everyone else's share. A task that never yields or blocks keeps at least 1/N of the CPU among N ready tasks in the long run. This was checked in a model by search with up to 6 tasks and by tests on the host, it is not proven, and N grows with every task that is created.
+  - The scheduler leaks timing. A task still changes when, and for how long, another task runs by choosing when to yield or block. This has not been analysed. K0 gives no real-time or latency promise: the tick is one second and the kernel cannot be interrupted. The one-to-two periods per turn describe this version, not an interface.
   - The kernel cannot be interrupted while it handles a system call. A long call, such as taking back a key to a large block of memory, delays every other task and every timeout.
   - A fatal error inside the kernel, or an error from the hardware that the kernel cannot attribute to one task, still stops the whole machine.
   - The kernel part of the boot log can be filled up by crash and exit lines.
   - The signing oracle is no exception: clients share one mailbox to the vault and must give a timeout on every call, or a stuck vault holds them up.
   - In an image with input, an outside party can cause interrupts while tasks run. Their number is bounded by the reader, but the reader learns arrival times finer than a timer tick, and other tasks can notice the stolen time. This timing channel has not been analysed.
-  - Input waits behind the running tasks. There are no priorities, so the delay is up to one tick for each ready task.
+  - Input waits behind the running tasks. There are no priorities, so the delay is up to one tick for each ready task, plus one more tick when the running task was switched in between two ticks.
   - The receive code runs in the kernel (EL1). It is small and never interprets a byte, but it is kernel code driven by an outside party. Moving it to a user-space driver needs delegation of devices and interrupts, which K0 does not have yet.
 - **Tasks that share a key ring and an address space**: such tasks are not isolated from each other. They behave like threads, parts of one program that share everything.
 - **Control of a task**: whoever holds the key to a task, to its key ring or to its address space controls that task.
@@ -342,12 +343,13 @@ In the following table, you can find the contents of each path in the repository
 | `crates/k0-abi` | System call numbers, error codes and the boot information layout that programs share with the kernel |
 | `crates/k0-arch` | Handling of errors, system calls and interrupts (exceptions), entering and leaving user mode, interrupt controller and timer, PAC and PAN, the boot log and the optional console drivers |
 | `crates/k0-conin` | The receive logic of console input (the ring and the loss mark), tested on the host with a fake UART |
+| `crates/k0-slice` | The rule that decides whether a timer tick cuts the running task, tested on the host with a model of the scheduler |
 | `crates/k0-boot` | Device tree parser, the built-in root task image and its integrity check, PAC key derivation, the search for the boot memory window (shared with the loader) |
 | `crates/k0-efi` | The loader's logic without `unsafe` code: planning RAM from the UEFI memory map, rewriting the firmware device tree, an independent re-check of the result, and the check of the kernel image header. It runs the kernel's own device tree code on the result before the jump |
 | `crates/k0-cap` | Keys and their rights, key rings, the derivation list, untyped memory, retype, revoke and delete |
 | `crates/k0-mm` | Kernel page tables, turning memory maps on (MMU), program address spaces and their registry |
 | `crates/k0-task` | Tasks with their key ring and address space, mailboxes, loading the root task |
-| `crates/k0-sched` | Round-robin scheduler |
+| `crates/k0-sched` | Round-robin scheduler, which asks `k0-slice` at every tick |
 | `crates/k0-ipc` | Synchronous messages |
 | `loader/` | The UEFI application (`k0-loader`, target `aarch64-unknown-uefi`) that embeds a built kernel image and starts it: UEFI calls, the flow, and the final cache flush, MMU off and jump |
 | `userspace/root-task` | The first program and its self-tests, and the wiring and self-test of the signing oracle (`oracle.rs`), and the start of the terminal service (`service.rs`) |
