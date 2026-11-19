@@ -156,7 +156,7 @@ $ cargo build -p k0-kernel --features console,vault-ed25519
 - 항상: `badges_map_to_fixed_roles_and_frames`, `each_role_may_do_exactly_its_operations`, `no_frame_is_touched_for_a_request_that_cannot_have_a_body`, `a_request_that_claims_a_body_it_cannot_have_is_refused`, `the_status_word_packs_state_algorithm_and_what_is_built`, `a_call_without_a_known_badge_is_denied`, `malformed_requests_are_refused_whole`, `a_seed_without_real_entropy_makes_no_key`, `the_seed_is_taken_once_and_zeroize_is_final`, `fetch_clamps_the_length_and_publish_writes_header_and_body`, 그리고 `without_an_algorithm_the_vault_takes_no_seed_and_serves_nothing`(마지막 것은 알고리즘이 없을 때만).
 - Ed25519가 있을 때: `the_self_test_passes_and_is_reported`, `key_generation_follows_the_states`, `the_operator_gets_the_public_key_and_never_a_signature`, `a_vault_that_fails_holds_no_secret`, `signatures_verify_and_the_key_follows_the_seed`, `a_public_key_request_carries_no_body`, `unknown_algorithms_are_unsupported`, `nothing_is_served_after_zeroize`, `a_small_order_public_key_is_refused_even_with_a_matching_signature`, `a_failed_vault_refuses_everything_but_status`.
 
-다른 크레이트와 합치면 호스트 테스트는 ARM 호스트에서 363개, 그 외 호스트에서 277개입니다(`k0-mm` 제외). 이 가운데 9개는 `k0-slice`의 테스트입니다.
+다른 크레이트와 합치면 호스트 테스트는 ARM 호스트에서 377개, 그 외 호스트에서 289개입니다(`k0-mm` 제외). 이 가운데 9개는 `k0-slice`의 테스트입니다.
 
 **루트 태스크 자가 테스트**(`userspace/root-task/src/oracle.rs`의 `test_oracle`, `vault`로 빌드한 이미지에만 있음). 다음을 검사합니다.
 
@@ -173,7 +173,7 @@ $ cargo build -p k0-kernel --features console,vault-ed25519
 
 표지는 `root: oracle tests pass`입니다. 클라이언트 태스크는 루트 CNode 슬롯이 부족해 하나의 클라이언트 주소 공간에서 차례로 실행됩니다. 이 테스트는 볼트와 클라이언트 사이의 격리를 보여 주며 클라이언트끼리의 격리는 보여 주지 않습니다.
 
-**부팅 매트릭스 행**: `vault`, `vault-max`(RNDR), `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault`, 그리고 정적 행 `vault-symbols`(기본 이미지에는 볼트나 암호 코드가 없고, 볼트 이미지에는 그 코드에서 온 쓰기 가능한 정적 변수가 없음)입니다. 매트릭스는 HVF가 있는 Mac에서 76행, CI에서 65행입니다. 터미널용 행은 `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi`, `hvf-term`입니다. `tools/term-test.py <image>`는 QEMU의 직렬 포트를 파이프에 연결해 터미널 이미지를 부팅하고 스크립트로 짠 세션을 실행합니다. 이제 모든 이미지는 `k0: dtb seeds wiped <n>B`와 `root: boot seed from rng-seed bytes ...`도 출력합니다.
+**부팅 매트릭스 행**: `vault`, `vault-max`(RNDR), `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault`, 그리고 정적 행 `vault-symbols`(기본 이미지에는 볼트나 암호 코드가 없고, 볼트 이미지에는 그 코드에서 온 쓰기 가능한 정적 변수가 없음)입니다. 매트릭스는 HVF가 있는 Mac에서 82행, CI에서 71행입니다. 터미널용 행은 `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi`, `hvf-term`입니다. `tools/term-test.py <image>`는 QEMU의 직렬 포트를 파이프에 연결해 터미널 이미지를 부팅하고 스크립트로 짠 세션을 실행합니다. 이제 모든 이미지는 `k0: dtb seeds wiped <n>B`와 `root: boot seed from rng-seed bytes ...`도 출력합니다.
 
 ## 알려진 공백
 

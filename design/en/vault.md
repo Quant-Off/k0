@@ -156,7 +156,7 @@ $ cargo build -p k0-kernel --features console,vault-ed25519
 - always: `badges_map_to_fixed_roles_and_frames`, `each_role_may_do_exactly_its_operations`, `no_frame_is_touched_for_a_request_that_cannot_have_a_body`, `a_request_that_claims_a_body_it_cannot_have_is_refused`, `the_status_word_packs_state_algorithm_and_what_is_built`, `a_call_without_a_known_badge_is_denied`, `malformed_requests_are_refused_whole`, `a_seed_without_real_entropy_makes_no_key`, `the_seed_is_taken_once_and_zeroize_is_final`, `fetch_clamps_the_length_and_publish_writes_header_and_body`, and `without_an_algorithm_the_vault_takes_no_seed_and_serves_nothing` (the last one without the algorithm only).
 - with Ed25519: `the_self_test_passes_and_is_reported`, `key_generation_follows_the_states`, `the_operator_gets_the_public_key_and_never_a_signature`, `a_vault_that_fails_holds_no_secret`, `signatures_verify_and_the_key_follows_the_seed`, `a_public_key_request_carries_no_body`, `unknown_algorithms_are_unsupported`, `nothing_is_served_after_zeroize`, `a_small_order_public_key_is_refused_even_with_a_matching_signature`, `a_failed_vault_refuses_everything_but_status`.
 
-With the other crates, the host suite has 363 tests on an ARM host and 277 on other hosts (without `k0-mm`), and `k0-slice` adds 9 of them.
+With the other crates, the host suite has 377 tests on an ARM host and 289 on other hosts (without `k0-mm`), and `k0-slice` adds 9 of them.
 
 **Root task self-test** (`test_oracle` in `userspace/root-task/src/oracle.rs`, only in images built with `vault`). It checks the following:
 
@@ -173,7 +173,7 @@ With the other crates, the host suite has 363 tests on an ARM host and 277 on ot
 
 The marker is `root: oracle tests pass`. The client tasks run one after another in one client address space, because root CNode slots are scarce. The test shows isolation between the vault and a client, not between clients.
 
-**Boot matrix rows**: `vault`, `vault-max` (RNDR), `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault`, and the static row `vault-symbols` (the default image has no vault or crypto code, and the vault image has no writable static from them). The matrix has 76 rows on a Mac with HVF and 65 in CI. The rows for the terminal are `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi` and `hvf-term`. `tools/term-test.py <image>` boots a terminal image with QEMU's serial port on pipes and runs a scripted session. Every image now also prints `k0: dtb seeds wiped <n>B` and `root: boot seed from rng-seed bytes ...`.
+**Boot matrix rows**: `vault`, `vault-max` (RNDR), `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault`, and the static row `vault-symbols` (the default image has no vault or crypto code, and the vault image has no writable static from them). The matrix has 82 rows on a Mac with HVF and 71 in CI. The rows for the terminal are `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi` and `hvf-term`. `tools/term-test.py <image>` boots a terminal image with QEMU's serial port on pipes and runs a scripted session. Every image now also prints `k0: dtb seeds wiped <n>B` and `root: boot seed from rng-seed bytes ...`.
 
 ## Known gaps
 

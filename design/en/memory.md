@@ -64,7 +64,7 @@ The tables for the kernel alias of retyped objects do not come from the static p
 - A table from a reserve is **zeroed when it is handed out**, not at boot.
 - If a walk fails, the rollback gives back the tables from both places.
 
-After boot, `alias_object` takes its tables from the reserves. It cannot fail for lack of tables for any address inside an `Untyped` that the kernel handed out. A range that cannot host its share, or whose share cannot be mapped, is **not handed out** as `Untyped`. The kernel prints `k0: memory <base> + <size> not handed out (<reason>)` and goes on booting. A gap that holds no whole granule is handed out unchanged, because no object can be made from it.
+After boot, `alias_object` takes its tables from the reserves. It cannot fail for lack of tables for any address inside an `Untyped` that the kernel handed out. A range that cannot host its share, or whose share cannot be mapped, is **not handed out** as `Untyped`. The kernel prints `k0: memory <base> + <size> not handed out (<reason>)` and goes on booting. A gap that holds no whole granule is not handed out either, because no object can be made from it.
 
 > [!NOTE]
 > The reserve costs one table per 2 MiB of memory with the 4 KiB granule (about 0.2 % of RAM), and one per 32 MiB with the 16 KiB granule (about 0.05 %).

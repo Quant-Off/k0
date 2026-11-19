@@ -56,7 +56,7 @@ K0 is meant to become the isolation core of high-security systems. The targets a
   - The processor is ARMv8-A or ARMv9-A and little-endian.
   - The boot loader enters the kernel following the Linux arm64 Image protocol. The memory map is switched off (MMU off), the level is EL1 or the hypervisor level (EL2), and the address of the device tree is in register x0.
   - The interrupt controller is a GICv2 or GICv3, and the processor has the ARM generic timer.
-  - RAM lies below 2^47 bytes (128 TiB).
+  - RAM lies below 2^47 bytes (128 TiB) and inside the physical address width of the CPU.
   - The boot loader starts exactly one processor core. K0 uses that one core.
 
   The image can be loaded at any physical address that fits the page grid, and it always runs at the virtual address `0xFFFF_8000_0000_0000`. If it is started at EL2, the kernel sets up the EL2 state itself, steps down to EL1 once and never goes back. If it is started in any state it does not support, it stops instead of guessing.
@@ -183,7 +183,7 @@ The following picture summarizes what each evidence tier means.
 > [!NOTE]
 > Only the first two tiers may be called supported.
 
-- **Tier 1**: checked by `tools/boot-matrix.sh` (CI runs it on QEMU 7.2). It has 76 rows locally with HVF and 65 in CI.
+- **Tier 1**: checked by `tools/boot-matrix.sh` (CI runs it on QEMU 7.2). It has 82 rows locally with HVF and 71 in CI.
   - **Direct boot rows**
     - QEMU virt with GICv3 and with GICv2, each entered at EL1 and at EL2
     - The CPU models cortex-a72, cortex-a53 and max
@@ -191,6 +191,7 @@ The following picture summarizes what each evidence tier means.
     - 4 processor cores started by the machine (K0 still uses one)
     - The 16 KiB image on max and its refusal on cortex-a72
     - The same image loaded at three other physical addresses (the header `text_offset` patched) and a refusal for an address off the 16 KiB grid
+    - Hostile boot input (the rows `dtb-pointer-end`, `dtb-pointer-above-pa`, `redist-stride`, `redist-stride-wide`, `ram-above-pa` and `sub-page-memory`): a device tree pointer at the end of the address range or beyond the physical address width of the CPU, a redistributor stride that would overflow the walk, RAM declared beyond that address width, and a memory range without one whole page. The kernel refuses the first four with a reason in the boot log and boots without handing the last range out. `redist-stride-wide` is the control: the largest stride that is accepted still boots
     - `xlnx-versal-virt` (RAM at address 0, GICv3 and PL011 elsewhere, entered at EL2)
     - A pinned image that boots on its own platform and refuses on another
     - A static check that the image does not touch the physical timer
@@ -206,7 +207,7 @@ The following picture summarizes what each evidence tier means.
   - **ACPI rows**: the rows `uefi-acpi-gic3-el1`, `uefi-acpi-gic3-el2`, `uefi-acpi-gic2-el1`, `uefi-acpi-smp4`, `uefi-acpi-16k` and `uefi-acpi-rng` boot the default QEMU machine with ACPI on, without a device tree, through the tables.
   - **Signing oracle rows**: `vault`, `vault-max` (with RNDR), `vault-el2`, `vault-16k`, `vault-no-alg` (no signing algorithm) and `hvf-vault` (only on a Mac with HVF) boot images with the oracle and judge its self-test. The static row `vault-symbols` checks that the default image has no vault or crypto code.
   - **Input rows**: `input-only`, `input-gicv2`, `input-16550` and `input-bad-irq` boot images with the input path on and judge whether input came on (or went off where it must) and the self-test. The static row `input-symbols` checks that an image built without an input feature has no receive code, no `CONSOLE_READ` and none of the new log lines.
-  - **Terminal rows**: `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi` and `hvf-term` (only on a Mac with HVF) boot terminal images. `tools/term-test.py <image>` connects QEMU's serial port to pipes and runs a scripted session: every command and error, erase and cancel, a line that is too long, key generation and the public key format, zeroize, 200 kB without a line end, 2000 lines in a row and a serial break.
+  - **Terminal rows**: `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi` and `hvf-term` (only on a Mac with HVF) boot terminal images. `tools/term-test.py <image>` connects QEMU's serial port to pipes and runs a scripted session: every command and error, erase and cancel, a line that is too long, key generation and the public key format, zeroize, 200 kB without a line end, 2000 lines in a row, a serial break and, on QEMU 8.0 or later, a flood of 2000 breaks.
   - **Refusal checks**: two refusals are read from the serial log.
     - The 16 KiB image on a CPU without 16 KiB pages
     - A loader whose embedded kernel has one flipped byte
@@ -274,9 +275,9 @@ What it does not stop:
   - The scheduler leaks timing. A task still changes when, and for how long, another task runs by choosing when to yield or block. This has not been analysed. K0 gives no real-time or latency promise: the tick is one second and the kernel cannot be interrupted. The one-to-two periods per turn describe this version, not an interface.
   - The kernel cannot be interrupted while it handles a system call. A long call, such as taking back a key to a large block of memory, delays every other task and every timeout.
   - A fatal error inside the kernel, or an error from the hardware that the kernel cannot attribute to one task, still stops the whole machine.
-  - The kernel part of the boot log can be filled up by crash and exit lines.
+  - The lines the kernel prints when a task ends (a crash, an exit, an unknown system call) share 4 KiB of the boot log and can no longer fill the kernel part. A task that can create tasks can still push such lines of other tasks out of the log.
   - The signing oracle is no exception: clients share one mailbox to the vault and must give a timeout on every call, or a stuck vault holds them up.
-  - In an image with input, an outside party can cause interrupts while tasks run. Their number is bounded by the reader, but the reader learns arrival times finer than a timer tick, and other tasks can notice the stolen time. This timing channel has not been analysed.
+  - In an image with input, an outside party can cause interrupts while tasks run. Their number is bounded by the reader for bytes and by 256 per tick for characters with a line error, but the reader learns arrival times finer than a timer tick, and other tasks can notice the stolen time. This timing channel has not been analysed.
   - Input waits behind the running tasks. There are no priorities, so the delay is up to one tick for each ready task, plus one more tick when the running task was switched in between two ticks.
   - The receive code runs in the kernel (EL1). It is small and never interprets a byte, but it is kernel code driven by an outside party. Moving it to a user-space driver needs delegation of devices and interrupts, which K0 does not have yet.
 - **Tasks that share a key ring and an address space**: such tasks are not isolated from each other. They behave like threads, parts of one program that share everything.
@@ -355,6 +356,6 @@ In the following table, you can find the contents of each path in the repository
 | `userspace/root-task` | The first program and its self-tests, and the wiring and self-test of the signing oracle (`oracle.rs`), and the start of the terminal service (`service.rs`) |
 | `userspace/k0-term` | The operator terminal: line editing, command parsing and the requests to the vault |
 | `userspace/k0-vault` | The signing oracle service: protocol and fixed policy, the request handling, and the boundary around the crypto crate |
-| `tools/` | QEMU runner (also for `.efi` files), boot test, boot matrix, terminal session test (`term-test.py`), boot log reader, host test, loader build (`build-loader.sh`), PE and instruction order check (`pe-check.py`) |
+| `tools/` | QEMU runner (also for `.efi` files), boot test, boot matrix, terminal session test (`term-test.py`), boot log reader, host test, loader build (`build-loader.sh`), PE and instruction order check (`pe-check.py`), device tree editor for hostile boot input (`fdt-patch.py`) |
 | `ci/` | The CI build and test image (`Dockerfile`) and the threat model (`threat_model.md`) |
 | `vendor/` | Third-party crates kept in the repository (`sha2`, `ed25519-dalek` and their dependencies) |
