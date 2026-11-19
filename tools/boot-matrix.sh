@@ -420,6 +420,41 @@ pass load-default    "$img4" K0_IMAGE_TEXT_OFFSET=0x0 K0_BOOT_REUSE=skip
 # 그래뉼 경계에 맞지 않는 적재 주소는 거부 (16K 이미지를 4K만 맞는 주소에)
 refuse load-misaligned "$img16" 0x40081000 "k0: mmu enable failed" K0_IMAGE_TEXT_OFFSET=0x81000 K0_QEMU_CPU=max
 
+# 적대적인 부팅 입력: 부트로더나 디바이스 트리가 엉뚱한 값을 주면 커널은 계산이
+# 넘치거나 폴트로 멈추는 대신 사유를 남기고 거부해야 함. 디바이스 트리는 QEMU
+# virt의 것을 떠서 한 군데만 바꿈(tools/fdt-patch.py). memory 노드를 더한 트리는
+# -dtb로 주면 QEMU가 그 노드를 자기 것으로 되돌리므로, 메모리에 따로 싣고 커널이
+# 받는 포인터를 그리로 돌림
+refuse dtb-pointer-end "$img4" 0x40080000 "k0: dtb rejected: bad pointer" K0_IMAGE_DTB_POINTER=end
+# 2^47 아래이지만 이 코어의 물리 주소 폭(cortex-a72는 44비트) 밖인 포인터
+refuse dtb-pointer-above-pa "$img4" 0x40080000 "k0: dtb rejected: bad pointer" K0_IMAGE_DTB_POINTER=0x200000000000
+if want redist-stride $only || want redist-stride-wide $only || want ram-above-pa $only || want sub-page-memory $only; then
+    vdt="$root/target/matrix-virt.dtb"
+    hdt="$root/target/matrix-hostile"
+    if qemu-system-aarch64 -machine "virt,gic-version=3,dumpdtb=$vdt" -cpu cortex-a72 -m 512M -smp 1 -nographic > target/matrix-hostile.dump 2>&1 < /dev/null \
+        && tools/fdt-patch.py "$vdt" "$hdt-stride.dtb" prop:intc@8000000:redistributor-stride:ffffffff,ffff0000 >> target/matrix-hostile.dump 2>&1 \
+        && tools/fdt-patch.py "$vdt" "$hdt-wide.dtb" prop:intc@8000000:redistributor-stride:000fffff,ffff0000 >> target/matrix-hostile.dump 2>&1 \
+        && tools/fdt-patch.py "$vdt" "$hdt-ram.dtb" memory:100000000000:200000 >> target/matrix-hostile.dump 2>&1 \
+        && tools/fdt-patch.py "$vdt" "$hdt-sub.dtb" memory:8000000000:800 >> target/matrix-hostile.dump 2>&1
+    then
+        at="-device loader,addr=0x4a000000,force-raw=on,file=$hdt"
+        # 프레임을 걷는 덧셈을 넘치게 하는 간격. 코어가 둘이면 첫 프레임이 마지막이
+        # 아니라서 한 걸음을 더 걷게 됨
+        refuse redist-stride "$img4" 0x40080000 "k0: platform rejected: BadRedistributor" K0_QEMU_SMP=2 K0_QEMU_EXTRA="-dtb $hdt-stride.dtb"
+        # 받아들이는 가장 큰 간격: 구간을 벗어나는 걸음은 구간의 끝으로 다루고 부팅함
+        pass redist-stride-wide "$img4" K0_QEMU_SMP=2 K0_QEMU_EXTRA="-dtb $hdt-wide.dtb" K0_BOOT_REQUIRE="stride=0xfffffffff0000 "
+        # 이 코어의 물리 주소 폭(cortex-a72는 44비트) 밖에 선언된 RAM
+        refuse ram-above-pa "$img4" 0x40080000 "k0: platform rejected: MemoryAboveLimit" K0_IMAGE_DTB_POINTER=0x4a000000 K0_QEMU_EXTRA="$at-ram.dtb"
+        # 온전한 페이지가 하나도 없는 메모리 구간은 untyped로 넘기지 않음
+        pass sub-page-memory "$img4" K0_IMAGE_DTB_POINTER=0x4a000000 K0_QEMU_EXTRA="$at-sub.dtb" K0_BOOT_REQUIRE="k0: memory 0x8000000000 + 0x800 not handed out (no whole page)|, 3 untyped,"
+    else
+        ran=$((ran + 1))
+        echo "matrix: hostile boot input FAIL (could not prepare the device trees)"
+        show target/matrix-hostile.dump
+        failed="$failed hostile-dtb"
+    fi
+fi
+
 # 다른 보드 모양: RAM이 0에서 시작, GICv3와 PL011이 다른 주소, EL2 진입
 pass versal          "$img4" K0_QEMU_MACHINE=xlnx-versal-virt K0_QEMU_CPU= K0_QEMU_SMP= K0_QEMU_MEM=2G
 

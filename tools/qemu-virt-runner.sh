@@ -13,6 +13,12 @@
 #   K0_QEMU_EXTRA        QEMU에 더 넘길 인자(공백으로 나눔)
 #   K0_IMAGE_TEXT_OFFSET Image 헤더의 text_offset을 이 값으로 바꾼 사본을 부팅
 #                        (같은 이미지를 다른 물리 주소에 적재시키는 시험)
+#   K0_IMAGE_DTB_POINTER 커널이 받는 DTB 포인터(x0)를 바꾼 사본을 부팅. end면
+#                        주소 범위의 맨 끝(0xFFFFFFFFFFFFFFF8)이고, 아니면 그
+#                        주소(16비트 조각 하나로 적을 수 있는 값). QEMU가 손대지
+#                        않은 디바이스 트리를 -device loader로 그 주소에 실어
+#                        부팅할 때도 씀(-dtb로 준 트리는 QEMU가 memory 노드를
+#                        자기 것으로 바꿈)
 #
 # 인자가 .efi로 끝나면(tools/build-loader.sh가 만든 UEFI 로더) 펌웨어를 거쳐
 # 부팅합니다. 이때 머신 기본값은 virt,gic-version=3,acpi=off 입니다(EDK2는
@@ -69,12 +75,31 @@ case "$elf" in
         echo "runner: this kernel has no console driver and prints nothing here (build with --features console to see output)" >&2
     fi
 
-    if [ -n "${K0_IMAGE_TEXT_OFFSET:-}" ]; then
-        patched="${elf}.${K0_IMAGE_TEXT_OFFSET}.bin"
-        python3 - "$img" "$patched" "$K0_IMAGE_TEXT_OFFSET" <<'PATCH'
+    if [ -n "${K0_IMAGE_TEXT_OFFSET:-}" ] || [ -n "${K0_IMAGE_DTB_POINTER:-}" ]; then
+        tag="${K0_IMAGE_TEXT_OFFSET:-}"
+        [ -z "${K0_IMAGE_DTB_POINTER:-}" ] || tag="${tag:+$tag.}dtb-${K0_IMAGE_DTB_POINTER}"
+        patched="${elf}.${tag}.bin"
+        python3 - "$img" "$patched" "${K0_IMAGE_TEXT_OFFSET:-}" "${K0_IMAGE_DTB_POINTER:-}" <<'PATCH'
 import struct, sys
 data = bytearray(open(sys.argv[1], "rb").read())
-data[8:16] = struct.pack("<Q", int(sys.argv[3], 0))
+if sys.argv[3]:
+    data[8:16] = struct.pack("<Q", int(sys.argv[3], 0))
+if sys.argv[4]:
+    # 헤더의 첫 명령은 진입점으로 가는 분기이고 둘째 자리는 비어 있음. 첫 자리에
+    # x0을 정하는 명령 하나를 넣고 분기를 한 칸 미룸
+    if sys.argv[4] == "end":
+        set_x0 = 0x928000E0  # movn x0, #7
+    else:
+        value = int(sys.argv[4], 0)
+        chunks = [(hw, (value >> (16 * hw)) & 0xFFFF) for hw in range(4)]
+        used = [c for c in chunks if c[1]]
+        if value >> 64 or len(used) != 1:
+            sys.exit("runner: K0_IMAGE_DTB_POINTER must be 'end' or a value with one 16-bit chunk set")
+        set_x0 = 0xD2800000 | used[0][0] << 21 | used[0][1] << 5  # movz x0, #chunk, lsl #(16 * hw)
+    code0, code1 = struct.unpack("<II", data[:8])
+    if code0 >> 26 != 0b000101 or code1 != 0:
+        sys.exit("runner: the image header does not start with a branch and an empty word")
+    data[:8] = struct.pack("<II", set_x0, code0 - 1)
 open(sys.argv[2], "wb").write(data)
 PATCH
         img="$patched"

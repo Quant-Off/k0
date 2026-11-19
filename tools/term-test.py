@@ -111,6 +111,48 @@ class Session:
         time.sleep(0.3)
         s.close()
 
+    def breaks(self, count):
+        """직렬 선에 break를 `count`번 겁니다. 모니터 연결 하나로 이어 보냅니다."""
+        s = socket.socket(socket.AF_UNIX)
+        seen = bytearray()
+
+        def drain():
+            # 모니터가 돌려주는 글자를 읽어 내야 다음 명령을 받음
+            try:
+                while True:
+                    got = s.recv(65536)
+                    if not got:
+                        raise Failure("the monitor closed during the break flood")
+                    seen.extend(got)
+            except socket.timeout:
+                pass
+
+        try:
+            s.settimeout(5)
+            s.connect(self.sock)
+            sent = 0
+            while sent < count:
+                n = min(32, count - sent)
+                s.settimeout(5)
+                s.sendall(b"chardev-send-break serial0\n" * n)
+                sent += n
+                s.settimeout(0.05)
+                drain()
+            # 앞의 명령이 모두 처리됐는지는 계산 하나의 답으로 확인함(답은 16진수로
+            # 나오므로 되돌아온 입력 글자와 섞이지 않음)
+            s.settimeout(5)
+            s.sendall(b"print 2121+2121\n")
+            s.settimeout(0.05)
+            deadline = time.time() + 60
+            while b"0x1092" not in seen:
+                if time.time() > deadline:
+                    raise Failure("the monitor did not finish %d breaks, last reply %r" % (count, bytes(seen[-80:])))
+                drain()
+        except OSError as e:
+            raise Failure("monitor socket during the break flood: %s" % e)
+        finally:
+            s.close()
+
     def send(self, data):
         self.proc.stdin.write(data)
         self.proc.stdin.flush()
@@ -156,6 +198,16 @@ class Session:
         self.send(keys)
         shown = (line.encode() if echo is None else echo) + b"\n"
         self.expect(shown + reply.encode() + PROMPT, timeout, what=repr(line))
+
+
+def qemu_version():
+    """QEMU의 (주, 부) 버전을 줍니다. 알 수 없으면 None입니다."""
+    try:
+        out = subprocess.run(["qemu-system-aarch64", "--version"], capture_output=True, timeout=20).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(rb"version (\d+)\.(\d+)", out)
+    return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 def boot_judge(root, image, log_path, boot, vault):
@@ -268,6 +320,19 @@ def session(s, vault, seed):
     s.monitor("chardev-send-break serial0")
     s.send(b"firm\r")
     s.expect(b"\nerr input-lost\n" + PROMPT, what="break")
+    # break의 홍수: 오류가 난 문자는 링의 자리를 쓰지 않으므로 커널이 틱마다
+    # 정해진 수까지만 받음. 입력 경로는 끊기지 않고, 홍수 뒤의 첫 줄은 유실로
+    # 알려지며 그다음 줄부터 정상임. 커널이 받지 않는 동안 break는 QEMU의 UART에
+    # 쌓이는데, 8.0 전의 QEMU는 break를 수신 FIFO에 넣을 때 깊이를 확인하지 않아
+    # 자기 상태를 덮어쓰므로 이 단계는 8.0부터만 돌림
+    version = qemu_version()
+    if version is not None and version >= (8, 0):
+        s.breaks(2000)
+        s.send(b"help\r")
+        s.expect(b"\nerr input-lost\n" + PROMPT, timeout=60, what="break flood")
+        s.run("help", full_help)
+    else:
+        print("term-test: break flood skipped (needs QEMU 8.0 or later, found %s)" % (version,))
     if vault == "ed25519":
         s.run("vault status", ready)
         s.run("vault zeroize confirm", "state=zeroized\nok\n")
