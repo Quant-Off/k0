@@ -186,6 +186,7 @@ name = "k0-mm"
 version = "0.1.0"
 dependencies = [
  "k0-abi",
+ "k0-cap",
 ]
 
 [[package]]

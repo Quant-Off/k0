@@ -583,8 +583,8 @@ fn scrub_boot_stack() {
 /// 수 없는 구간(너무 작거나 매핑에 실패한 구간)은 untyped로 넘기지 않고 한
 /// 줄을 남깁니다. 부팅을 거부하지는 않습니다(UEFI 로더의 사전 검사가 이
 /// 단계를 알지 못하므로 로더가 예측할 수 없는 거부를 만들지 않음). 온전한
-/// 그래뉼이 하나도 없는 틈은 오브젝트를 만들 수 없어 커널 몫도 필요 없으므로
-/// 그대로 넘깁니다.
+/// 그래뉼이 하나도 없는 틈도 오브젝트를 만들 수 없으므로 넘기지 않고 한 줄을
+/// 남깁니다.
 ///
 /// # Arguments
 /// `memory` - DTB가 보고한 물리 메모리 구간들
@@ -608,7 +608,15 @@ fn reserve_kernel_share(
     let mut count = 0;
     for m in memory {
         let _ = k0_cap::for_each_gap(*m, reserved, |gap| -> Result<(), ()> {
-            if count < out.len() {
+            if gap.whole(g).is_none() {
+                // 온전한 그래뉼이 없는 틈으로는 오브젝트를 만들 수 없음. 넘기면
+                // 쓸 수 없는 케이퍼빌리티가 되고 버퍼의 자리만 차지함
+                let _ = writeln!(
+                    con,
+                    "k0: memory {:#x} + {:#x} not handed out (no whole page)",
+                    gap.base, gap.size
+                );
+            } else if count < out.len() {
                 out[count] = gap;
                 count += 1;
             } else {
@@ -636,15 +644,11 @@ fn reserve_kernel_share(
         done[i] = true;
 
         let (base, size) = (out[i].base, out[i].size);
-        // 주소 범위의 맨 끝에 걸친 틈은 올림이 넘치므로 온전한 그래뉼이 없는
-        // 틈과 같이 다룸(끝 주소는 check_regions가 넘치지 않음을 확인함)
-        let Some(lo) = base.checked_next_multiple_of(g) else {
+        // 온전한 그래뉼이 없는 틈은 위에서 걸렀음. 그래도 남아 있으면 넘기지 않음
+        let Some((lo, hi)) = out[i].whole(g) else {
+            out[i].size = 0;
             continue;
         };
-        let hi = (base + size) / g * g;
-        if hi <= lo {
-            continue;
-        }
         let pages = (hi - lo) / g;
         let table_count = k0_mm::alias_tables_for(&(lo..hi));
         let entry_pages = (pages * 8).div_ceil(g);
@@ -833,9 +837,10 @@ fn enable_mmu(con: &mut EarlyCon) -> u64 {
 /// DTB를 TTBR1 별칭에 읽기 전용으로 매핑하는 함수입니다.
 ///
 /// 크기를 알려면 헤더를 읽어야 하므로 첫 그래뉼을 먼저 열고, 헤더가 말하는
-/// 크기(상한 2MiB)만큼 다시 엽니다. 포인터가 RAM이 아닌 곳을 가리키면 여기서의
-/// 읽기가 폴트로 정지합니다. 그 주소가 선언된 메모리 안인지는 메모리 맵을
-/// 읽은 뒤에 확인합니다.
+/// 크기(상한 2MiB)만큼 다시 엽니다. 주소 범위의 끝이나 이 코어의 물리 주소 폭을
+/// 넘는 포인터는 읽기 전에 거부합니다. 그 안에서 RAM이 아닌 곳을 가리키면
+/// 여기서의 읽기가 폴트로 정지할 수 있습니다. 그 주소가 선언된 메모리 안인지는
+/// 메모리 맵을 읽은 뒤에 확인합니다.
 fn map_dtb(con: &mut EarlyCon, dtb_phys: usize) {
     let fail = |con: &mut EarlyCon, what: &str| -> ! {
         let _ = writeln!(con, "k0: dtb rejected: {what}");
@@ -845,7 +850,13 @@ fn map_dtb(con: &mut EarlyCon, dtb_phys: usize) {
         fail(con, "bad pointer");
     }
     let start = dtb_phys as u64;
-    if k0_mm::map_dtb(start..start + 8).is_err() {
+    // 포인터는 부트로더가 준 값이라 주소 범위의 맨 끝일 수도, 이 코어의 물리 주소
+    // 폭 밖일 수도 있음. 폭 밖의 주소는 매핑은 되지만 읽는 순간 폴트가 남
+    let limit = 1u64 << k0_mm::pa_bits();
+    let Some(head) = start.checked_add(8).filter(|end| *end <= limit) else {
+        fail(con, "bad pointer");
+    };
+    if k0_mm::map_dtb(start..head).is_err() {
         fail(con, "header not mappable");
     }
     let span = match k0_boot::dtb_span(dtb_phys + k0_mm::KERNEL_VA_OFFSET as usize) {
@@ -855,7 +866,8 @@ fn map_dtb(con: &mut EarlyCon, dtb_phys: usize) {
             park()
         }
     };
-    if k0_mm::map_dtb(start..start + (span.end - span.start) as u64).is_err() {
+    let whole = start.checked_add((span.end - span.start) as u64).filter(|end| *end <= limit);
+    if whole.is_none_or(|end| k0_mm::map_dtb(start..end).is_err()) {
         fail(con, "not mappable");
     }
 }
@@ -1055,14 +1067,17 @@ fn bring_up_platform(
     // 거부로 끝나는 부팅에서도 어떤 이미지인지 로그에 남도록 맨 먼저 출력함
     let _ = writeln!(con, "{}", k0_arch::earlycon::DRIVERS_LINE);
     let off = k0_mm::KERNEL_VA_OFFSET as usize;
+    let device_limit = 1u64 << k0_mm::pa_bits();
     let layout = k0_boot::Layout {
         memory: bootinfo.memory(),
         reserved: bootinfo.reserved(),
         image: image.clone(),
         dtb: bootinfo.dtb.start as u64..bootinfo.dtb.end as u64,
         granule: k0_mm::GRANULE as u64,
-        ram_limit: k0_mm::PA_CEILING,
-        device_limit: 1u64 << k0_mm::pa_bits(),
+        // RAM은 선형 별칭의 한계와 이 코어의 물리 주소 폭을 모두 넘지 않아야 함.
+        // 폭을 넘는 RAM을 받아들이면 그 주소를 처음 건드릴 때 커널이 폴트로 멈춤
+        ram_limit: k0_mm::PA_CEILING.min(device_limit),
+        device_limit,
     };
 
     let found = match k0_boot::discover(dtb_phys, off) {

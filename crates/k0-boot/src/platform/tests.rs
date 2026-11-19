@@ -587,6 +587,16 @@ fn interrupt_controllers_are_validated() {
             Err(DiscoverError::BadRedistributor)
         );
     }
+    // 물리 주소 폭을 넘는 간격은 프레임을 걷는 덧셈을 넘치게 하므로 거부. 폭
+    // 안의 가장 큰 값까지는 받음(구간을 벗어나는 걸음은 커널이 끝으로 다룸)
+    for stride in [cells(&[0x0010_0000, 0]), cells(&[0xFFFF_FFFF, 0xFFFF_0000]), cells(&[0x8000_0000, 0])] {
+        assert_eq!(
+            edit(&|g| g.set("redistributor-stride", stride.clone())),
+            Err(DiscoverError::BadRedistributor)
+        );
+    }
+    let d = edit(&|g| g.set("redistributor-stride", cells(&[0x000F_FFFF, 0xFFFF_0000]))).unwrap();
+    assert!(d.platform.to_string().contains(" stride=0xfffffffff0000 "));
     let d = edit(&|g| g.set("redistributor-stride", cells(&[0, 0x4_0000]))).unwrap();
     assert!(d.platform.to_string().contains(" stride=0x40000 "));
 

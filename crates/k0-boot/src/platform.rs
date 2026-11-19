@@ -23,6 +23,10 @@ use crate::fdt::{dtb_span, BootError, MemRegion};
 
 /// 받아들이는 GICv3 리디스트리뷰터 구간 수의 상한
 pub const MAX_REDIST_REGIONS: usize = 4;
+/// 받아들이는 리디스트리뷰터 프레임 간격의 상한(이 값부터 거부). 커널이 쓰는
+/// 물리 주소는 48비트를 넘지 않으므로 넉넉한 값이고, 프레임을 걷는 덧셈이 넘치지
+/// 않게 하는 것이 목적임
+pub const MAX_REDIST_STRIDE: u64 = 1 << 52;
 
 /// PL011 드라이버가 건드리는 레지스터 범위(FR이 0x18에 있는 32비트 레지스터)
 const PL011_SPAN: u64 = 0x1C;
@@ -494,7 +498,10 @@ fn read_intc(levels: &Levels<'_>, node: &Node<'_>, depth: usize) -> Result<(Intc
                 None => 0,
                 Some(v) if v.len() == 4 || v.len() == 8 => {
                     let s = read_cells(v);
-                    if s < 0x2_0000 || s % 0x1_0000 != 0 {
+                    // 간격은 프레임 사이의 물리 주소 거리이므로 아키텍처의 물리
+                    // 주소 폭을 넘을 수 없음. 넘는 값은 프레임을 걷는 덧셈을
+                    // 넘치게 하려는 값으로 보고 거부함
+                    if s < 0x2_0000 || s % 0x1_0000 != 0 || s >= MAX_REDIST_STRIDE {
                         return Err(DiscoverError::BadRedistributor);
                     }
                     s
@@ -715,7 +722,8 @@ pub struct Layout<'a> {
     pub dtb: Range<u64>,
     /// 변환 그래뉼 크기
     pub granule: u64,
-    /// RAM이 넘으면 안 되는 물리 주소 상한(선형 별칭의 한계)
+    /// RAM이 넘으면 안 되는 물리 주소 상한(선형 별칭의 한계와 이 코어의 물리 주소
+    /// 폭 가운데 작은 쪽)
     pub ram_limit: u64,
     /// 디바이스가 넘으면 안 되는 물리 주소 상한(이 코어의 물리 주소 폭)
     pub device_limit: u64,

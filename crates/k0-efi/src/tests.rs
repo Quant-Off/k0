@@ -598,6 +598,13 @@ fn prepare_takes_reservations_from_the_kernel_parser() {
     let mut bench = Bench::new(maps::QEMU_EDK2_512M);
     assert_eq!(bench.run(&far.blob()).err(), Some(PrepareError::Validate(ValidateError::DeviceAboveLimit)));
 
+    // RAM이 이 CPU의 물리 주소 폭을 넘어도 커널의 대조가 거부함. 로더가 먼저
+    // 거부해야 사유가 펌웨어 콘솔에 남음
+    let mut high: Vec<D> = maps::QEMU_EDK2_512M.to_vec();
+    high.push((CONV, 1 << 41, 256, WB));
+    let mut bench = Bench::new(&high);
+    assert_eq!(bench.run(&virt3().blob()).err(), Some(PrepareError::Validate(ValidateError::MemoryAboveLimit)));
+
     // 커널이 받는 2MiB를 넘는 DTB는 버퍼에 들어가더라도 거부
     let mut big = virt3();
     big.kids.push(N::new("blob").p("data", vec![0x5a; 2 * 1024 * 1024]));

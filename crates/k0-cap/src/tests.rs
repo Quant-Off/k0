@@ -310,6 +310,26 @@ fn reserved_outside_memory_is_ignored() {
 }
 
 #[test]
+fn whole_granules_of_a_region() {
+    for g in [0x1000u64, 0x4000] {
+        // 그래뉼에 맞는 구간은 그대로, 걸친 구간은 안쪽의 온전한 그래뉼만
+        assert_eq!(r(4 * g, 3 * g).whole(g), Some((4 * g, 7 * g)));
+        assert_eq!(r(4 * g + 8, 3 * g).whole(g), Some((5 * g, 7 * g)));
+        assert_eq!(r(4 * g + 8, 2 * g - 8).whole(g), Some((5 * g, 6 * g)));
+        // 온전한 그래뉼이 없는 구간: 그래뉼보다 작거나, 두 그래뉼에 걸쳐 있거나
+        assert_eq!(r(4 * g, g - 1).whole(g), None);
+        assert_eq!(r(4 * g + 1, g).whole(g), None);
+        assert_eq!(r(4 * g + g / 2, g + g / 2 - 1).whole(g), None);
+        assert_eq!(r(4 * g, 0).whole(g), None);
+        // 주소 범위의 맨 끝: 올림이 넘치거나 끝 주소가 넘치면 없는 것으로 다룸
+        assert_eq!(r(u64::MAX - 0xFF, 0x80).whole(g), None);
+        assert_eq!(r(u64::MAX - 0xFF, 0x1000).whole(g), None);
+        assert_eq!(r(u64::MAX - 2 * g + 1, 2 * g).whole(g), None);
+        assert_eq!(r(u64::MAX - 2 * g + 1, 2 * g - 1).whole(g), Some((u64::MAX - 2 * g + 1, u64::MAX - g + 1)));
+    }
+}
+
+#[test]
 fn bad_regions_are_rejected() {
     let cases: [(&[PhysRegion], &[PhysRegion]); 6] = [
         (&[r(0x1000, 0)], &[]),
@@ -1606,4 +1626,368 @@ fn revoking_every_untyped_empties_the_world() {
             assert!(o.0 != 2 || boot.contains(o), "object {o:x?} survived the revocation of every untyped");
         }
     }
+}
+
+// 자기 참조, 순환, 깊은 중첩: 케이퍼빌리티가 자기를 담은 컨테이너나 자기가
+// 나온 untyped를 가리키는 모양에서도 삭제와 회수가 끝나고 불변식이 유지돼야 함
+
+impl World {
+    fn with(granule: u64, frames: u64) -> Self {
+        let root = node(ROOT_N);
+        let memory = [r(0x4000_0000, granule * frames), r(0x5000_0000, granule * 4)];
+        unsafe { bootstrap(&cref(root, ROOT_N), &BOOT, &memory, &[]) }.unwrap();
+        let mut w = World {
+            granule,
+            containers: BTreeMap::new(),
+            graveyard: Vec::new(),
+            objs: BTreeSet::new(),
+            torn: BTreeSet::new(),
+            finalized: 0,
+            ever: BTreeSet::new(),
+            reused: 0,
+        };
+        w.containers.insert(BOOT.cnode, (root, ROOT_N));
+        w.containers.insert(BOOT.tcb, (node(TCB_N), TCB_N));
+        for i in 1..ROOT_N {
+            if let Some(e) = get(root, i) {
+                w.objs.insert(ident(&e.cap));
+            }
+        }
+        w
+    }
+
+    fn root(&self) -> *mut Slot {
+        self.containers[&BOOT.cnode].0
+    }
+
+    /// `step`과 같은 장부로 retype하는 함수입니다. 새 오브젝트의 주소와, 컨테이너면
+    /// 그 슬롯 배열(아니면 null)을 돌려줍니다.
+    fn make(&mut self, ut: *mut Slot, dest: *mut Slot, kind: ObjKind) -> (u64, *mut Slot) {
+        let g = self.granule;
+        let mut at = None;
+        unsafe {
+            retype(ut, dest, kind, g, |pa| {
+                at = Some(pa);
+                Some(7)
+            })
+        }
+        .unwrap();
+        let pa = at.unwrap();
+        assert!(self.objs.insert((2, pa)));
+        self.ever.insert(pa);
+        let arr = match kind {
+            ObjKind::CNode => {
+                let n = (g / SLOT_SIZE as u64) as usize;
+                let a = node(n);
+                self.containers.insert(pa, (a, n));
+                a
+            }
+            ObjKind::Tcb => {
+                let a = node(TCB_N);
+                self.containers.insert(pa, (a, TCB_N));
+                a
+            }
+            _ => std::ptr::null_mut(),
+        };
+        (pa, arr)
+    }
+}
+
+/// 자기 원본을 자기 안에 든 CNode를 만드는 함수입니다.
+///
+/// CNode C의 원본은 C의 3번 슬롯에, 사본 C'은 루트에 둡니다. 엔드포인트의 원본은
+/// C의 4번 슬롯에, 사본은 루트에 둡니다. TCB(원본은 루트)는 C'을 통해 C에
+/// 묶습니다. (모형, C의 배열, C'의 슬롯, 엔드포인트 사본의 슬롯, C의 주소,
+/// 엔드포인트의 주소, TCB의 배열)을 돌려줍니다.
+fn self_holding(granule: u64) -> (World, *mut Slot, *mut Slot, *mut Slot, u64, u64, *mut Slot) {
+    let mut w = World::with(granule, 16);
+    let root = w.root();
+    unsafe {
+        let ut = root.add(5);
+        let (c_pa, c) = w.make(ut, root.add(10), ObjKind::CNode);
+        copy(root.add(10), root.add(11), rights::ALL, 0, false).unwrap();
+        move_cap(root.add(10), c.add(3)).unwrap();
+        let (e_pa, _) = w.make(ut, root.add(12), ObjKind::Endpoint);
+        copy(root.add(12), root.add(13), rights::ALL, 0, false).unwrap();
+        move_cap(root.add(12), c.add(4)).unwrap();
+        let (_, t) = w.make(ut, root.add(14), ObjKind::Tcb);
+        let (_, _) = w.make(ut, root.add(15), ObjKind::AddrSpace);
+        copy_pair_bound(root.add(11), t.add(1), root.add(15), t.add(2)).unwrap();
+        w.check();
+        (w, c, root.add(11), root.add(13), c_pa, e_pa, t)
+    }
+}
+
+#[test]
+fn a_cnode_holding_its_own_original_revoke_then_delete() {
+    for g in [4096u64, 16384] {
+        let (mut w, c, c_copy, e_copy, c_pa, e_pa, t) = self_holding(g);
+        unsafe {
+            // CNode 자신 안에 있는 슬롯으로 원본을 회수함
+            revoke(c.add(3), &mut w).unwrap();
+            w.check();
+            assert!(read(c_copy).unwrap().is_none(), "the copy went away");
+            assert!(read(t.add(1)).unwrap().is_none(), "the bound copy went away");
+            assert!(w.torn.contains(&(t as u64)), "the bound TCB was told");
+            assert!(w.objs.contains(&(2, c_pa)), "the CNode object itself survives a revoke");
+            assert!(read(c.add(3)).unwrap().is_some());
+            // 두 번째 회수는 아무 일도 하지 않음
+            revoke(c.add(3), &mut w).unwrap();
+            w.check();
+            // 이제 안에서 원본을 삭제함
+            delete(c.add(3), &mut w).unwrap();
+            w.check();
+            assert!(!w.objs.contains(&(2, c_pa)));
+            assert!(!w.objs.contains(&(2, e_pa)), "what the CNode held was finalized");
+            assert!(read(e_copy).unwrap().is_none(), "copies of what it held are gone too");
+        }
+    }
+}
+
+#[test]
+fn a_cnode_holding_its_own_original_delete_first_and_other_orders() {
+    for g in [4096u64, 16384] {
+        // 곧바로 삭제
+        let (mut w, c, c_copy, e_copy, c_pa, e_pa, _t) = self_holding(g);
+        unsafe {
+            delete(c.add(3), &mut w).unwrap();
+            w.check();
+            assert!(!w.objs.contains(&(2, c_pa)) && !w.objs.contains(&(2, e_pa)));
+            assert!(read(c_copy).unwrap().is_none() && read(e_copy).unwrap().is_none());
+            // 죽은 배열의 슬롯을 다시 삭제해도 아무 일도 없음(빈 슬롯)
+            delete(c.add(3), &mut w).unwrap();
+            w.check();
+        }
+        // 사본만 삭제: 오브젝트는 루트에서 닿지 않는 채로 남고, untyped를 회수하면 사라짐
+        let (mut w, _c, c_copy, _e_copy, c_pa, e_pa, t) = self_holding(g);
+        unsafe {
+            delete(c_copy, &mut w).unwrap();
+            w.check();
+            assert!(w.objs.contains(&(2, c_pa)), "orphaned self-holding CNode is still alive");
+            assert!(w.torn.contains(&(t as u64)));
+            let root = w.root();
+            revoke(root.add(5), &mut w).unwrap();
+            w.check();
+            assert!(!w.objs.contains(&(2, c_pa)) && !w.objs.contains(&(2, e_pa)));
+            assert!(!has_descendants(root.add(5)));
+        }
+        // 모든 것이 살아 있는 채로 untyped를 바로 회수
+        let (mut w, _c, _c_copy, _e_copy, c_pa, _e_pa, _t) = self_holding(g);
+        unsafe {
+            let root = w.root();
+            revoke(root.add(5), &mut w).unwrap();
+            w.check();
+            assert!(!w.objs.contains(&(2, c_pa)));
+            // 그 메모리는 처음부터 다시 나감
+            let (pa, _) = w.make(root.add(5), root.add(20), ObjKind::Frame);
+            assert_eq!(pa, 0x4000_0000);
+            w.check();
+        }
+        // untyped를 회수가 아니라 삭제
+        let (mut w, _c, _c_copy, _e_copy, c_pa, _e_pa, _t) = self_holding(g);
+        unsafe {
+            let root = w.root();
+            delete(root.add(5), &mut w).unwrap();
+            w.check();
+            assert!(!w.objs.contains(&(2, c_pa)));
+            assert!(read(root.add(5)).unwrap().is_none());
+        }
+    }
+}
+
+#[test]
+fn an_untyped_parked_inside_a_cnode_carved_from_it() {
+    for g in [4096u64, 16384] {
+        let mut w = World::with(g, 16);
+        let root = w.root();
+        unsafe {
+            let (c_pa, c) = w.make(root.add(5), root.add(10), ObjKind::CNode);
+            let (f_pa, _) = w.make(root.add(5), root.add(11), ObjKind::Frame);
+            // untyped 자신을, 거기서 떼어 만든 CNode 안에 넣음
+            move_cap(root.add(5), c.add(7)).unwrap();
+            w.check();
+            // 그 슬롯으로 회수: CNode가 죽고, 그 안을 비우면서 untyped 케이퍼빌리티도 삭제됨
+            revoke(c.add(7), &mut w).unwrap();
+            w.check();
+            assert!(!w.objs.contains(&(2, c_pa)) && !w.objs.contains(&(2, f_pa)));
+            assert!(!w.objs.contains(&(0, 0x4000_0000)), "the untyped cap was destroyed with its holder");
+        }
+        // 삭제로도 같고, CNode의 원본까지 자기 안에 있어도 같음
+        let mut w = World::with(g, 16);
+        let root = w.root();
+        unsafe {
+            let (c_pa, c) = w.make(root.add(5), root.add(10), ObjKind::CNode);
+            move_cap(root.add(5), c.add(7)).unwrap();
+            move_cap(root.add(10), c.add(8)).unwrap();
+            w.check();
+            delete(c.add(7), &mut w).unwrap();
+            w.check();
+            assert!(!w.objs.contains(&(2, c_pa)));
+        }
+    }
+}
+
+#[test]
+fn two_cnodes_holding_each_others_original() {
+    for order in 0..4 {
+        let mut w = World::with(4096, 16);
+        let root = w.root();
+        unsafe {
+            let (a_pa, a) = w.make(root.add(5), root.add(10), ObjKind::CNode);
+            let (b_pa, b) = w.make(root.add(5), root.add(11), ObjKind::CNode);
+            copy(root.add(10), root.add(12), rights::ALL, 0, false).unwrap();
+            copy(root.add(11), root.add(13), rights::ALL, 0, false).unwrap();
+            // A의 원본은 B에, B의 원본은 A에 둠
+            move_cap(root.add(10), b.add(1)).unwrap();
+            move_cap(root.add(11), a.add(1)).unwrap();
+            w.check();
+            match order {
+                // B를 통해 A를 삭제, A를 통해 B를 삭제
+                0 => delete(b.add(1), &mut w).unwrap(),
+                1 => delete(a.add(1), &mut w).unwrap(),
+                2 => {
+                    revoke(b.add(1), &mut w).unwrap();
+                    w.check();
+                    revoke(a.add(1), &mut w).unwrap();
+                    w.check();
+                    // 둘 다 루트에서 닿지 않음. untyped로만 되찾을 수 있음
+                    assert!(w.objs.contains(&(2, a_pa)) && w.objs.contains(&(2, b_pa)));
+                    revoke(root.add(5), &mut w).unwrap()
+                }
+                _ => {
+                    delete(root.add(12), &mut w).unwrap();
+                    delete(root.add(13), &mut w).unwrap();
+                    w.check();
+                    revoke(root.add(5), &mut w).unwrap()
+                }
+            }
+            w.check();
+            assert!(!w.objs.contains(&(2, a_pa)) && !w.objs.contains(&(2, b_pa)), "order {order}");
+        }
+    }
+}
+
+#[test]
+fn cnodes_nested_through_cnodes_with_tcbs_bound_across_levels() {
+    on_small_stack(|| {
+        const DEPTH: usize = 400;
+        let mut w = World::with(4096, 3 * DEPTH as u64 + 8);
+        let root = w.root();
+        unsafe {
+            let ut = root.add(5);
+            // i번째 층: CNode_i의 원본은 CNode_{i-1}의 1번 슬롯에 있음. CNode_i의 2번
+            // 슬롯에는 TCB의 원본이 있고, 그 TCB의 묶인 슬롯에는 CNode_i와 CNode_i의
+            // 3번 슬롯에 있는 주소 공간의 사본이 있음
+            let mut holder = root.add(10);
+            let mut top = std::ptr::null_mut();
+            for i in 0..DEPTH {
+                let (_, c) = w.make(ut, root.add(20), ObjKind::CNode);
+                let (_, t) = w.make(ut, c.add(2), ObjKind::Tcb);
+                let (_, _) = w.make(ut, c.add(3), ObjKind::AddrSpace);
+                copy_pair_bound(root.add(20), t.add(1), c.add(3), t.add(2)).unwrap();
+                move_cap(root.add(20), holder).unwrap();
+                if i == 0 {
+                    top = holder;
+                }
+                holder = c.add(1);
+            }
+            w.check();
+            let before = w.finalized;
+            delete(top, &mut w).unwrap();
+            w.check();
+            assert_eq!(w.finalized - before, 3 * DEPTH as u64);
+            assert_eq!(w.torn.len(), DEPTH);
+            assert!(!has_descendants(ut));
+        }
+    });
+}
+
+/// 위의 무작위 모형 검사에 자기 참조를 노리는 연산 둘을 더한 것입니다. 컨테이너의
+/// 원본을 그 컨테이너 안에 넣는 것과, untyped를 CNode 안에 넣는 것입니다(그
+/// untyped에서 떼어 만든 CNode일 때가 많음). 씨앗과 회차도 다릅니다.
+#[test]
+fn random_sequences_with_self_reference_keep_every_invariant() {
+    let mut finalized = 0;
+    let mut selfs = 0;
+    for seed in [0x9E37_79B9_7F4A_7C15u64, 0xD1B5_4A32_D192_ED03, 0x1234_5678_9ABC_DEF1, 0x0F0F_1E1E_2D2D_3C3C] {
+        let mut rng = Rng(seed);
+        for round in 0..250 {
+            let granule = if round % 2 == 0 { 4096 } else { 16384 };
+            let mut w = World::new(granule, &mut rng);
+            for _ in 0..300 {
+                if rng.below(9) == 0 {
+                    // 컨테이너의 원본을 자기 안에 넣음(또는 untyped를 아무 CNode에나 넣음)
+                    let mut cands = Vec::new();
+                    for &(base, n) in w.containers.values().filter(|c| c.1 != TCB_N) {
+                        for i in 1..n {
+                            let s = unsafe { base.add(i) };
+                            if let Some(e) = unsafe { read(s) }.unwrap() {
+                                match e.cap {
+                                    Cap::CNode { base: pa, .. } if e.original => {
+                                        if let Some(&(arr, m)) = w.containers.get(&pa) {
+                                            cands.push((s, arr, m));
+                                        }
+                                    }
+                                    Cap::Untyped { .. } => {
+                                        // 루트가 아닌 살아 있는 CNode 아무거나
+                                        for (&pa, &(arr, m)) in w.containers.iter() {
+                                            if m != TCB_N && pa != BOOT.cnode {
+                                                cands.push((s, arr, m));
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    if !cands.is_empty() {
+                        let (s, arr, m) = cands[rng.below(cands.len() as u64) as usize];
+                        let d = unsafe { arr.add(1 + rng.below(m as u64 - 1) as usize) };
+                        if unsafe { move_cap(s, d) }.is_ok() {
+                            selfs += 1;
+                        }
+                    }
+                } else {
+                    w.step(&mut rng);
+                }
+                w.check();
+            }
+            finalized += w.finalized;
+        }
+    }
+    assert!(finalized > 5_000, "only {finalized} finalized");
+    assert!(selfs > 300, "only {selfs} self-parking moves happened");
+}
+
+/// 온전한 그래뉼이 없는 untyped에서는 아무것도 만들 수 없고, 메모리를 준비하는
+/// 콜백에도 닿지 않습니다. 커널은 그런 틈을 untyped로 넘기지 않지만, 넘어왔다고
+/// 해도 이 층에서 막힙니다.
+#[test]
+fn an_untyped_without_a_whole_granule_never_yields_an_object() {
+    let mut rng = Rng(0x5DEE_CE66_D1CE_4E5B);
+    let mut tried = 0;
+    for g in [4096u64, 16384] {
+        for _ in 0..4000 {
+            // 구간 안에 그래뉼 경계에 맞는 그래뉼이 하나도 없게 시작과 크기를 고름
+            let page = 0x4000_0000 + rng.below(1 << 20) * g;
+            let off = 1 + rng.below(g - 1);
+            let base = page + off;
+            let size = 1 + rng.below(2 * g - off - 1);
+            assert_eq!(r(base, size).whole(g), None);
+            tried += 1;
+            let c = node(8);
+            unsafe {
+                insert_root(c.add(1), Cap::Untyped { base, size, used: 0 }).unwrap();
+                for kind in [ObjKind::Frame, ObjKind::PageTable, ObjKind::Tcb, ObjKind::Endpoint, ObjKind::CNode, ObjKind::AddrSpace] {
+                    let r = retype(c.add(1), c.add(2), kind, g, |_| panic!("prep reached for a gap without a granule"));
+                    assert_eq!(r, Err(CapError::Exhausted));
+                }
+                assert_eq!(copy(c.add(1), c.add(2), rights::ALL, 0, false), Err(CapError::NotCopyable));
+                assert_eq!(cap_at(c, 1), Cap::Untyped { base, size, used: 0 });
+            }
+        }
+    }
+    assert!(tried > 4000, "only {tried} gaps without a granule were tried");
 }

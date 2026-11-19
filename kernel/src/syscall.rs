@@ -35,7 +35,7 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use k0_abi::err;
-use k0_arch::earlycon::EarlyCon;
+use k0_arch::earlycon::{EarlyCon, TaskLine};
 use k0_arch::usermode::Context;
 use k0_cap::{Cap, CapError, CNodeRef, Entry, Mapping, Slot};
 use k0_task::{TaskState, Tcb};
@@ -64,7 +64,6 @@ const _: () = {
 extern "C" fn k0_syscall(ctx: &mut Context) {
     use k0_abi::syscall as nr;
 
-    let mut con = EarlyCon;
     let a = [ctx.x[0], ctx.x[1], ctx.x[2], ctx.x[3], ctx.x[4], ctx.x[5]];
     // Some(v)는 x0에 쓸 반환값, None은 핸들러가 컨텍스트 기록을 이미 끝낸 경우
     let ret: Option<i64> = match ctx.x[8] {
@@ -76,7 +75,8 @@ extern "C" fn k0_syscall(ctx: &mut Context) {
             None
         }
         nr::EXIT => {
-            let _ = writeln!(con, "k0: task exited (code {})", a[0]);
+            // 태스크가 끝날 때마다 나오는 줄은 로그의 정해진 몫까지만 남김
+            let _ = writeln!(TaskLine::begin(), "k0: task exited (code {})", a[0]);
             kill_current();
             None
         }
@@ -115,7 +115,7 @@ extern "C" fn k0_syscall(ctx: &mut Context) {
             ipc_or_idle(ctx, switched)
         }
         other => {
-            let _ = writeln!(con, "k0: unknown syscall {other}, killing task");
+            let _ = writeln!(TaskLine::begin(), "k0: unknown syscall {other}, killing task");
             kill_current();
             None
         }
@@ -135,10 +135,9 @@ extern "C" fn k0_syscall(ctx: &mut Context) {
 /// `far` - FAR_EL1(어보트 계열에서만 의미 있음)
 #[unsafe(no_mangle)]
 extern "C" fn k0_fault(ctx: &mut Context, esr: u64, far: u64) {
-    let mut con = EarlyCon;
     let ec = k0_arch::vectors::ec_name((esr >> 26) & 0x3F);
     let _ = writeln!(
-        con,
+        TaskLine::begin(),
         "k0: task fault {ec} (esr {esr:#x} elr {:#x} far {far:#x}), killing task",
         ctx.elr
     );

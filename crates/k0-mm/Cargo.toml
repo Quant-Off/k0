@@ -14,3 +14,6 @@ granule-16k = []
 
 [dependencies]
 k0-abi = { path = "../k0-abi" }
+
+[dev-dependencies]
+k0-cap = { path = "../k0-cap" }

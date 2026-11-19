@@ -98,6 +98,10 @@ mod pl011 {
         with(|rx, regs| rx.poll(regs));
     }
 
+    pub fn tick() {
+        with(|rx, regs| rx.tick(regs));
+    }
+
     pub fn has_data() -> bool {
         with(|rx, _| rx.has_data()).unwrap_or(false)
     }
@@ -132,6 +136,8 @@ mod pl011 {
     pub fn flush() {}
 
     pub fn poll() {}
+
+    pub fn tick() {}
 
     pub fn has_data() -> bool {
         false
@@ -183,10 +189,16 @@ pub fn flush() {
     pl011::flush();
 }
 
-/// 인터럽트 없이 장치의 FIFO를 들여다보는 함수입니다. 틱마다, 그리고 읽는
-/// 태스크가 잠들기 직전에 부릅니다.
+/// 인터럽트 없이 장치의 FIFO를 들여다보는 함수입니다. 읽는 태스크가 잠들기
+/// 직전에 부릅니다.
 pub fn poll() {
     pl011::poll();
+}
+
+/// 틱마다 한 번 부르는 함수입니다. 버린 오류 문자의 수를 다시 세기 시작하고
+/// 장치의 FIFO를 들여다봅니다.
+pub fn tick() {
+    pl011::tick();
 }
 
 /// 꺼낼 바이트가 있는지 알려 주는 함수입니다.

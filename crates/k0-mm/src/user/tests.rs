@@ -450,3 +450,353 @@ fn the_top_level_covers_the_whole_48_bit_user_range() {
         assert_eq!(user_install_table(root, 1 << 48, table()), Err(MmuError::Misaligned));
     }
 }
+
+/// 케이퍼빌리티(k0-cap), 주소 공간 등록부, 사용자 테이블 워커를 한데 묶어 무작위
+/// 연산열로 돌리는 테스트 모듈입니다.
+///
+/// 정리 콜백은 커널의 것(kernel/src/object.rs의 Frame, PageTable, AddrSpace
+/// 처리)을 본떴습니다. 커널이 정지로 처리하는 경우들이 태스크의 연산 순서로는
+/// 생기지 않는지를 봅니다. 어떤 워커도 BadTable을 내지 않고, 등록부 해제가
+/// 실패하지 않고, 살아 있는 AddrSpace 케이퍼빌리티는 등록부에서도 살아 있고,
+/// 살아 있는 주소 공간은 살아 있는 오브젝트가 아닌 테이블이나 프레임에 닿지
+/// 않아야 합니다.
+mod composed {
+    use super::*;
+    use k0_cap::{Cap, CapError, Entry, Mapping, ObjKind, Removed, Slot};
+    use std::collections::BTreeSet;
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    struct Kern {
+        reg: AddrSpaces,
+        bad_table: u32,
+        release_failed: u32,
+        registry_mismatch: u32,
+        /// 살아 있는 슬롯 배열들의 (주소, 슬롯 수)
+        cnodes: Vec<(u64, usize)>,
+        unmapped: u64,
+        uninstalled: u64,
+        released: u64,
+        frame_maps: u64,
+    }
+
+    impl k0_cap::Env for Kern {
+        fn removed(&mut self, r: &Removed) {
+            // SAFETY: 테이블은 이 테스트가 잡은 호스트 메모리임
+            unsafe {
+                match r.cap {
+                    Cap::Frame { base, map: Some(m), .. } => {
+                        if let Some(root) = self.reg.resolve(m.asid, m.generation) {
+                            match user_unmap_frame(root, m.va, base) {
+                                Ok(true) => self.unmapped += 1,
+                                Ok(false) => {}
+                                Err(_) => self.bad_table += 1,
+                            }
+                        }
+                    }
+                    Cap::PageTable { base, map: Some(m) } => {
+                        if let Some(root) = self.reg.resolve(m.asid, m.generation) {
+                            match user_uninstall_table(root, m.va, u32::from(m.level), base) {
+                                Ok(true) => self.uninstalled += 1,
+                                Ok(false) => {}
+                                Err(_) => self.bad_table += 1,
+                            }
+                        }
+                    }
+                    Cap::AddrSpace { root_pa, asid } if r.original => {
+                        if self.reg.release(asid, root_pa) {
+                            self.released += 1;
+                        } else {
+                            self.release_failed += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        fn container(&mut self, cap: &Cap) -> Option<(*mut Slot, usize)> {
+            match *cap {
+                Cap::CNode { base, slots } => {
+                    let before = self.cnodes.len();
+                    self.cnodes.retain(|c| c.0 != base);
+                    assert_eq!(self.cnodes.len() + 1, before, "a CNode is finalized exactly once");
+                    Some((base as *mut Slot, slots as usize))
+                }
+                _ => None,
+            }
+        }
+    }
+
+    fn va_of(i: [u64; 4]) -> u64 {
+        let ps = GRANULE.trailing_zeros() as u64;
+        let bits = ps - 3;
+        (i[0] << (ps + 3 * bits)) | (i[1] << (ps + 2 * bits)) | (i[2] << (ps + bits)) | (i[3] << ps)
+    }
+
+    fn slot_of(k: &Kern, rng: &mut Rng) -> *mut Slot {
+        let (base, n) = k.cnodes[rng.below(k.cnodes.len() as u64) as usize];
+        (base + (1 + rng.below(n as u64 - 1)) * 64) as *mut Slot
+    }
+
+    fn pick(k: &Kern, rng: &mut Rng, want: impl Fn(&Option<Entry>) -> bool) -> *mut Slot {
+        for _ in 0..24 {
+            let s = slot_of(k, rng);
+            if want(&unsafe { k0_cap::read(s) }.unwrap()) {
+                return s;
+            }
+        }
+        slot_of(k, rng)
+    }
+
+    /// kernel/src/syscall.rs의 sys_map을 본뜬 함수입니다.
+    unsafe fn op_map(k: &mut Kern, s: *mut Slot, va: u64, aspace: *mut Slot) {
+        unsafe {
+            let Some(Entry { cap: Cap::AddrSpace { root_pa, asid }, .. }) = k0_cap::read(aspace).unwrap() else {
+                return;
+            };
+            let generation = match k.reg.get(asid) {
+                Some((root, generation)) if root == root_pa => generation,
+                _ => {
+                    k.registry_mismatch += 1;
+                    return;
+                }
+            };
+            match k0_cap::read(s).unwrap() {
+                Some(Entry { cap: Cap::Frame { base, rights, map: None }, .. }) => {
+                    match user_map_frame(root_pa, va, base, UserPerm::RwUser) {
+                        Ok(()) => {
+                            k.frame_maps += 1;
+                            let map = Some(Mapping { asid, generation, va, level: 3 });
+                            k0_cap::update(s, Cap::Frame { base, rights, map }).unwrap();
+                        }
+                        Err(MmuError::BadTable) => k.bad_table += 1,
+                        Err(_) => {}
+                    }
+                }
+                Some(Entry { cap: Cap::PageTable { base, map: None }, .. }) => {
+                    match user_install_table(root_pa, va, base) {
+                        Ok(level) => {
+                            let map = Some(Mapping { asid, generation, va: va & !(G - 1), level: level as u8 });
+                            k0_cap::update(s, Cap::PageTable { base, map }).unwrap();
+                        }
+                        Err(MmuError::BadTable) => k.bad_table += 1,
+                        Err(_) => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 같은 파일의 sys_unmap을 본뜬 함수입니다.
+    unsafe fn op_unmap(k: &mut Kern, s: *mut Slot) {
+        unsafe {
+            match k0_cap::read(s).unwrap() {
+                Some(Entry { cap: Cap::Frame { base, rights, map: Some(m) }, .. }) => {
+                    if let Some(root) = k.reg.resolve(m.asid, m.generation) {
+                        if user_unmap_frame(root, m.va, base).is_err() {
+                            k.bad_table += 1;
+                        }
+                    }
+                    k0_cap::update(s, Cap::Frame { base, rights, map: None }).unwrap();
+                }
+                Some(Entry { cap: Cap::PageTable { base, map: Some(m) }, .. }) => {
+                    if let Some(root) = k.reg.resolve(m.asid, m.generation) {
+                        if user_uninstall_table(root, m.va, u32::from(m.level), base).is_err() {
+                            k.bad_table += 1;
+                        }
+                    }
+                    zero_table(base);
+                    k0_cap::update(s, Cap::PageTable { base, map: None }).unwrap();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 살아 있는 주소 공간이 살아 있는 테이블(각각 한 번씩)과 살아 있는 프레임에만
+    /// 닿는지 확인하는 함수입니다.
+    fn check(k: &Kern) {
+        assert_eq!((k.bad_table, k.release_failed, k.registry_mismatch), (0, 0, 0));
+        let (mut frames, mut tables, mut roots) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
+        for &(base, n) in &k.cnodes {
+            for i in 1..n {
+                let s = (base + i as u64 * 64) as *mut Slot;
+                match unsafe { k0_cap::read(s) }.expect("slot decodes") {
+                    Some(Entry { cap: Cap::Frame { base, .. }, .. }) => {
+                        frames.insert(base);
+                    }
+                    Some(Entry { cap: Cap::PageTable { base, .. }, .. }) => {
+                        assert!(tables.insert(base), "two capabilities name one page table");
+                    }
+                    Some(Entry { cap: Cap::AddrSpace { root_pa, asid }, original, .. }) => {
+                        assert_eq!(k.reg.get(asid).map(|x| x.0), Some(root_pa), "live cap, dead registry entry");
+                        if original {
+                            roots.push(root_pa);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut seen = BTreeSet::new();
+        for root in roots {
+            let mut stack = vec![(root, 0u32)];
+            while let Some((t, level)) = stack.pop() {
+                for idx in 0..GRANULE / 8 {
+                    // SAFETY: t는 아레나 안의 살아 있는 테이블임
+                    let e = unsafe { entry_ptr(t, idx).read() };
+                    if e == 0 {
+                        continue;
+                    }
+                    assert_eq!(e & 0b11, 0b11, "an entry that is neither table nor page");
+                    let pa = e & ADDR_MASK;
+                    if level < 3 {
+                        assert!(tables.contains(&pa), "a live address space reaches a table that is not a live object");
+                        assert!(seen.insert(pa), "a table is reachable twice");
+                        stack.push((pa, level + 1));
+                    } else {
+                        assert!(frames.contains(&pa), "a live address space maps a frame that is not a live object");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn caps_registry_and_walkers_survive_random_sequences() {
+        const N: u64 = 96;
+        let layout = std::alloc::Layout::from_size_align(GRANULE * N as usize, GRANULE).unwrap();
+        let mut totals = (0u64, 0u64, 0u64, 0u64, 0u64);
+        for seed in [0x9E37_79B9_7F4A_7C15u64, 0xC2B2_AE3D_27D4_EB4F, 0x1656_67B1_9E37_79F9] {
+            let mut rng = Rng(seed);
+            for _round in 0..60 {
+                // SAFETY: 크기가 0이 아닌 배치임
+                let arena = unsafe { std::alloc::alloc_zeroed(layout) } as u64;
+                assert!(arena != 0 && (arena + N * G) & !ADDR_MASK == 0);
+                let root: *mut Slot = Box::leak(vec![0u64; 8 * 64].into_boxed_slice()).as_mut_ptr().cast();
+                let mut k = Kern {
+                    reg: registry(arena, N),
+                    bad_table: 0,
+                    release_failed: 0,
+                    registry_mismatch: 0,
+                    cnodes: vec![(root as u64, 64)],
+                    unmapped: 0,
+                    uninstalled: 0,
+                    released: 0,
+                    frame_maps: 0,
+                };
+                let ut = unsafe { root.add(1) };
+                unsafe { k0_cap::insert_root(ut, Cap::Untyped { base: arena, size: N * G, used: 0 }) }.unwrap();
+                let mut reuse = 0u64;
+                for _step in 0..1200 {
+                    let filled = |e: &Option<Entry>| e.is_some();
+                    let empty = |e: &Option<Entry>| e.is_none();
+                    let mappable = |e: &Option<Entry>| {
+                        matches!(e, Some(Entry { cap: Cap::Frame { .. } | Cap::PageTable { .. }, .. }))
+                    };
+                    let aspace = |e: &Option<Entry>| matches!(e, Some(Entry { cap: Cap::AddrSpace { .. }, .. }));
+                    let va = if rng.below(5) == 0 {
+                        va_of([rng.below(2), rng.below(2), rng.below(2), 1 + rng.below(3)])
+                    } else {
+                        va_of([0, 0, rng.below(2), 1 + rng.below(3)])
+                    };
+                    // SAFETY: 슬롯은 모두 살아 있는 슬롯 배열 안에 있고 아레나도 살아 있음
+                    unsafe {
+                        match rng.below(100) {
+                            0..=27 => {
+                                let dest = pick(&k, &mut rng, empty);
+                                let kind = match rng.below(20) {
+                                    0..=7 => ObjKind::Frame,
+                                    8..=16 => ObjKind::PageTable,
+                                    17..=18 => ObjKind::AddrSpace,
+                                    _ => ObjKind::CNode,
+                                };
+                                let mut made = None;
+                                let reg = &mut k.reg;
+                                let r = k0_cap::retype(ut, dest, kind, G, |pa| {
+                                    std::ptr::write_bytes(pa as *mut u8, 0, GRANULE);
+                                    made = Some(pa);
+                                    if kind == ObjKind::AddrSpace { reg.register(pa) } else { Some(0) }
+                                });
+                                match r {
+                                    Ok(()) => {
+                                        if kind == ObjKind::CNode {
+                                            k.cnodes.push((made.unwrap(), GRANULE / 64));
+                                        }
+                                        if made == Some(arena) {
+                                            reuse += 1;
+                                        }
+                                    }
+                                    Err(CapError::PrepFailed) => panic!("the registry refused a granule of the untyped"),
+                                    Err(_) => {}
+                                }
+                            }
+                            28..=62 => {
+                                let (s, a) = (pick(&k, &mut rng, mappable), pick(&k, &mut rng, aspace));
+                                op_map(&mut k, s, va, a);
+                            }
+                            63..=70 => {
+                                let s = pick(&k, &mut rng, mappable);
+                                op_unmap(&mut k, s);
+                            }
+                            71..=78 => {
+                                let (s, d) = (pick(&k, &mut rng, filled), pick(&k, &mut rng, empty));
+                                let _ = k0_cap::copy(s, d, k0_cap::rights::ALL, 0, false);
+                            }
+                            79..=83 => {
+                                let (s, d) = (pick(&k, &mut rng, filled), pick(&k, &mut rng, empty));
+                                if s != ut {
+                                    let _ = k0_cap::move_cap(s, d);
+                                }
+                            }
+                            84..=88 => {
+                                let s = pick(&k, &mut rng, filled);
+                                if s != ut {
+                                    k0_cap::delete(s, &mut k).unwrap();
+                                }
+                            }
+                            89..=90 => {
+                                let s = pick(&k, &mut rng, filled);
+                                if s != ut {
+                                    k0_cap::revoke(s, &mut k).unwrap();
+                                }
+                            }
+                            91..=98 => {
+                                let (s, a) = (pick(&k, &mut rng, mappable), pick(&k, &mut rng, aspace));
+                                op_map(&mut k, s, va, a);
+                            }
+                            _ => {
+                                if rng.below(6) == 0 {
+                                    k0_cap::revoke(ut, &mut k).unwrap();
+                                    assert_eq!(k.cnodes.len(), 1, "only the root slot array is left");
+                                }
+                            }
+                        }
+                    }
+                    check(&k);
+                }
+                totals.0 += k.unmapped;
+                totals.1 += k.uninstalled;
+                totals.2 += k.released;
+                totals.3 += reuse;
+                totals.4 += k.frame_maps;
+                // SAFETY: 이 회차가 끝난 뒤에는 아레나를 가리키는 것이 없음
+                unsafe { std::alloc::dealloc(arena as *mut u8, layout) };
+            }
+        }
+        assert!(totals.0 > 100 && totals.1 > 500 && totals.2 > 500 && totals.3 > 100 && totals.4 > 500, "{totals:?}");
+    }
+}

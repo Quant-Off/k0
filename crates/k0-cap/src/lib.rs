@@ -91,6 +91,19 @@ impl PhysRegion {
     fn end(&self) -> u64 {
         self.base + self.size
     }
+
+    /// 구간 안에 온전히 들어가는 그래뉼들의 범위(시작, 끝)를 주는 함수입니다.
+    ///
+    /// 하나도 없으면 `None`입니다. 주소 범위의 맨 끝에 걸쳐 올림이나 끝 주소가
+    /// 넘치는 구간도 온전한 그래뉼이 없는 구간으로 다룹니다.
+    ///
+    /// # Arguments
+    /// `granule` - 그래뉼 크기(2의 거듭제곱)
+    pub fn whole(&self, granule: u64) -> Option<(u64, u64)> {
+        let lo = self.base.checked_next_multiple_of(granule)?;
+        let hi = self.base.checked_add(self.size)? / granule * granule;
+        (hi > lo).then_some((lo, hi))
+    }
 }
 
 /// Frame / PageTable 케이퍼빌리티가 기억하는 매핑 위치 구조체입니다.

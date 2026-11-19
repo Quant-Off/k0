@@ -259,10 +259,14 @@ pub mod gicv3 {
         let (mut frames, mut seen) = (0u32, 0u32);
 
         for &(base, size) in regions {
-            let end = base + size;
+            // 구간과 간격은 디바이스 트리가 준 값임. 호출자의 검증에 기대지 않고
+            // 넘치는 덧셈은 구간의 끝으로 다룸
+            let Some(end) = base.checked_add(size) else {
+                continue;
+            };
             let mut frame = base;
             for _ in 0..MAX_FRAMES {
-                if frame + 2 * SGI_OFFSET > end {
+                if frame.checked_add(2 * SGI_OFFSET).is_none_or(|top| top > end) {
                     break;
                 }
                 // 프레임마다 식별 레지스터를 확인함. 구간의 첫 프레임이 GICv3가
@@ -300,11 +304,15 @@ pub mod gicv3 {
                 if lo & (1 << 4) != 0 {
                     break;
                 }
-                frame += match stride {
+                let step = match stride {
                     0 if lo & (1 << 1) != 0 => 4 * SGI_OFFSET,
                     0 => 2 * SGI_OFFSET,
                     s => s,
                 };
+                let Some(next) = frame.checked_add(step) else {
+                    break;
+                };
+                frame = next;
             }
         }
         if found.is_none() {
@@ -677,10 +685,11 @@ fn timer_tick() {
     let n = TICKS.load(Ordering::Relaxed) + 1;
     TICKS.store(n, Ordering::Relaxed);
     // 수신 인터럽트가 오지 않는 UART(수신 타임아웃이 없거나 번호가 조용히
-    // 틀린 경우)에서도 입력이 늦게나마 도착하게 틱마다 한 번 들여다봄. 닫혀
-    // 있는 동안에는 아무 일도 하지 않음
+    // 틀린 경우)에서도 입력이 늦게나마 도착하게 틱마다 한 번 들여다봄. 오류
+    // 문자를 버릴 만큼 버려 막아 둔 수신 인터럽트도 여기서 다시 열림. 닫혀
+    // 있는 동안에는 장치를 건드리지 않음
     #[cfg(feature = "console-input")]
-    crate::conin::poll();
+    crate::conin::tick();
     // 태스크가 콘솔 입력을 쓰기 시작한 뒤에는 틱 줄을 내지 않음(입력하는 줄
     // 사이에 끼어들지 않게). 틱과 타임아웃은 그대로 동작함
     #[cfg(feature = "console-input")]

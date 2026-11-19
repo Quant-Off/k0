@@ -12,8 +12,12 @@
 //! - 바이트를 해석하지 않습니다. 옮기기만 합니다.
 //! - 인터럽트 한 번의 일은 링의 빈자리로 묶여 있습니다. 링이 가득 차면 UART의
 //!   수신 인터럽트를 스스로 막고(게이트), 읽는 쪽이 자리를 비운 뒤에 다시
-//!   엽니다. 그래서 외부가 아무리 빨리 보내도 인터럽트는 읽는 쪽의 소비
-//!   속도만큼만 들어옵니다.
+//!   엽니다. 그래서 외부가 아무리 빨리 보내도 받아들인 바이트의 인터럽트는
+//!   읽는 쪽의 소비 속도만큼만 들어옵니다.
+//! - 오류가 난 문자(break, framing, parity)는 링의 자리를 쓰지 않고 버려지므로
+//!   따로 셉니다. 틱 하나 동안 [DROP_MAX]개를 버리면 수신 인터럽트를 막고 다음
+//!   틱에만 다시 엽니다. 그동안 온 바이트는 장치의 FIFO에서 기다리고, FIFO가
+//!   넘치면 유실로 표시됩니다.
 //! - 수신 원인은 지우지 않고 FIFO를 비워서 가라앉힙니다. FIFO에 남은 바이트를
 //!   새 인터럽트가 알려 주리라고 기대하지 않고, 게이트를 열 때와 틱마다 직접
 //!   들여다봅니다.
@@ -81,11 +85,14 @@ pub trait Regs {
 pub const RING: usize = 256;
 /// 원인 없는 인터럽트가 이만큼 이어지면 입력 경로를 끔
 pub const SPURIOUS_MAX: u8 = 8;
-/// FIFO를 한 번 비울 때 데이터 레지스터를 읽는 횟수의 상한. 오류가 난 문자는
-/// 링의 자리를 쓰지 않고 버려지므로 링의 빈자리와 따로 묶어 둠
+/// FIFO를 한 번 비울 때 데이터 레지스터를 읽는 횟수의 상한. 링의 빈자리와
+/// [DROP_MAX]로도 묶이지만, 둘을 합친 것보다 작은 이 값이 먼저 걸릴 수 있음
 const DRAIN_MAX: usize = RING + 64;
 /// 버릴 때 장치의 FIFO에서 꺼내는 횟수의 상한(PL011의 FIFO는 32칸)
 const FLUSH_MAX: usize = 64;
+/// 틱 하나 동안 버리는 오류 문자의 상한. 오류가 난 문자는 링의 자리를 쓰지
+/// 않아서 링이 가득 차는 것으로는 묶이지 않으므로 따로 셈
+pub const DROP_MAX: u16 = RING as u16;
 
 const FR_RXFE: u32 = 1 << 4;
 const DR_FE: u32 = 1 << 8;
@@ -130,12 +137,15 @@ pub struct Rx {
     open: bool,
     /// 입력 경로가 꺼졌는지(되돌리지 않음)
     off: bool,
-    /// 링이 가득 차 UART의 수신 인터럽트를 막아 둔 상태인지
+    /// 링이 가득 찼거나 오류 문자를 버릴 만큼 버려 UART의 수신 인터럽트를 막아
+    /// 둔 상태인지
     gated: bool,
     /// 다음에 넣는 바이트에 유실 표시를 붙일지
     gap: bool,
     /// 장치의 FIFO가 넘쳤고 그 FIFO를 아직 끝까지 비우지 못했는지
     overrun: bool,
+    /// 지난 틱 뒤로 버린 오류 문자 수([DROP_MAX]에서 멈춤)
+    dropped: u16,
     spurious: u8,
 }
 
@@ -155,6 +165,7 @@ impl Rx {
             gated: false,
             gap: false,
             overrun: false,
+            dropped: 0,
             spurious: 0,
         }
     }
@@ -269,13 +280,23 @@ impl Rx {
 
     /// 인터럽트 없이 FIFO를 들여다보는 함수입니다.
     ///
-    /// 틱마다, 그리고 읽는 태스크가 잠들기 직전에 부릅니다. 수신 타임아웃
-    /// 인터럽트가 없는 UART나 조용히 틀린 인터럽트 번호에서도 입력이 (늦게나마)
-    /// 도착하게 하는 보조 경로입니다.
+    /// 읽는 태스크가 잠들기 직전에 부르고, 틱마다 [Rx::tick]이 부릅니다. 수신
+    /// 타임아웃 인터럽트가 없는 UART나 조용히 틀린 인터럽트 번호에서도 입력이
+    /// (늦게나마) 도착하게 하는 보조 경로입니다.
     pub fn poll(&mut self, regs: &mut impl Regs) {
         if self.open && !self.off && self.service(regs) > 0 {
             self.spurious = 0;
         }
+    }
+
+    /// 틱마다 한 번 부르는 함수입니다.
+    ///
+    /// 버린 오류 문자의 수를 다시 0부터 세고 [Rx::poll]처럼 FIFO를
+    /// 들여다봅니다. 오류 문자 때문에 막아 둔 수신 인터럽트는 여기서만 다시
+    /// 열립니다.
+    pub fn tick(&mut self, regs: &mut impl Regs) {
+        self.dropped = 0;
+        self.poll(regs);
     }
 
     /// 링에서 바이트 하나를 꺼내는 함수입니다. 둘째 값은 이 바이트 바로 앞에서
@@ -301,6 +322,11 @@ impl Rx {
         let mut taken = 0;
         let mut empty = false;
         for _ in 0..DRAIN_MAX {
+            if self.dropped >= DROP_MAX {
+                // 이번 틱에 버릴 수 있는 만큼 버렸음. 장치를 건드리지 않고
+                // 멈추며, FIFO가 비었는지 보지 않으므로 아래에서 게이트가 닫힘
+                break;
+            }
             if regs.read(Reg::Fr) & FR_RXFE != 0 {
                 empty = true;
                 break;
@@ -316,6 +342,7 @@ impl Rx {
             if d & (DR_FE | DR_PE | DR_BE) != 0 {
                 // 오류가 난 문자는 버리고 다음 바이트에 표시함
                 self.gap = true;
+                self.dropped = self.dropped.saturating_add(1);
                 continue;
             }
             let mark = if self.gap || self.overrun { GAP } else { 0 };
@@ -335,8 +362,9 @@ impl Rx {
                 regs.write(Reg::Imsc, INT_OURS);
             }
         } else if !self.gated {
-            // FIFO에 남은 것이 있는데 받을 자리가 없음. 선이 내려가지 않으므로
-            // UART 쪽에서 막고, 자리가 나면 pop이 다시 들여다봄
+            // FIFO에 남은 것이 있는데 받을 자리가 없거나, 오류 문자를 버릴 만큼
+            // 버렸음. 선이 내려가지 않으므로 UART 쪽에서 막고, 자리가 나면
+            // pop이, 틱이 지나면 tick이 다시 들여다봄
             self.gated = true;
             regs.write(Reg::Imsc, 0);
         }

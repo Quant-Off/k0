@@ -9,6 +9,8 @@ use std::collections::VecDeque;
 use super::*;
 
 const BREAK: u32 = DR_BE | DR_FE;
+/// 수신 로직이 버리는 문자에 붙어 있는 오류 비트
+const ERRORS: u32 = DR_FE | DR_PE | DR_BE;
 
 struct Fake {
     fifo: VecDeque<u32>,
@@ -25,6 +27,8 @@ struct Fake {
     overrun: bool,
     accesses: usize,
     dr_reads: usize,
+    /// 데이터 레지스터에서 읽혀 나간 오류 문자 수
+    err_reads: usize,
     cr_writes: usize,
 }
 
@@ -42,6 +46,7 @@ impl Fake {
             overrun: false,
             accesses: 0,
             dr_reads: 0,
+            err_reads: 0,
             cr_writes: 0,
         }
     }
@@ -81,6 +86,9 @@ impl Regs for Fake {
             Reg::Dr => {
                 self.dr_reads += 1;
                 let mut d = self.fifo.pop_front().unwrap_or(0);
+                if d & ERRORS != 0 {
+                    self.err_reads += 1;
+                }
                 if self.overrun {
                     d |= DR_OE;
                     self.overrun = false;
@@ -154,6 +162,11 @@ struct Sim {
     sent: usize,
     got: Vec<(u8, bool)>,
     entries: usize,
+    /// 마지막으로 버린 뒤 처음 받을 문자의 순서 번호
+    origin: usize,
+    /// 지난 틱 때의 err_reads와, 그 뒤로 읽는 쪽이 버린 횟수
+    err_base: usize,
+    flushes: usize,
 }
 
 impl Sim {
@@ -167,6 +180,9 @@ impl Sim {
             sent: 0,
             got: Vec::new(),
             entries: 0,
+            origin: 0,
+            err_base: 0,
+            flushes: 0,
         };
         Rx::quiesce(&mut s.uart);
         s.rx.open(&mut s.uart);
@@ -196,7 +212,7 @@ impl Sim {
             if self.uart.offer(e) {
                 self.waiting.pop_front();
                 self.sent += 1;
-                if e & BREAK == 0 {
+                if e & ERRORS == 0 {
                     self.accepted.push((index, e as u8));
                 }
             } else if self.uart.backpressure {
@@ -209,6 +225,18 @@ impl Sim {
             }
         }
         self.irqs();
+        self.audit();
+    }
+
+    /// 틱 하나 동안 꺼낸 오류 문자는 상한을 넘지 않고(읽는 쪽이 버리면서 직접
+    /// 꺼낸 것은 따로 셈), 상한에 닿은 동안에는 수신 인터럽트가 막혀 있어야 함
+    fn audit(&self) {
+        let errors = self.uart.err_reads - self.err_base;
+        let allowed = usize::from(DROP_MAX) + self.flushes * FLUSH_MAX;
+        assert!(errors <= allowed, "{errors} error characters taken in one tick");
+        if self.rx.is_open() && self.rx.dropped >= DROP_MAX {
+            assert!(self.rx.gated && self.uart.imsc == 0, "the budget is spent and the line is still open");
+        }
     }
 
     fn send(&mut self, bytes: &[u8]) {
@@ -226,7 +254,31 @@ impl Sim {
     }
 
     fn tick(&mut self) {
+        self.err_base = self.uart.err_reads;
+        self.flushes = 0;
+        self.rx.tick(&mut self.uart);
+        self.pump();
+    }
+
+    /// 읽는 태스크가 잠들기 직전에 한 번 들여다봄
+    fn presleep(&mut self) {
         self.rx.poll(&mut self.uart);
+        self.pump();
+    }
+
+    /// 읽는 태스크가 받아 둔 입력을 버림. 그때까지 받은 것은 비교에서 빠짐
+    fn flush(&mut self) {
+        self.rx.flush(&mut self.uart);
+        self.flushes += 1;
+        assert!(self.uart.fifo.is_empty());
+        self.got.clear();
+        self.accepted.clear();
+        self.origin = self.sent;
+        self.pump();
+    }
+
+    fn noise(&mut self, kind: u32, n: usize) {
+        self.waiting.extend(std::iter::repeat(kind).take(n));
         self.pump();
     }
 
@@ -256,7 +308,7 @@ impl Sim {
         let mut last = None;
         for (k, (index, _)) in self.accepted.iter().enumerate() {
             let hole = match last {
-                None => *index != 0,
+                None => *index != self.origin,
                 Some(prev) => *index != prev + 1,
             };
             if hole {
@@ -598,4 +650,131 @@ fn turning_the_path_off_masks_the_uart_and_empties_the_ring() {
     assert_eq!(sim.uart.imsc, 0);
     assert!(sim.rx.is_off() && !sim.rx.has_data());
     assert_eq!(sim.rx.pop(&mut sim.uart), None);
+}
+
+/// 세 가지 UART 모형입니다. QEMU의 PL011, 실제 PL011, SBSA UART 순서입니다.
+fn models() -> [Fake; 3] {
+    let mut sbsa = Fake::new(32, 16, false);
+    sbsa.has_cr = false;
+    [Fake::new(16, 1, true), Fake::new(32, 16, false), sbsa]
+}
+
+#[test]
+fn a_stream_of_error_characters_is_held_to_the_budget_of_one_tick() {
+    // 오류가 난 문자는 링의 자리를 쓰지 않으므로 링이 가득 차는 것으로는 묶이지
+    // 않음. 선로의 상대가 break나 framing 오류만 이어 보내도 틱 하나 동안 꺼내는
+    // 문자와 인터럽트 진입은 상한을 넘지 않아야 함
+    // 문서가 말하는 값: 틱 하나에 256개
+    assert_eq!(DROP_MAX, 256);
+    let budget = usize::from(DROP_MAX);
+    for kind in [BREAK, DR_FE, DR_PE, DR_PE | 0x41] {
+        for uart in models() {
+            let mut sim = Sim::new(uart);
+            sim.noise(kind, 5000);
+            assert!(sim.uart.err_reads <= budget, "{} error characters taken", sim.uart.err_reads);
+            assert!(sim.entries <= budget, "{} entries", sim.entries);
+            assert_eq!(sim.uart.imsc, 0, "the gate is closed at the uart");
+            assert!(!sim.uart.line());
+            // 읽는 쪽이 꺼내 보거나 잠들기 전에 들여다봐도 다음 틱까지는 그대로임
+            let quiet = (sim.uart.dr_reads, sim.entries, sim.uart.accesses);
+            for _ in 0..50 {
+                sim.noise(kind, 100);
+                assert!(!sim.pop());
+                sim.presleep();
+            }
+            assert_eq!((sim.uart.dr_reads, sim.entries, sim.uart.accesses), quiet);
+            assert_eq!(sim.rx.spurious, 0);
+            // 틱이 지나면 다시 상한만큼만 받음
+            for tick in 2..=6 {
+                sim.tick();
+                sim.noise(kind, 1000);
+                assert!(sim.uart.err_reads <= tick * budget);
+                assert!(sim.entries <= tick * budget + 1);
+                assert!(!sim.uart.line());
+            }
+            assert!(sim.uart.err_reads > 2 * budget, "the tick must let the line in again");
+            assert!(sim.enabled && !sim.rx.is_off(), "noise on the line is not a reason to cut it");
+            assert!(!sim.rx.has_data());
+        }
+    }
+}
+
+#[test]
+fn bytes_behind_the_noise_arrive_after_the_next_tick_with_a_mark() {
+    for uart in models() {
+        let mut sim = Sim::new(uart);
+        sim.noise(BREAK, usize::from(DROP_MAX));
+        assert_eq!(sim.uart.imsc, 0);
+        sim.send(b"help\r");
+        // 읽는 쪽만으로는 열리지 않음
+        assert!(!sim.pop());
+        sim.presleep();
+        assert!(!sim.rx.has_data());
+        sim.tick();
+        assert!(sim.rx.has_data());
+        sim.settle();
+        assert_eq!(sim.got, [(b'h', true), (b'e', false), (b'l', false), (b'p', false), (b'\r', false)]);
+        sim.check();
+        assert_eq!(sim.uart.imsc, INT_RX | INT_RT | INT_OE, "the gate is open again");
+    }
+}
+
+#[test]
+fn a_spent_budget_is_no_excuse_for_a_line_that_stays_up() {
+    // 상한에 닿아 UART 쪽을 막은 뒤에도 선이 서 있으면 그것은 다른 장치의 선임
+    let mut sim = Sim::new(Fake::new(16, 1, true));
+    sim.noise(BREAK, usize::from(DROP_MAX));
+    assert_eq!(sim.uart.imsc, 0);
+    for _ in 0..SPURIOUS_MAX - 1 {
+        assert_eq!(sim.rx.interrupt(&mut sim.uart), Irq::Spurious);
+    }
+    assert_eq!(sim.rx.interrupt(&mut sim.uart), Irq::CutOff);
+    assert!(sim.rx.is_off());
+}
+
+#[test]
+fn random_noise_never_cuts_a_healthy_uart_and_every_hole_is_marked() {
+    let mut rng = Rng(0xA409_3822_299F_31D0);
+    let mut gated = 0;
+    for round in 0..600 {
+        let [emulator, hardware, sbsa] = models();
+        let mut sim = Sim::new(match rng.below(3) {
+            0 => emulator,
+            1 => hardware,
+            _ => sbsa,
+        });
+        let mut spent = false;
+        for _ in 0..rng.below(80) {
+            match rng.below(14) {
+                0..=2 => {
+                    let n = [1, 5, 40, 300][rng.below(4) as usize];
+                    let bytes: Vec<u8> = (0..n).map(|_| rng.next() as u8).collect();
+                    sim.send(&bytes);
+                }
+                3..=5 => {
+                    let kind = [BREAK, DR_FE, DR_PE, DR_PE | 0x41][rng.below(4) as usize];
+                    let n = [1, 30, 200, 600, 3000][rng.below(5) as usize];
+                    sim.noise(kind, n);
+                }
+                6..=8 => {
+                    for _ in 0..rng.below(300) {
+                        sim.pop();
+                    }
+                }
+                9 => sim.presleep(),
+                10 => sim.flush(),
+                11 => {
+                    sim.uart.idle();
+                    sim.pump();
+                }
+                _ => sim.tick(),
+            }
+            spent |= sim.rx.dropped >= DROP_MAX;
+        }
+        gated += usize::from(spent);
+        sim.settle();
+        sim.check();
+        assert!(sim.enabled && !sim.rx.is_off(), "round {round}: a healthy uart was cut off");
+    }
+    assert!(gated > 100, "the schedules must actually spend the budget ({gated} rounds did)");
 }

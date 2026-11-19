@@ -75,7 +75,7 @@ pub struct Request<'a> {
     pub tail_size: u64,
     /// 내장한 커널의 변환 그래뉼
     pub granule: u64,
-    /// 이 CPU의 물리 주소 폭이 정하는 디바이스 주소의 상한
+    /// 이 CPU의 물리 주소 폭이 정하는 주소의 상한(디바이스, 그리고 RAM에도 적용)
     pub device_limit: u64,
     /// `rng-seed`에 더할 엔트로피, 없으면 빈 슬라이스
     pub seed: &'a [u8],
@@ -246,7 +246,8 @@ pub fn prepare(req: &Request<'_>, work: Work<'_>, out: &mut [u8]) -> Result<Prep
         image,
         dtb,
         granule: req.granule,
-        ram_limit: PA_CEILING,
+        // 커널과 같은 한계: 선형 별칭의 한계와 이 CPU의 물리 주소 폭 가운데 작은 쪽
+        ram_limit: PA_CEILING.min(req.device_limit),
         device_limit: req.device_limit,
     };
     found.platform.validate(&layout).map_err(PrepareError::Validate)?;

@@ -15,7 +15,9 @@
 //!
 //! 로그는 앞에서부터 채우고 가득 차면 버립니다(되감지 않음). EL0가 Console
 //! 케이퍼빌리티로 내는 출력은 정해진 몫까지만 기록해, 사용자 출력이 커널의
-//! 진단을 밀어내지 못하게 합니다.
+//! 진단을 밀어내지 못하게 합니다. 태스크가 끝날 때 커널이 내는 줄(폴트, 종료,
+//! 모르는 시스템 콜)에도 따로 몫을 두고([TaskLine]), 두 몫 모두 커널 진단용으로
+//! 남긴 꼬리 앞에서 멈춥니다.
 //!
 //! # Examples
 //! ```rust,ignore
@@ -27,6 +29,7 @@
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::fmt;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(any(feature = "console-pl011", feature = "console-16550"))]
 mod uart;
@@ -69,6 +72,19 @@ const LOG_USER_CAP: usize = 6 * 1024;
 
 /// 커널 진단 전용으로 남겨 두는 로그 꼬리. 사용자 출력은 이 앞에서 멈춤
 const LOG_KERNEL_TAIL: usize = 2 * 1024;
+
+/// 태스크가 일으킨 커널 줄(폴트, 종료, 모르는 시스템 콜)에 허용하는 로그 몫
+const LOG_TASK_CAP: usize = 4 * 1024;
+
+/// 그런 줄 하나가 로그에서 차지하는 길이의 상한(줄 끝 포함)
+const TASK_LINE_MAX: usize = 128;
+
+/// 태스크가 일으킨 줄이 지금까지 로그에 쓴 바이트 수. 하니스가 읽는 [BootLog]의
+/// 배치를 바꾸지 않으려고 로그 밖에 둠
+static TASK_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// 그 몫을 넘겼다는 줄을 이미 남겼는지
+static TASK_NOTED: AtomicBool = AtomicBool::new(false);
 
 /// 로그 머리의 식별값. 시험 하니스가 메모리에서 로그를 찾는 표지
 pub const LOG_MAGIC: u64 = 0x6B30_2D62_6F6F_746C;
@@ -197,6 +213,57 @@ impl EarlyCon {
 impl fmt::Write for EarlyCon {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.put_str(s);
+        Ok(())
+    }
+}
+
+/// 태스크가 일으킨 커널 줄 하나를 쓰는 핸들입니다.
+///
+/// 태스크 하나가 끝날 때마다 한 줄씩 나오는 진단(폴트, 종료, 모르는 시스템
+/// 콜)에 씁니다. 태스크를 만들 권한이 있는 쪽은 이런 줄을 원하는 만큼 만들 수
+/// 있으므로, 로그에는 정해진 몫까지만 줄 단위로 남기고 커널 진단용 꼬리는
+/// 건드리지 않습니다. 콘솔에는 몫과 상관없이 그대로 나갑니다. 몫을 처음 넘길
+/// 때 그 사실을 한 줄로 남깁니다. 핸들 하나로 줄 하나만 씁니다.
+pub struct TaskLine {
+    /// 이 줄이 로그에 남는지
+    logged: bool,
+    /// 이 줄이 로그에 쓴 바이트 수
+    used: usize,
+}
+
+impl TaskLine {
+    /// 줄 하나를 시작하는 함수입니다. 줄 하나가 통째로 들어갈 자리가 로그에
+    /// 있는지 여기서 한 번 정하므로 줄이 중간에 끊겨 남지 않습니다.
+    pub fn begin() -> Self {
+        let daif = mask_irqs();
+        // SAFETY: 인터럽트가 마스크된 단일 코어 구간에서 길이만 읽음
+        let len = unsafe { (*K0_BOOT_LOG.0.get()).len as usize };
+        restore_irqs(daif);
+        let logged = TASK_LEN.load(Ordering::Relaxed) <= LOG_TASK_CAP - TASK_LINE_MAX
+            && len <= LOG_SIZE - LOG_KERNEL_TAIL - TASK_LINE_MAX;
+        if !logged && !TASK_NOTED.load(Ordering::Relaxed) {
+            TASK_NOTED.store(true, Ordering::Relaxed);
+            EarlyCon.put_str("k0: task lines over the log quota, later ones go to the console only\n");
+        }
+        Self { logged, used: 0 }
+    }
+}
+
+impl fmt::Write for TaskLine {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for b in s.bytes() {
+            // 마지막 한 자리는 줄 끝을 위해 남겨 두어 긴 줄도 줄 끝으로 닫힘
+            let room = if b == b'\n' { TASK_LINE_MAX } else { TASK_LINE_MAX - 1 };
+            if self.logged && self.used < room {
+                log_push(b, false);
+                self.used = self.used.saturating_add(1);
+                TASK_LEN.store(TASK_LEN.load(Ordering::Relaxed).saturating_add(1), Ordering::Relaxed);
+            }
+            if b == b'\n' {
+                hw_put(b'\r');
+            }
+            hw_put(b);
+        }
         Ok(())
     }
 }
