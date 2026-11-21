@@ -110,7 +110,7 @@ operator는 서명을 받을 수도 시드를 넘길 수도 없습니다. 배지
 
 커널은 루트 태스크용 32바이트를 자체 도메인 문자열로 SHA-256에 넣어 만듭니다. 입력은 DTB 엔트로피, 카운터, 그리고 CPU에 RNDR이 있으면 새 RNDR 워드 네 개입니다(`k0_boot::derive_root_seed`). 도메인 분리로 PAC 키와는 서로 독립입니다. 시드는 입력만큼만 좋습니다.
 
-시드는 루트 태스크의 진입 레지스터 `x0`부터 `x3`로 전달됩니다. `x4`는 사용한 `rng-seed` 바이트 수(비트 15부터 0)이고, 비트 16은 RNDR이 기여했음을 뜻합니다. bootinfo 페이지에는 없으며 `bootinfo::VERSION`은 4입니다. 루트 태스크는 `root: boot seed from rng-seed bytes 0x... and rndr` 또는 `... without rndr`만 출력하고 시드는 출력하지 않습니다. 이후 `INIT`으로 시드를 볼트에 주며, `INIT`은 시드를 전달할 뿐입니다. 키는 나중에 `KEYGEN`이 만듭니다.
+시드는 루트 태스크의 진입 레지스터 `x0`부터 `x3`로 전달됩니다. `x4`는 사용한 `rng-seed` 바이트 수(비트 15부터 0)이고, 비트 16은 RNDR이 기여했음을 뜻합니다. bootinfo 페이지에는 없습니다(`bootinfo::VERSION`은 지금 5입니다). 루트 태스크는 `root: boot seed from rng-seed bytes 0x... and rndr` 또는 `... without rndr`만 출력하고 시드는 출력하지 않습니다. 이후 `INIT`으로 시드를 볼트에 주며, `INIT`은 시드를 전달할 뿐입니다. 키는 나중에 `KEYGEN`이 만듭니다.
 
 **시드 지우기**: FDT 파서는 `rng-seed`와 `kaslr-seed` 값의 위치를 기록하고, 두 번째 `/chosen` 노드는 거부합니다(`DuplicateChosen`, 파서를 공유하는 UEFI 로더의 사전 검사에서도 같습니다). 커널은 루트 태스크에 진입하기 직전에 그 바이트를 0으로 만듭니다. `k0_mm::wipe_ro_alias`가 페이지의 읽기 전용 별칭 항목을 제자리에서 읽기·쓰기로 바꾸고(break-before-make), 0을 쓰고, 캐시 라인을 clean 및 invalidate한 뒤 되돌립니다. 이어서 커널은 그 바이트를 다시 읽어 확인하고, `BootInfo`에 있는 자신의 사본을 지우고, `k0: dtb seeds wiped <n>B`(QEMU virt에서는 40B)를 출력하고, 살아 있는 프레임 아래의 부트 스택을 0으로 만듭니다. 이것이 커널이 DTB 매핑으로 하는 유일한 쓰기이며, DTB를 파싱하고 검증한 뒤에 일어납니다.
 
@@ -147,7 +147,7 @@ $ cargo build -p k0-kernel --features console,terminal,vault-ed25519
 $ cargo build -p k0-kernel --features console,vault-ed25519
 ```
 
-`crates/k0-boot/build.rs`가 feature를 루트 태스크의 중첩 빌드로 전달합니다. 볼트의 코드는 루트 태스크 이미지의 일부이며 이전처럼 부팅 시 SHA-256으로 검사됩니다. 부팅 뒤에는 아무것도 적재하지 않습니다. Ed25519를 넣으면 이미지는 4 KiB 프레임 24개입니다(한도 78개).
+`crates/k0-boot/build.rs`가 feature를 루트 태스크의 중첩 빌드로 전달합니다. 볼트의 코드는 루트 태스크 이미지의 일부이며 이전처럼 부팅 시 SHA-256으로 검사됩니다. 부팅 뒤에는 아무것도 적재하지 않습니다. Ed25519를 넣으면 이미지는 4 KiB 프레임 28개입니다(한도 77개).
 
 ## 테스트 방법
 
@@ -156,7 +156,7 @@ $ cargo build -p k0-kernel --features console,vault-ed25519
 - 항상: `badges_map_to_fixed_roles_and_frames`, `each_role_may_do_exactly_its_operations`, `no_frame_is_touched_for_a_request_that_cannot_have_a_body`, `a_request_that_claims_a_body_it_cannot_have_is_refused`, `the_status_word_packs_state_algorithm_and_what_is_built`, `a_call_without_a_known_badge_is_denied`, `malformed_requests_are_refused_whole`, `a_seed_without_real_entropy_makes_no_key`, `the_seed_is_taken_once_and_zeroize_is_final`, `fetch_clamps_the_length_and_publish_writes_header_and_body`, 그리고 `without_an_algorithm_the_vault_takes_no_seed_and_serves_nothing`(마지막 것은 알고리즘이 없을 때만).
 - Ed25519가 있을 때: `the_self_test_passes_and_is_reported`, `key_generation_follows_the_states`, `the_operator_gets_the_public_key_and_never_a_signature`, `a_vault_that_fails_holds_no_secret`, `signatures_verify_and_the_key_follows_the_seed`, `a_public_key_request_carries_no_body`, `unknown_algorithms_are_unsupported`, `nothing_is_served_after_zeroize`, `a_small_order_public_key_is_refused_even_with_a_matching_signature`, `a_failed_vault_refuses_everything_but_status`.
 
-다른 크레이트와 합치면 호스트 테스트는 ARM 호스트에서 377개, 그 외 호스트에서 289개입니다(`k0-mm` 제외). 이 가운데 9개는 `k0-slice`의 테스트입니다.
+다른 크레이트와 합치면 호스트 테스트는 ARM 호스트에서 415개, 그 외 호스트에서 327개입니다(`k0-mm` 제외).
 
 **루트 태스크 자가 테스트**(`userspace/root-task/src/oracle.rs`의 `test_oracle`, `vault`로 빌드한 이미지에만 있음). 다음을 검사합니다.
 
@@ -185,6 +185,7 @@ $ cargo build -p k0-kernel --features console,vault-ed25519
 - **터미널과 볼트는 죽어도 다시 시작하지 않습니다**: 죽으면 그대로 멈춥니다. 루트 태스크는 신뢰 대상입니다.
 - **가용성은 보호되지 않습니다**: 클라이언트는 엔드포인트 하나를 공유하며 모든 호출에 타임아웃을 써야 합니다([ipc_KR.md](ipc_KR.md) 참고). CPU를 계속 쓰는 태스크 하나 뒤에서는 호출자와 볼트가 왕복 한 번에 스케줄러 모델에서 4틱을 쓰며, 이전에는 2틱이었습니다. 터미널의 호출은 5틱 타임아웃을 쓰고, 고정 이미지의 서비스 모드에는 CPU를 계속 쓰는 태스크가 없습니다.
 - **루트 태스크는 신뢰 대상입니다**: 볼트를 만들고 읽을 수 있습니다.
+- **자기만의 도메인이 없습니다**: 볼트는 아직 자기만의 시간 분할 도메인에 있지 않습니다. 루트 태스크가 자가 테스트의 끝에서 시간 분할의 제어 케이퍼빌리티를 삭제하므로, 볼트와 그 클라이언트와 터미널은 모두 루트 도메인에서 실행됩니다. 이들이 스케줄러를 통해 서로에 대해 알게 되는 것에는 제한이 없습니다([scheduling_KR.md](scheduling_KR.md#시간-분할) 참고).
 - **클라이언트 신원 없음**: 모든 signer가 키 하나를 공유합니다.
 - **엔트로피**: 시드는 입력만큼만 좋습니다. 키는 승인된 난수 비트 생성기에서 나오지 않습니다.
 - **최선 노력의 지우기**: 부팅 시드 경로 절의 참고를 보십시오.

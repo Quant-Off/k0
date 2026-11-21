@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 460" width="960" height="460" role="img" aria-labelledby="title desc">
+  <title id="title">시간 분할의 창과 보호 구간</title>
+  <desc id="desc">항목 셋짜리 표가 도메인 1에 1틱, 도메인 0에 1틱, 도메인 2에 2틱을 주고 되풀이됩니다. 도메인은 자기 창에서만 실행되고, 준비된 태스크가 없으면 CPU는 기다립니다. 도메인이 바뀌는 틱 앞에서는 타이머 인터럽트를 틱의 40분의 1만큼 일찍 받아 커널이 전환 작업을 마치고 기다리며, 다음 도메인은 틱 시각에 시작합니다.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="459" rx="10"/>
+
+  <text class="t h" x="30" y="36">항목 셋짜리 표, 되풀이됨</text>
+  <text class="m" x="30" y="60">(도메인 1, 1틱) (도메인 0, 1틱) (도메인 2, 2틱)</text>
+
+  <rect class="user" x="590" y="16" width="22" height="14"/>
+  <text class="t s" x="620" y="28">그 도메인의 태스크가 실행됨</text>
+  <rect class="box" x="590" y="36" width="22" height="14"/>
+  <text class="t s" x="620" y="48">도메인에 준비된 태스크 없음: CPU는 기다림</text>
+  <rect class="kernel" x="590" y="56" width="22" height="14"/>
+  <text class="t s" x="620" y="68">도메인이 바뀌기 전의 보호 구간</text>
+
+  <rect class="user" x="60" y="96" width="163" height="56"/>
+  <text class="t" x="141" y="129" text-anchor="middle">도메인 1</text>
+  <rect class="kernel" x="223" y="96" width="5" height="56"/>
+
+  <rect class="user" x="228" y="96" width="80" height="56"/>
+  <text class="t" x="268" y="129" text-anchor="middle">도메인 0</text>
+  <rect class="box" x="308" y="96" width="83" height="56"/>
+  <text class="t s" x="349" y="129" text-anchor="middle">CPU 대기</text>
+  <rect class="kernel" x="391" y="96" width="5" height="56"/>
+
+  <rect class="user" x="396" y="96" width="331" height="56"/>
+  <text class="t" x="480" y="129" text-anchor="middle">도메인 2</text>
+  <text class="t s" x="648" y="129" text-anchor="middle">2틱짜리 창 하나</text>
+  <rect class="kernel" x="727" y="96" width="5" height="56"/>
+
+  <rect class="user" x="732" y="96" width="163" height="56"/>
+  <text class="t" x="813" y="129" text-anchor="middle">도메인 1</text>
+  <rect class="kernel" x="895" y="96" width="5" height="56"/>
+
+  <line class="line" x1="60" y1="88" x2="60" y2="164"/>
+  <line class="line" x1="228" y1="88" x2="228" y2="164"/>
+  <line class="line" x1="396" y1="88" x2="396" y2="164"/>
+  <line class="off" x1="564" y1="88" x2="564" y2="164"/>
+  <line class="line" x1="732" y1="88" x2="732" y2="164"/>
+  <line class="line" x1="900" y1="88" x2="900" y2="164"/>
+  <text class="t s" x="60" y="182" text-anchor="middle">틱 n</text>
+  <text class="t s" x="228" y="182" text-anchor="middle">n + 1</text>
+  <text class="t s" x="396" y="182" text-anchor="middle">n + 2</text>
+  <text class="t s" x="564" y="182" text-anchor="middle">n + 3 (같은 도메인)</text>
+  <text class="t s" x="732" y="182" text-anchor="middle">n + 4</text>
+  <text class="t s" x="900" y="182" text-anchor="middle">n + 5</text>
+
+  <line class="off" x1="226" y1="190" x2="330" y2="262"/>
+  <line class="off" x1="230" y1="190" x2="640" y2="262"/>
+
+  <text class="t h" x="30" y="236">도메인이 바뀌는 자리 하나를 확대</text>
+  <rect class="user" x="60" y="262" width="270" height="56"/>
+  <text class="t" x="195" y="295" text-anchor="middle">도메인 1의 태스크 실행</text>
+  <rect class="kernel" x="330" y="262" width="180" height="56"/>
+  <text class="t" x="420" y="295" text-anchor="middle">전환 작업</text>
+  <rect class="kernel" x="510" y="262" width="130" height="56"/>
+  <text class="t" x="575" y="295" text-anchor="middle">대기</text>
+  <rect class="user" x="640" y="262" width="260" height="56"/>
+  <text class="t" x="770" y="295" text-anchor="middle">도메인 0의 태스크 실행</text>
+
+  <line class="line" x1="330" y1="318" x2="330" y2="354"/>
+  <line class="line" x1="640" y1="318" x2="640" y2="354"/>
+  <line class="line" x1="330" y1="338" x2="640" y2="338"/>
+  <text class="t s" x="485" y="356" text-anchor="middle">보호 구간: 틱의 1/40 (25 ms)</text>
+  <text class="t s" x="322" y="374" text-anchor="end">일찍 받은 타이머 인터럽트</text>
+  <text class="t s" x="648" y="374">틱 시각: 다음 도메인이 시작</text>
+
+  <text class="t s" x="30" y="412">전환 작업: 실행 중이던 태스크에 틱 규칙을 적용해 자기 도메인의 큐에 세우고, TLB를 비우고,</text>
+  <text class="t s" x="30" y="432">다음 도메인의 기한이 지난 대기자를 깨우고 첫 태스크를 설치합니다. 그다음 커널은 틱 시각까지 기다립니다.</text>
+</svg>

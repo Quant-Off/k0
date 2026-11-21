@@ -10,7 +10,7 @@ This document explains in plain words what K0 is, what it can do today and what 
 
 ## What K0 is
 
-An operating system kernel is the program that controls the hardware and decides what every other program may do. Most kernels are large and do many jobs themselves. K0 is a **microkernel**: it does only the few jobs that must be done inside the kernel and leaves everything else to ordinary programs. The kernel side is about 11,800 lines of Rust and assembly (comments included, tests excluded). It is small enough to read from start to end.
+An operating system kernel is the program that controls the hardware and decides what every other program may do. Most kernels are large and do many jobs themselves. K0 is a **microkernel**: it does only the few jobs that must be done inside the kernel and leaves everything else to ordinary programs. The kernel and the crates it links are about 15,400 lines of Rust and assembly (comments included, tests and build scripts excluded). It is small enough to read from start to end.
 
 The most important of those jobs is keeping programs apart. Think of a dormitory. Each room is a block of memory, each key opens one thing, and the kernel is the caretaker. A resident can open only the doors they hold a key for. A copy cannot be turned into a stronger key, and when a key is taken back, every copy made from it stops working too. In K0 these keys are called **capabilities**. The idea comes from the seL4 kernel.
 
@@ -35,6 +35,7 @@ In the following table, you can find the words used in this document.
 | **Endpoint** | A mailbox through which tasks exchange messages (IPC) |
 | **System call** | A request that a program makes to the kernel |
 | **Interrupt** | A signal from the hardware, such as a timer, that makes the processor stop and run the kernel |
+| **Domain** | A group of tasks that gets its own fixed windows of processor time when a time partition table is set |
 | **Terminal** | A screen on the serial line where a person types commands and reads the answers. In K0 one ordinary task provides it |
 
 ## Goals
@@ -47,7 +48,7 @@ K0 is meant to become the isolation core of high-security systems. The targets a
 - **Research base**: formal verification and certification research
 
 > [!NOTE]
-> Only a first small step exists: the optional signing oracle and the operator terminal that drives it over the serial line, both described under "What works today". The rest does not work yet. Today K0 is a research platform: it boots and checks its own security properties, but by default it does no useful work of its own yet.
+> Only first small steps exist: the optional signing oracle, the operator terminal that drives it over the serial line, and fixed time partitions that no image uses yet. They are described under "What works today". The rest does not work yet. Today K0 is a research platform: it boots and checks its own security properties, but by default it does no useful work of its own yet.
 
 ## What works today
 
@@ -132,6 +133,10 @@ These features only add and are not in `default`, so **every build command must 
 
   Memory is placed on an address space's map only by showing that address space's key (MAP, UNMAP). Keys carry rights (read, write, execute). A mailbox key can carry a tag that tells the receiver who sent a message (badge). Keys can be copied with the same or fewer rights, or moved between slots (CAP_COPY, CAP_MOVE).
 - **Running tasks**: a task is tied to one key ring and one address space when it is set up (TCB_CONFIGURE) and then started (TCB_RESUME). Tasks take turns, and a timer interrupts a task that runs too long (round-robin scheduling with timer preemption). A task that was switched in between two timer ticks gets a full period: the first tick it meets does not cut it, so it runs at least one period and at most two before the timer takes the CPU away. This stops a task from using `YIELD` shortly before a tick to shorten the turn of the next task. A task can give up its turn (YIELD) or finish (EXIT).
+- **Time partitions**: every task belongs to one of 8 groups called domains. A timetable of up to 16 entries (the time partition table) says which domain may use the processor in which seconds, and it repeats. A domain runs only in its own windows of that table. When a domain has nothing to run in its window, the processor waits, and the time is not given to another domain. Before a tick at which the domain changes, the kernel takes the timer interrupt 25 ms early, does the switch and then waits for the instant of the tick. The next domain starts at that instant, to within the wait loop and the way out of the kernel, as long as the kernel work that was under way and the switch fit in the 25 ms.
+  - **Who sets it**: one key that the root task gets at boot (the control capability `PartCtl`) allows setting the table (PART_SET_TABLE) and putting a task that has not run yet into a domain (PART_SET_DOMAIN). The key cannot be copied, and deleting it fixes the table and the domains until the next boot.
+  - **Without a table**: there is one domain, and tasks take turns as described above.
+  - **Not used by any image yet**: the root task tries the mechanism in a self-test at every boot and then deletes the key. Every image built today therefore runs with one domain. What the partitions do and do not protect against is in [SECURITY.md](SECURITY.md) and [design/en/scheduling.md](design/en/scheduling.md#time-partitions).
 - **Messages**: tasks exchange short messages that travel in processor registers. The sender waits until the receiver takes the message (synchronous IPC: SEND, RECV, CALL, REPLY_RECV). Sending needs the write right on the mailbox key and receiving needs the read right. The receiver learns the tag of the sender's key, and the right to reply can be used only once.
 - **Timeouts**: every one of these calls can carry a time limit, counted in timer ticks (one tick is one second). If no partner arrives in time, the call returns an error (`TIMEOUT`, or `REPLY_TIMEOUT` when a `CALL` was delivered but no reply came). Without a limit a task waits as long as it takes. The wait lasts at least the given number of ticks and may be a little longer. The limit says when the task becomes ready again, not when it runs.
 - **Idle**: when no task can run, the kernel no longer stops. It waits for the next interrupt, wakes tasks whose time limit has passed and carries on. If nothing can ever wake a task, the machine stays idle and the boot log says `k0: all tasks stopped (none ready, no timeout pending)`. That line appears only when there is neither a timed waiter nor a task waiting for console input. A terminal image prints nothing there, because waiting for input is its normal state.
@@ -271,8 +276,8 @@ What it does not stop:
   Still open:
 
   - A task that waits without a timeout can wait forever if its partner never acts. Timeouts are used per call, so a server that must stay responsive has to give one on every wait.
-  - There is no priority and no CPU budget. Tasks take turns, and a task that holds a lot of free memory can create many tasks and shrink everyone else's share. A task that never yields or blocks keeps at least 1/N of the CPU among N ready tasks in the long run. This was checked in a model by search with up to 6 tasks and by tests on the host, it is not proven, and N grows with every task that is created.
-  - The scheduler leaks timing. A task still changes when, and for how long, another task runs by choosing when to yield or block. This has not been analysed. K0 gives no real-time or latency promise: the tick is one second and the kernel cannot be interrupted. The one-to-two periods per turn describe this version, not an interface.
+  - There is no priority and no CPU budget. Tasks take turns, and a task that holds a lot of free memory can create many tasks and shrink everyone else's share. A task that never yields or blocks keeps at least 1/N of the CPU among N ready tasks in the long run. This was checked in a model by search with up to 6 tasks and by tests on the host. A machine-checked proof exists for a model of one domain, not for the code and not for several domains. N grows with every task that is created.
+  - The scheduler leaks timing between tasks of one domain. A task still changes when, and for how long, another task of its domain runs by choosing when to yield or block. This has not been analysed. Time partitions are the mechanism against this between domains, but no image puts tasks into more than one domain yet, and the mechanism has limits of its own (see [SECURITY.md](SECURITY.md)). K0 gives no real-time or latency promise: the tick is one second and the kernel cannot be interrupted. The one-to-two periods per turn describe this version, not an interface.
   - The kernel cannot be interrupted while it handles a system call. A long call, such as taking back a key to a large block of memory, delays every other task and every timeout.
   - A fatal error inside the kernel, or an error from the hardware that the kernel cannot attribute to one task, still stops the whole machine.
   - The lines the kernel prints when a task ends (a crash, an exit, an unknown system call) share 4 KiB of the boot log and can no longer fill the kernel part. A task that can create tasks can still push such lines of other tasks out of the log.
@@ -298,6 +303,7 @@ Missing features:
 - **Multicore**: only one processor core is used.
 - **Device access**: programs cannot access hardware devices (device memory and interrupts).
 - **Loading new executable code after boot**: this is the flip side of the write-or-run rule. Executable memory exists only for the root task image, so a confined task runs code from that image.
+- **A use for the time partitions**: the mechanism exists and is tested at every boot, but no image puts its tasks into more than one domain yet. Putting the signing oracle's vault into a domain of its own is future work.
 - **Multi-level key lookup and ASIDs**: multi-level key lookup and hardware address space tags (ASIDs) do not exist. Today every switch to another address space empties the processor's cache of memory map lookups (the TLB).
 - **More for the signing oracle**: the oracle has the following limits today.
   - No persistence: the key lives only in memory and is gone after a reboot or ZEROIZE.
@@ -326,13 +332,13 @@ Missing protection and assurance:
 
 - **Availability guarantees**: see the previous section. Several ways to block other tasks remain.
 - **DMA isolation**: some devices read and write memory directly, without the processor (DMA). Once devices are handed to programs, a memory map for devices (an IOMMU, such as the SMMU on ARM) has to stop such a device from reading all memory. Nothing for this exists yet.
-- **Side channels**: secrets can leak through timing or through caches the processor shares, rather than by direct access. A few such leaks are closed (programs cannot read the hardware counters, and the TLB is emptied whenever the address space changes). Timeouts give programs a clock, but it is as coarse as one timer tick. Whether that can help an attack has not been analysed. There is no general defence against cache or timing side channels, and they have not been analysed.
+- **Side channels**: secrets can leak through timing or through caches the processor shares, rather than by direct access. A few such leaks are closed (programs cannot read the hardware counters, and the TLB is emptied whenever the address space or the domain changes). Timeouts give programs a clock, but it is as coarse as one timer tick. Whether that can help an attack has not been analysed. Time partitions deal with one channel only, the one between domains that goes through the scheduler, and caches and branch predictors are not emptied when the domain changes. There is no general defence against cache or timing side channels, and they have not been analysed.
 - **Waiting senders**: taking a key back does not cancel a sender already waiting at the mailbox. Its message is still delivered once.
 - **Basis of assurance**: assurance comes from testing only.
   - Unit tests and fuzzing (feeding random, broken input to find crashes) on the build machine
   - Self-tests at boot in QEMU and in a hypervisor guest on real Apple cores
 
-  There is no formal proof (a mathematical proof that the code does what it should), and nothing has run on a real board.
+  There is no formal proof of the code (a mathematical proof that the code does what it should), and nothing has run on a real board. The repository does hold machine-checked proofs (Lean 4, in `proofs/lean`) about a **model** of the time partition scheduler. They are proofs about that model, not about the Rust code, and they are not run in CI. What ties the code to the model is a test: 1600 recorded event scripts are run through the Rust code on the build machine, and the result is compared with what the model gave.
 
 ## Where the code lives
 
@@ -345,17 +351,19 @@ In the following table, you can find the contents of each path in the repository
 | `crates/k0-arch` | Handling of errors, system calls and interrupts (exceptions), entering and leaving user mode, interrupt controller and timer, PAC and PAN, the boot log and the optional console drivers |
 | `crates/k0-conin` | The receive logic of console input (the ring and the loss mark), tested on the host with a fake UART |
 | `crates/k0-slice` | The rule that decides whether a timer tick cuts the running task, tested on the host with a model of the scheduler |
+| `crates/k0-part` | Every scheduling decision: which domain runs at which tick under the time partition table, and which task of it runs. Also the arithmetic of tick instants. It touches no hardware and is tested on the host |
 | `crates/k0-boot` | Device tree parser, the built-in root task image and its integrity check, PAC key derivation, the search for the boot memory window (shared with the loader) |
 | `crates/k0-efi` | The loader's logic without `unsafe` code: planning RAM from the UEFI memory map, rewriting the firmware device tree, an independent re-check of the result, and the check of the kernel image header. It runs the kernel's own device tree code on the result before the jump |
 | `crates/k0-cap` | Keys and their rights, key rings, the derivation list, untyped memory, retype, revoke and delete |
 | `crates/k0-mm` | Kernel page tables, turning memory maps on (MMU), program address spaces and their registry |
 | `crates/k0-task` | Tasks with their key ring and address space, mailboxes, loading the root task |
-| `crates/k0-sched` | Round-robin scheduler, which asks `k0-slice` at every tick |
+| `crates/k0-sched` | The kernel side of the scheduler: one ready queue and one list of timed waiters per domain, and the installed task. The decisions are made by `k0-part` |
 | `crates/k0-ipc` | Synchronous messages |
 | `loader/` | The UEFI application (`k0-loader`, target `aarch64-unknown-uefi`) that embeds a built kernel image and starts it: UEFI calls, the flow, and the final cache flush, MMU off and jump |
 | `userspace/root-task` | The first program and its self-tests, and the wiring and self-test of the signing oracle (`oracle.rs`), and the start of the terminal service (`service.rs`) |
 | `userspace/k0-term` | The operator terminal: line editing, command parsing and the requests to the vault |
 | `userspace/k0-vault` | The signing oracle service: protocol and fixed policy, the request handling, and the boundary around the crypto crate |
 | `tools/` | QEMU runner (also for `.efi` files), boot test, boot matrix, terminal session test (`term-test.py`), boot log reader, host test, loader build (`build-loader.sh`), PE and instruction order check (`pe-check.py`), device tree editor for hostile boot input (`fdt-patch.py`) |
+| `proofs/lean` | Lean 4 proofs about a model of the time partition scheduler, and the program that computes the model's results for the recorded event scripts. Not run in CI |
 | `ci/` | The CI build and test image (`Dockerfile`) and the threat model (`threat_model.md`) |
 | `vendor/` | Third-party crates kept in the repository (`sha2`, `ed25519-dalek` and their dependencies) |

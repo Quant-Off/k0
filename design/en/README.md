@@ -23,9 +23,11 @@ Read them in the order of the following table the first time. This order follows
 | [uefi.md](uefi.md) | The UEFI loader: why it sits outside the kernel, its flow, which memory it refuses to call RAM, the device tree rewrite, the self-check before the jump, what QEMU cannot test, and what has been booted |
 | [hardening.md](hardening.md) | PAC key derivation, PAN, closing EL0 access to counters, debug and PMU, and the root task integrity check, including what each does not protect yet |
 | [exceptions.md](exceptions.md) | The vector table, saving user state, system call dispatch, and fault isolation |
-| [scheduling.md](scheduling.md) | TCBs and their bound CNode and address space, task creation and teardown, the round-robin scheduler, and timer preemption, including the rule that a task switched in between two ticks is not cut by the first tick it meets |
+| [scheduling.md](scheduling.md) | TCBs and their bound CNode and address space, task creation and teardown, the round-robin scheduler, and timer preemption, including the rule that a task switched in between two ticks is not cut by the first tick it meets. Fixed time partitions: domains and the table, windows, the tick clock, the guard and the hold, the control capability and its two system calls, what is tested and what is proved about a model, and the limits of the claim |
 | [ipc.md](ipc.md) | Endpoints and badges, `SEND`, `RECV`, `CALL` and `REPLY_RECV`, the single-use reply right, and what happens to waiting tasks when an endpoint is deleted |
 | [vault.md](vault.md) | The signing oracle: the vault task and its frames, the `CALL` protocol and nonce, the fixed badge policy, the provider boundary, the boot seed and its wipe, features, tests, and known gaps |
 | [terminal.md](terminal.md) | Serial input and the operator terminal: why the kernel receives, the receive ring and its bounds, `CONSOLE_READ` and the Console rights, waiting and waking, the terminal's wiring and the hostile-task check, the screen and command rules, tests, and known gaps |
 
 Every note ends with a "**Known gaps**" section. The open security advisories are listed in [SECURITY.md](../../SECURITY.md).
+
+The Lean 4 proofs about a model of the partition scheduler are outside these notes, in [proofs/lean/README.md](../../proofs/lean/README.md). They are proofs about a model, not about the Rust code.

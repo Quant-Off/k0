@@ -71,7 +71,7 @@ At boot the kernel prints `k0: console input on (pl011 irq 33)` or `k0: console 
 
 The flags are `NONBLOCK` (1) and `FLUSH` (2), and a timeout in ticks in bits 63 to 32. Any other bit is refused with `BAD_FLAGS`. `NO_DEVICE` (-24) means that there is no input path or that it was turned off.
 
-The `Console` capability now has rights: **R** reads input and **W** writes output. `CAP_COPY` can only remove them. The root task's capability has W, and R only in images with `console-input`. `DEBUG_PUTC` needs W. `bootinfo::VERSION` is 4.
+The `Console` capability now has rights: **R** reads input and **W** writes output. `CAP_COPY` can only remove them. The root task's capability has W, and R only in images with `console-input`. `DEBUG_PUTC` needs W. The rights came with `bootinfo::VERSION` 4. The version is 5 now, because of the control capability of the time partitions in slot 5.
 
 The output filter is unchanged, except for one thing: a `Console` capability with R (the terminal's) may also emit backspace (0x08). Every other control byte is still printed as `?`.
 
@@ -79,7 +79,8 @@ The output filter is unchanged, except for one thing: a `Console` capability wit
 
 Only one task can wait for input at a time. A second reader gets `BUSY` (-23). A reader that finds the ring empty and did not ask for `NONBLOCK` goes to sleep, with the timeout from its flags if there is one.
 
-- **Waking on a byte**: a received byte wakes the waiter. It goes to the end of the ready queue. There is no preemption on input.
+- **Waking on a byte**: a received byte wakes the waiter. It goes to the end of the ready queue of its domain. There is no preemption on input.
+- **Only in the reader's window**: under a time partition table the byte is handed over only while the reader's domain runs. Otherwise it waits in the ring until the next tick at which that domain runs (see [scheduling.md](scheduling.md#console-input-under-a-table)). A terminal image runs with one domain, so this does not apply to it today.
 - **Waking on a capability change**: a waiter whose capability is deleted, revoked or moved wakes at once with `REVOKED`.
 - **Waking on a timeout**: a reader that gave a timeout in its flags is woken when it runs out (see [scheduling.md](scheduling.md) for timeouts).
 - **Quiet idle**: when the only thing left to wait for is console input, the kernel prints nothing. That is the normal state of a terminal image. `k0: all tasks stopped (none ready, no timeout pending)` is printed only when there is neither a timed waiter nor a console waiter.
@@ -137,7 +138,7 @@ The vault side changed with this feature. There are four roles by endpoint badge
 
 ## How it is tested
 
-**Host tests** (`tools/host-test.sh`): `k0-conin` has 19 tests with a fake UART, `k0-term` has 24 with the vault feature and 21 without, and `k0-vault` has 20 with Ed25519 and 11 without. The suite has 377 tests on an ARM host and 289 on other hosts (`k0-slice` adds 9).
+**Host tests** (`tools/host-test.sh`): `k0-conin` has 19 tests with a fake UART, `k0-term` has 24 with the vault feature and 21 without, and `k0-vault` has 20 with Ed25519 and 11 without. The suite has 415 tests on an ARM host and 327 on other hosts.
 
 **Boot matrix**: the new rows are `input-only`, `input-gicv2`, `input-16550`, `input-bad-irq`, the static row `input-symbols` (an image without `console-input` has no receive code and none of the new log lines), `term`, `term-max`, `term-el2`, `term-gicv2`, `term-16k`, `term-no-vault`, `term-no-alg`, `term-uefi`, `term-uefi-acpi` and `hvf-term`. The matrix has 82 rows on a Mac with HVF and 71 in CI.
 
@@ -154,6 +155,7 @@ The vault side changed with this feature. There are four roles by endpoint badge
 - **Kernel code driven from outside**: the receive code runs at EL1.
 - **A timing channel that is not analysed**: an outside party can now cause interrupts while tasks run, bounded by the reader for bytes and by 256 per tick for characters with a line error. The reader learns arrival times finer than the tick, and other tasks can notice the stolen time.
 - **Latency**: input waits behind running tasks. There are no priorities, so the latency is up to a tick per ready task, plus one more tick when the running task got the CPU between two ticks (see [scheduling.md](scheduling.md)).
+- **One domain**: the root task deletes the control capability of the time partitions at the end of its self-tests, before it starts the services. The terminal, the vault and the root task therefore all run in the root domain, and the time partitions do not separate the vault from the terminal yet. The rule that input is handed over only in the reader's window has no test.
 - **No input on a 16550 console**: a 16550 console has output and no input.
 - **No measurement under a flood**: no test measures kernel time under a flood on a machine. The bound is argued from the gate and shown in host tests.
 - **Dropped before the prompt**: this counts bytes that reached the UART. An emulator or adapter that holds bytes back delivers them later (QEMU does).

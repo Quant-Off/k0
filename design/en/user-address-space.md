@@ -144,7 +144,7 @@ Capabilities for frames below a detached table keep their records. Those records
 
 ### TLB policy
 
-K0 uses no hardware ASIDs. Switching `TTBR0` invalidates the whole TLB, and so does every unmap, every table detach and every address space destruction (`flush_user_tlb`). The TLB therefore only ever holds translations of the address space that is installed. `MAP` only turns an invalid entry into a valid one and needs no invalidation.
+K0 uses no hardware ASIDs. Switching `TTBR0` invalidates the whole TLB, and so does every unmap, every table detach and every address space destruction (`flush_user_tlb`). The TLB therefore only ever holds translations of the address space that is installed. `MAP` only turns an invalid entry into a valid one and needs no invalidation. The scheduler also calls `flush_user_tlb` at every change of time partition domain, even when the address space stays the same, so that the next domain does not start with translations cached for the previous one (see [scheduling.md](scheduling.md#windows)).
 
 ### Destroying an address space
 

@@ -87,18 +87,21 @@ $ grep -a 'k0: console drivers' <이미지 파일>
 | `root: ... pass` | 자가 테스트 한 묶음이 통과함 |
 | `root: secret at 0x...` 다음에 같은 주소의 `k0: task fault ... far 0x...` | 격리된 태스크가 루트 태스크만 볼 수 있는 메모리를 읽으려다 정확히 그 주소에서 멈춤 |
 | `k0: task fault ...`와 `k0: unknown syscall 65535, killing task` | 테스트가 일부러 일으킨 규칙 위반. 매번 규칙을 어긴 태스크만 멈춤. 정상 실행에서는 `k0: task fault` 줄이 정확히 6개, `k0: unknown syscall` 줄이 1개 나옴. `vault` feature를 포함해 빌드한 이미지에서는 `k0: task fault` 줄이 8개 나옴 |
-| `k0: kernel reserve <T> tables + <E> address space entries = <B> bytes in <N> ranges` | 커널이 넘겨 주는 메모리 범위마다 맨 위에 자기 페이지 테이블과 주소 공간 목록용 메모리를 따로 떼어 둠. `k0: untyped` 줄보다 먼저 출력됨. QEMU virt 512 MiB에서는 `262 tables + 130130 address space entries = 0x206000 bytes in 3 ranges`로 나오며, 항목 수는 이미지 크기에 따라 달라짐 |
+| `k0: kernel reserve <T> tables + <E> address space entries = <B> bytes in <N> ranges` | 커널이 넘겨 주는 메모리 범위마다 맨 위에 자기 페이지 테이블과 주소 공간 목록용 메모리를 따로 떼어 둠. `k0: untyped` 줄보다 먼저 출력됨. QEMU virt 512 MiB에서는 `262 tables + 130124 address space entries = 0x206000 bytes in 3 ranges`로 나오며, 항목 수는 이미지 크기에 따라 달라짐 |
 | `k0: memory <base> + <size> not handed out (<reason>)` | 메모리 범위가 너무 작아 그 예비 몫을 담지 못하거나, 몫을 매핑하지 못하거나, 온전한 페이지가 하나도 없어서 커널이 그 범위를 넘겨 주지 않음. 부팅은 계속됨. QEMU virt의 정상 실행에서는 나오지 않음 |
 | `root: timeout tests pass` | IPC 타임아웃 자가 테스트가 통과함 |
 | `root: slice test yield pass`, `root: slice test block pass` | 두 틱 사이에 CPU를 받은 태스크(`YIELD` 또는 앞선 태스크가 기다림)가 처음 만난 틱에 끊기지 않았음. `root: preempt test pass`보다 앞에 나옴 |
 | `root: preempt test pass` | 양보하지 않는 태스크는 여전히 타이머가 끊음 |
+| `root: partition refusal pass` | 시간 분할의 두 시스템 콜이 잘못된 요청을 모두 거부함(틀린 케이퍼빌리티, 형식이 틀린 표, 호출자의 도메인이 없는 표, 범위 밖의 도메인, 이미 실행된 태스크, 제어 케이퍼빌리티의 복사) |
+| `root: partition window pass` | 루트 태스크가 9틱짜리 시간 분할 표를 정해 한 바퀴 돌렸고, 각 도메인의 태스크가 기대한 순서로 실행됨. 약 13초가 걸림. 이 줄 앞에 `root: partition window retry`가 나오면 호스트가 QEMU를 1초 넘게 멈춰 세워서 테스트가 한 번 더 실행된 것임 |
+| `root: partition sealed` | 루트 태스크가 시간 분할의 제어 케이퍼빌리티를 삭제함. 여기부터 이미지는 도메인 하나로 실행되고, 다음 부팅까지 어떤 것도 표를 정할 수 없음 |
 | `root: kernel reserve tests pass` | 커널 예비 공간 자가 테스트가 통과함(주소 공간 300개를 동시에 유지, 여러 페이지 테이블 블록에 걸친 untyped 메모리에서 프레임 생성) |
 | `root: oracle tests pass` | 서명 오라클 자가 테스트가 통과함. `vault` feature를 포함해 빌드한 이미지만 출력함(뒤의 "서명 오라클" 참고) |
 | `root: oracle made no key (boot seed has no entropy)` | 부트 시드가 약해서 볼트가 키 생성을 거부함. `vault` feature를 포함해 빌드한 이미지만 출력할 수 있으며, 이때 `root: oracle tests pass`는 뒤따르지 않음 |
 | `root: sched tests pass` | 마지막 자가 테스트 묶음이 통과함 |
 | `k0: idle (waiting for a timeout)` | 모든 태스크가 기다리는 중이고 시간 제한이 있는 대기가 하나 이상이어서, 커널이 멈추지 않고 다음 인터럽트를 기다림. 부팅당 최대 한 번 출력됨 |
 | `k0: all tasks stopped (none ready, no timeout pending)` | 모든 태스크가 기다리는 중이고 시간 제한이 있는 대기가 없음. 지금은 태스크를 깨울 수 있는 것이 없어서 머신은 유휴 상태로 남음. 정상 실행에서는 나오지 않고, 부팅 테스트는 이 줄을 실패로 처리함. 부팅당 최대 한 번 출력됨 |
-| `k0: tick N` | 커널이 아직 돌고 있음 |
+| `k0: tick N` | 커널이 아직 돌고 있음. 시간 분할 창 테스트가 실행되는 동안에는 이 줄이 잠시 멈춤(QEMU virt에서는 로그가 `k0: tick 6`에서 `k0: tick 19`로 넘어감). 루트 도메인이 아닌 도메인이 적힌 시간 분할 표가 정해져 있는 동안에는 커널이 주기적인 틱 줄을 출력하지 않기 때문임 |
 
 `root: FAIL`, `k0: FATAL`, `k0: PANIC`, `k0: EXCEPTION` 같은 줄은 **문제가 생겼다는 뜻**입니다. "자동 테스트"에서 설명하는 부팅 테스트가 전체 목록을 대신 확인해 줍니다.
 
@@ -410,9 +413,9 @@ $ tools/qemu-boot-test.sh                                 # QEMU에서 부팅하
 $ tools/boot-matrix.sh                                    # 지원하는 구성을 전부 부팅(16 KiB 이미지, 고정 이미지, UEFI 로더 이미지도 빌드함)
 ```
 
-- `tools/host-test.sh`는 호스트 테스트 377개를 실행합니다(그 밖의 호스트에서는 289개). 커널의 부분 하나하나를 내 컴퓨터에서 일반 프로그램처럼 돌리는 작은 테스트(단위 테스트)입니다. **퍼징**도 합니다. 디바이스 트리 파서와 UEFI 로더의 계획 코드에 무작위로 망가뜨린 입력을 넣어 충돌을 찾는 방법입니다. 377개는 `k0-abi` 15개, `k0-cap` 52개, `k0-boot` 85개, `k0-efi` 33개, `k0-conin` 19개, `k0-slice` 9개(틱이 실행 중인 태스크를 끊을지 정하는 규칙을 스케줄러 모델로 검사), `k0-vault` 31개(Ed25519를 포함하면 20개, 없으면 11개), `k0-term` 45개(`vault` feature를 포함하면 24개, 없으면 21개), `k0-mm` 44개씩 두 페이지 크기분입니다. 메모리 관리 테스트는 ARM 명령을 사용하므로 ARM 컴퓨터(Apple Silicon Mac이나 Linux arm64)에서만 돌고, 그 밖의 호스트의 개수는 그 88개를 뺀 것입니다.
-- `tools/qemu-boot-test.sh`는 커널을 부팅하고, 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 줄이 하나라도 나오면 실패하고, 일부러 일으킨 폴트 줄의 개수를 정확히 맞춘 뒤 QEMU를 끕니다. 루트 태스크의 타임아웃 테스트는 실제 타이머 틱을 기다리므로, 부팅 한 번이 그 테스트가 생기기 전보다 약 4초 더 걸립니다. 시간 조각 테스트는 두 번 실행해 합계 약 4초가 걸리며, 이를 대신한 이전 선점 테스트는 약 1초가 걸렸습니다. `root: teardown tests pass`와 `root: timeout tests pass` 사이의 틱 줄도 세어 4개 이상을 요구하는데, 이것이 타임아웃이 일찍 끝나지 않는지 확인하는 방법입니다. 성공하면 `boot-test: pass`를 출력하고 전체 로그를 `target/qemu-boot-test.log`에 남깁니다. 머신은 앞의 `K0_QEMU_*` 변수에서 가져옵니다. 맞는 크기의 untyped 영역이 없는 메모리 배치에서는 루트 태스크가 재사용 시험을 건너뛰므로, 그때는 `K0_BOOT_REUSE=skip`을 받습니다. 커널 줄을 **직렬 포트**에서 읽으므로 콘솔 드라이버가 있는 이미지가 필요합니다. 콘솔 없는 이미지는 뒤의 "콘솔 없는 이미지 시험"을 보세요. 직렬 로그에 커널 줄이 하나도 없으면 콘솔 feature 없이 빌드한 커널이 아닌지 알려 주는 힌트를 출력합니다.
-- `tools/boot-matrix.sh`는 K0가 지원한다고 말하는 **구성마다** 커널을 부팅해서 결과를 확인합니다. GICv3와 GICv2의 QEMU virt를 EL1과 EL2에서 부팅하고, CPU 모델 세 가지, 코어 4개, 16 KiB 이미지, 다른 적재 주소, `xlnx-versal-virt`, 고정 이미지, 서명 오라클이 있는 이미지도 부팅합니다. 이미지가 물리 타이머를 건드리지 않는지는 정적으로 검사합니다. 행렬은 HVF가 있는 Mac에서 82행, CI에서 71행입니다. 행 이름을 인자로 주면 그 행만 돌립니다. CI가 이것을 실행합니다.
+- `tools/host-test.sh`는 호스트 테스트 415개를 실행합니다(그 밖의 호스트에서는 327개). 커널의 부분 하나하나를 내 컴퓨터에서 일반 프로그램처럼 돌리는 작은 테스트(단위 테스트)입니다. **퍼징**도 합니다. 디바이스 트리 파서와 UEFI 로더의 계획 코드에 무작위로 망가뜨린 입력을 넣어 충돌을 찾는 방법입니다. 415개는 `k0-abi` 15개, `k0-cap` 54개, `k0-boot` 85개, `k0-efi` 33개, `k0-conin` 19개, `k0-slice` 9개(틱이 실행 중인 태스크를 끊을지 정하는 규칙을 스케줄러 모델로 검사), `k0-part` 36개(시간 분할 표가 있을 때의 스케줄러 판정과 틱 시각의 산술을 검사하고, Lean 모델의 기록된 결과와도 비교), `k0-vault` 31개(Ed25519를 포함하면 20개, 없으면 11개), `k0-term` 45개(`vault` feature를 포함하면 24개, 없으면 21개), `k0-mm` 44개씩 두 페이지 크기분입니다. 메모리 관리 테스트는 ARM 명령을 사용하므로 ARM 컴퓨터(Apple Silicon Mac이나 Linux arm64)에서만 돌고, 그 밖의 호스트의 개수는 그 88개를 뺀 것입니다.
+- `tools/qemu-boot-test.sh`는 커널을 부팅하고, 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 줄이 하나라도 나오면 실패하고, 일부러 일으킨 폴트 줄의 개수를 정확히 맞춘 뒤 QEMU를 끕니다. 루트 태스크의 타임아웃 테스트는 실제 타이머 틱을 기다리므로, 부팅 한 번이 그 테스트가 생기기 전보다 약 4초 더 걸립니다. 시간 조각 테스트는 두 번 실행해 합계 약 4초가 걸리며, 이를 대신한 이전 선점 테스트는 약 1초가 걸렸습니다. 시간 분할 테스트는 9틱짜리 표를 한 바퀴 돌리므로 약 15초를 더하고, 그래서 부팅 테스트 한 번은 이제 약 25초가 걸립니다. 판정 직전에는 `boot-test: partition window retries: N`도 출력합니다. 호스트가 QEMU를 멈춰 세워서 창 테스트를 다시 실행해야 했던 횟수입니다. 스크립트는 이 수로 판정하지 않습니다. `root: teardown tests pass`와 `root: timeout tests pass` 사이의 틱 줄도 세어 4개 이상을 요구하는데, 이것이 타임아웃이 일찍 끝나지 않는지 확인하는 방법입니다. 성공하면 `boot-test: pass`를 출력하고 전체 로그를 `target/qemu-boot-test.log`에 남깁니다. 머신은 앞의 `K0_QEMU_*` 변수에서 가져옵니다. 맞는 크기의 untyped 영역이 없는 메모리 배치에서는 루트 태스크가 재사용 시험을 건너뛰므로, 그때는 `K0_BOOT_REUSE=skip`을 받습니다. 커널 줄을 **직렬 포트**에서 읽으므로 콘솔 드라이버가 있는 이미지가 필요합니다. 콘솔 없는 이미지는 뒤의 "콘솔 없는 이미지 시험"을 보세요. 직렬 로그에 커널 줄이 하나도 없으면 콘솔 feature 없이 빌드한 커널이 아닌지 알려 주는 힌트를 출력합니다.
+- `tools/boot-matrix.sh`는 K0가 지원한다고 말하는 **구성마다** 커널을 부팅해서 결과를 확인합니다. GICv3와 GICv2의 QEMU virt를 EL1과 EL2에서 부팅하고, CPU 모델 세 가지, 코어 4개, 16 KiB 이미지, 다른 적재 주소, `xlnx-versal-virt`, 고정 이미지, 서명 오라클이 있는 이미지도 부팅합니다. 이미지가 물리 타이머를 건드리지 않는지는 정적으로 검사합니다. 행렬은 HVF가 있는 Mac에서 82행, CI에서 71행입니다. 행 이름을 인자로 주면 그 행만 돌립니다. CI가 이것을 실행합니다. 부팅 행의 창 테스트가 재시도를 했으면 행렬은 그 행을 한 번 더 돌리고, 두 번째 실행도 재시도를 했으면 그 행을 실패로 처리합니다(`matrix: <row> FAIL (the window test needed its retry in two runs)`).
 
 콘솔 행은 콘솔 feature를 확인합니다. 다음 표는 콘솔 행과 확인하는 내용입니다.
 
@@ -495,6 +498,24 @@ $ K0_QEMU_CPU=max K0_BOOT_REQUIRE='rndr=on|k0: pac=on bti=present pan=on' \
 
 GitHub도 풀 리퀘스트와 `main` 푸시가 있을 때마다 이 테스트를 자동으로 돌립니다(CI). x86-64와 ARM64 Linux에서, 네트워크를 끈 밀폐된 빌드 환경(컨테이너) 안에서 돌리고, 매주 더 긴 퍼징도 돌립니다. 디바이스 트리 파서를 직접 퍼징하거나 CI와 똑같이 돌리는 방법은 [CONTRIBUTING_KR.md](CONTRIBUTING_KR.md)에 있습니다.
 
+### Lean 증명 확인
+
+`proofs/lean`에는 시간 분할 스케줄러의 모델에 대한 Lean 4 증명이 들어 있습니다. 앞의 세 도구에 포함되지 않으며 CI도 실행하지 않습니다. CI가 실행하는 것은 Rust 코드를 모델의 기록된 결과와 비교하는 호스트 테스트입니다(`k0-part`에 있으며 `tools/host-test.sh`의 일부).
+
+> [!IMPORTANT]
+> 이것은 모델에 대한 증명이지 Rust 코드에 대한 증명이 아닙니다. 각 정리가 무엇을 진술하고 모델이 무엇을 빼놓았는지는 [proofs/lean/README.md](proofs/lean/README.md)(영문)에 있습니다.
+
+확인하려면 Lean 툴체인 관리자 `elan`이 필요합니다. `elan`은 처음 실행할 때 고정된 툴체인(`leanprover/lean4:v4.35.0`)을 내려받으므로 네트워크가 한 번 필요합니다. 다음과 같이 입력할 수 있습니다.
+
+```sh
+$ cd proofs/lean
+$ lake build
+$ lake env leanchecker K0Part K0Share K0ShareWide K0Bridge K0Close
+$ lake exe vectors --check ../../crates/k0-part/src/model_vectors.txt
+```
+
+`lake build`는 에러, 경고, `sorry` 없이 끝나야 합니다. `leanchecker`는 아무것도 출력하지 않아야 합니다. 마지막 명령은 `scripts: 1600, differing from the model: 0`으로 끝나야 합니다.
+
 ## 문제가 생기면
 
 다음 표는 증상별 해결 방법입니다.
@@ -506,6 +527,8 @@ GitHub도 풀 리퀘스트와 `main` 푸시가 있을 때마다 이 테스트를
 | feature 없이 `cargo run -p k0-kernel`을 하면 터미널이 빈 채로 있음 | 이미지에 콘솔 드라이버가 없어서 아무것도 출력하지 않습니다. `--features console`로 빌드하거나 `cargo virt`를 사용하세요 |
 | `runner: this kernel has no console driver and prints nothing here (build with --features console to see output)` | 이미지를 콘솔 feature 없이 빌드했거나, 러너가 이미지에서 `k0: console drivers [none]` 줄을 찾았습니다. 출력을 보려면 `--features console`로 빌드하거나 메모리에서 부트 로그를 읽으세요 |
 | `boot-test: the serial log has no kernel line` | 같은 원인입니다. 콘솔 feature 없이 빌드한 커널은 직렬 포트에 아무것도 쓰지 않습니다. `--features console`로 빌드하거나 `K0_BOOT_MEMLOG=<적재 주소>`로 게스트 메모리의 로그를 판정하세요 |
+| `root: partition window retry`가 나오거나 `matrix: <row> ran the window test twice, running the row again`이 나옴 | 시간 분할 테스트 도중에 호스트가 QEMU를 1초 넘게 멈춰 세워서 틱 하나를 건너뛰었고, 테스트가 한 번 더 실행됐습니다. 재시도 한 번은 실패가 아닙니다. 두 번의 실행에서 연달아 일어나면 결함으로 보세요. 긴 실행 동안에는 컴퓨터가 잠들지 않게 하세요 |
+| `root: FAIL partition: window order wrong twice` | 시간 분할 창 테스트가 두 번의 실행 모두에서 사건의 순서가 틀린 것을 봤습니다. 그 앞의 `root: partition window log <letters>` 줄이 테스트가 본 것을 보여 주고, 테스트는 [design/kr/scheduling_KR.md](design/kr/scheduling_KR.md#부팅-때의-시간-분할-테스트)에서 설명합니다 |
 | `boot-test`가 `k0: all tasks`로 시작하는 줄에서 실패함 | 모든 태스크가 기다리는 중인데 시간 제한이 있는 대기가 없어서 태스크를 깨울 수 있는 것이 없습니다. 기본 자가 테스트에서는 일어나지 않습니다. 루트 태스크를 바꿨다면 대기마다 타임아웃을 지정하세요 |
 | 부트 로그에 `k0: memory <base> + <size> not handed out (<reason>)`가 나옴 | 커널이 자기 예비 공간을 담기에 너무 작거나, 그 몫을 매핑하지 못하거나, 온전한 페이지가 하나도 없는 메모리 범위를 찾았습니다. 그 범위를 제외하고 부팅을 계속했으며, 해당 범위는 untyped 메모리로 쓸 수 없습니다. QEMU에 준 메모리 크기와 적재 주소를 확인하세요 |
 | `root: oracle made no key (boot seed has no entropy)`가 나오거나 `root: oracle tests pass`가 없음 | 부트 시드에 `rng-seed` 바이트가 32개보다 적고 RNDR도 없었음. QEMU virt처럼 디바이스 트리에 `rng-seed`가 있는 머신이나 RNDR이 있는 CPU(`K0_QEMU_CPU=max`)를 사용하세요 |

@@ -115,7 +115,8 @@ When the original capability of an endpoint is deleted, every task still queued 
 Every wait can be bounded. A timeout is the upper 32 bits of the flags register `x1`, counted in scheduler ticks. The tick period is 1 second (a kernel constant), so the tick is the unit of every timeout. The following rules apply.
 
 - **Deadline rule**: a timeout of n ticks ends at the (n+1)-th timer tick after the call. As long as ticks are handled on time, the wait lasts between n and n+1 tick periods. The timeout makes the task ready at that point. When it runs depends on the ready queue (see [scheduling.md](scheduling.md#timeouts)).
-- **Lower bound, not wall-clock time**: the kernel runs with interrupts masked during every system call, and a long one such as a large `CAP_REVOKE` makes a tick late. The wait is then that much longer.
+- **Lower bound, not wall-clock time**: the kernel runs with interrupts masked during every system call, and a long one such as a large `CAP_REVOKE` makes a tick late. The wait is then that much longer. Tick numbers follow the counter, so a handler that is more than a period late skips numbers, and a deadline counts those skipped ticks too.
+- **Late under a time partition table, never early**: a deadline is a global tick number, but the kernel looks at the deadlines of a domain only at a tick at which that domain runs. A waiter whose deadline passes while another domain runs wakes when its own domain's next window opens (see [scheduling.md](scheduling.md#time-partitions)). With no table set there is one domain, and nothing changes.
 - **0 means no deadline**: the task waits until its partner acts, as before.
 - **One deadline for a call**: the deadline of `CALL` covers both phases, waiting for a receiver and then waiting for the reply.
 - **Reply and receive**: `REPLY_RECV` applies the timeout to its receive phase only.
@@ -134,17 +135,17 @@ When a `CALL` ends with `REPLY_TIMEOUT`, the kernel clears the reply right of th
 
 ### The timed list
 
-Each TCB has the fields `deadline`, `tnext` and `tprev`. `k0-sched` keeps an unsorted, intrusive list of the timed waiters (`arm_timeout`, `disarm_timeout`, `expired`, `has_timed`), plus a lower bound of the earliest deadline so that most ticks do not walk the list. A task leaves a blocked state in only two ways, and both remove it from the list:
+Each TCB has the fields `deadline`, `tnext` and `tprev`. `k0-sched` keeps an unsorted, intrusive list of the timed waiters for each of the 8 time partition domains (`arm_timeout`, `disarm_timeout`, `expired`, `has_timed`), plus a lower bound of the earliest deadline of each list so that most ticks do not walk it. A new waiter is linked at the head of the list of its own domain. A task leaves a blocked state in only two ways, and both remove it from the list:
 
 - `k0_sched::enqueue` (a wake-up), so a waiter woken by a message keeps no deadline, and
 - `k0_ipc::teardown` (death).
 
-`k0_ipc::expire_timeouts` handles the expired waiters. It removes a waiter from its endpoint queue and wakes it with `TIMEOUT`, or it clears the reply link of the task that holds its reply and wakes it with `REPLY_TIMEOUT`. A link that does not match the state halts the kernel with `k0: FATAL`, as in teardown. It runs on every timer tick:
+`k0_ipc::expire_timeouts` handles the expired waiters. It removes a waiter from its endpoint queue and wakes it with `TIMEOUT`, or it clears the reply link of the task that holds its reply and wakes it with `REPLY_TIMEOUT`. A link that does not match the state halts the kernel with `k0: FATAL`, as in teardown. It takes the domain whose list it walks, and the scheduler calls it for the running domain only:
 
-- from `k0_preempt`, when a task was running, and
-- from the idle loop, when none was.
+- at every tick inside that domain's window and at the tick that opens the window, whether a task was running or the kernel was waiting, and
+- from the wait loop after an interrupt that was not a tick.
 
-The walk costs O(number of timed waiters) with interrupts masked, at most once per tick.
+The walk goes from the head of the list, so of several waiters that are due at once, the one that armed last is queued first. It costs O(number of timed waiters of that domain) with interrupts masked. The number of waiters in one domain therefore does not change how long a tick takes in another.
 
 > [!NOTE]
 > EL0 still cannot read any hardware counter or timer. A timeout gives EL0 a clock as coarse as the scheduler tick and a wake-up aligned to the timer interrupt. Whether that can be amplified into a useful timing source for cache or speculation attacks has not been analysed.
@@ -153,12 +154,12 @@ The walk costs O(number of timed waiters) with interrupts masked, at most once p
 
 A task that has to wait is marked with its blocked state and linked into the endpoint queue or held by a reply right. If the call has a timeout, the task is also put in the timed list. Then the scheduler switches to the next ready task (see [scheduling.md](scheduling.md)). Its return registers are written later, by the task that releases it.
 
-If no task is ready at that point, the kernel does not stop. It idles in `idle_until_ready` (`kernel/src/syscall.rs`): it waits for the next interrupt, wakes every waiter whose deadline has passed, and switches to a ready task if there is one. Timer ticks keep being counted and handled meanwhile. The idle loop prints one of two lines, each at most once per boot:
+If no task of the same domain is ready at that point, the kernel does not stop. It idles in `wait_for_work` (`kernel/src/syscall.rs`): it waits for the next interrupt, lets the scheduler wake the waiters of the running domain whose deadline has passed, and switches to a ready task of that domain if there is one. A ready task of another domain has to wait for its own window. Timer ticks keep being counted and handled meanwhile. With no table set, the idle loop prints one of two lines, each at most once per boot:
 
 - `k0: idle (waiting for a timeout)`: at least one waiter has a deadline, so something will wake a task.
 - `k0: all tasks stopped (none ready, no timeout pending)`: no waiter has a deadline and no task waits for console input. Nothing can wake a task in that state today, because K0 has no notification objects and the only device interrupt that wakes a task is console input, so the machine stays idle. `tools/qemu-boot-test.sh` treats any line that starts with `k0: all tasks` as a failure.
 
-When the only thing left to wait for is console input, the kernel prints neither line. That is the normal state of a terminal image.
+When the only thing left to wait for is console input, the kernel prints neither line. That is the normal state of a terminal image. While a time partition table that names a domain other than the root domain is set or pending, the first line is not printed at all, and the second only when no domain has a ready task or a timed waiter and nobody waits for input (see [scheduling.md](scheduling.md#when-there-is-nothing-left-to-run)).
 
 > [!WARNING]
 > The kernel no longer halts when every task is blocked, and a task can bound its own waits with timeouts. Availability is still not protected. A task that waits without a timeout can wait forever if its partner never acts, and a confined task that holds a capability to an endpoint can still make others wait. This is the subject of advisory GHSA-q99x-2wrv-358p in [SECURITY.md](../../SECURITY.md). The advisory is updated at release time.
@@ -186,7 +187,8 @@ If no byte is ready, the task waits in the state `BlockedConsole`. The wait work
 - **Revocation**: a waiter whose `Console` capability is deleted, revoked or moved wakes at once with `REVOKED`, and gets no byte.
 - **No input path**: `NO_DEVICE` means that the image has no receive driver for this console, or that the input path was turned off. A waiter wakes with it when the path is turned off while it waits.
 - **Teardown**: a task that dies while it waits is removed from the waiter place.
-- **Wake-up order**: a woken reader goes to the end of the ready queue. Input does not preempt a running task.
+- **Wake-up order**: a woken reader goes to the end of its domain's ready queue. Input does not preempt a running task.
+- **Under a time partition table**: a byte is handed to the waiter only while the waiter's domain runs. Otherwise it stays in the ring until the next tick at which that domain runs. `REVOKED` and `NO_DEVICE` are delivered whichever domain runs. This rule has no test yet (see [scheduling.md](scheduling.md#console-input-under-a-table)).
 
 Receive interrupts stay off until a task first reads console input with the right. That first read discards what the device holds and stops the periodic `k0: tick N` lines after one line `k0: tick lines off (console input in use)`. Ticks, preemption and timeouts keep working. The receive path and its limits are described in [USAGE.md](../../USAGE.md) and [exceptions.md](exceptions.md).
 
@@ -257,7 +259,8 @@ The boot test script also requires an exact number of `k0: task fault` lines and
 > [!NOTE]
 > Capability transfer over IPC and notification objects do not exist yet. Timeouts are opt-in per call, so a task that waits without one still waits until its partner acts.
 
-- **Timeouts say when a task becomes ready, not when it runs**: there is no priority and no CPU budget, and the scheduler is round robin on a one-second tick. A task that got the CPU between two ticks keeps it through the next tick, so a woken task can wait one tick period longer than it did before. With k tasks to run before it, a task starts within k + 1 tick periods. These numbers describe this version of the scheduler and are not an interface (see [scheduling.md](scheduling.md)).
+- **Timeouts say when a task becomes ready, not when it runs**: there is no priority and no CPU budget, and the scheduler is round robin on a one-second tick. A task that got the CPU between two ticks keeps it through the next tick, so a woken task can wait one tick period longer than it did before. With k tasks to run before it, a task starts within k + 1 tick periods. Under a time partition table a timeout can also fire late, at the start of the waiter's next window, and the woken task runs only in its own windows. These numbers describe this version of the scheduler and are not an interface (see [scheduling.md](scheduling.md)).
+- **An endpoint shared across domains is a channel**: fixed time partitions do not cover IPC between domains. A send, a reply, a timeout that depends on the partner, the deletion of the endpoint and the end of a task that holds a reply all tell the other side something, and when. That is what the capability was given for (see [scheduling.md](scheduling.md#what-the-partitions-claim-and-what-they-do-not)).
 - **Long system calls**: the kernel is not preemptible, so a long call such as `CAP_REVOKE` on an untyped with many objects delays every other task and every timeout.
 - **Fatal stops**: a `k0_arch::fatal` or a kernel panic still stops the machine.
 - **Timing source for EL0**: whether the tick-aligned wake-up can be used for timing attacks has not been analysed. In an image with console input, an outside party can cause interrupts while tasks run (bounded by the reader for bytes and by 256 per tick for characters with a line error), and the reader learns arrival times finer than the tick. Other tasks can notice the stolen time. This timing channel is not analysed either.

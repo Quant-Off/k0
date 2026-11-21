@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 460" width="960" height="460" role="img" aria-labelledby="title desc">
+  <title id="title">Time partition windows and the guard</title>
+  <desc id="desc">A table of three entries gives domain 1 one tick, domain 0 one tick and domain 2 two ticks, and then repeats. A domain runs only in its windows, and when it has nothing ready the CPU waits. Before a tick that changes the domain, the timer interrupt is taken one fortieth of a tick early, the kernel does the switch work and holds, and the next domain starts at the tick instant.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .user { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; }
+    .ext { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .warn { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .t { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Noto Sans CJK KR', sans-serif; font-size: 15px; fill: #1f2328; }
+    .h { font-weight: 600; font-size: 16px; }
+    .s { font-size: 13px; fill: #57606a; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #1f2328; }
+    .line { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .off { stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; }
+  </style>
+  <rect class="bg" x="0.5" y="0.5" width="959" height="459" rx="10"/>
+
+  <text class="t h" x="30" y="36">A table of three entries, repeated</text>
+  <text class="m" x="30" y="60">(domain 1, 1 tick) (domain 0, 1 tick) (domain 2, 2 ticks)</text>
+
+  <rect class="user" x="590" y="16" width="22" height="14"/>
+  <text class="t s" x="620" y="28">a task of the domain runs</text>
+  <rect class="box" x="590" y="36" width="22" height="14"/>
+  <text class="t s" x="620" y="48">nothing ready in the domain: the CPU waits</text>
+  <rect class="kernel" x="590" y="56" width="22" height="14"/>
+  <text class="t s" x="620" y="68">guard before a change of domain</text>
+
+  <rect class="user" x="60" y="96" width="163" height="56"/>
+  <text class="t" x="141" y="129" text-anchor="middle">domain 1</text>
+  <rect class="kernel" x="223" y="96" width="5" height="56"/>
+
+  <rect class="user" x="228" y="96" width="80" height="56"/>
+  <text class="t" x="268" y="129" text-anchor="middle">domain 0</text>
+  <rect class="box" x="308" y="96" width="83" height="56"/>
+  <text class="t s" x="349" y="129" text-anchor="middle">CPU waits</text>
+  <rect class="kernel" x="391" y="96" width="5" height="56"/>
+
+  <rect class="user" x="396" y="96" width="331" height="56"/>
+  <text class="t" x="480" y="129" text-anchor="middle">domain 2</text>
+  <text class="t s" x="648" y="129" text-anchor="middle">one window of 2 ticks</text>
+  <rect class="kernel" x="727" y="96" width="5" height="56"/>
+
+  <rect class="user" x="732" y="96" width="163" height="56"/>
+  <text class="t" x="813" y="129" text-anchor="middle">domain 1</text>
+  <rect class="kernel" x="895" y="96" width="5" height="56"/>
+
+  <line class="line" x1="60" y1="88" x2="60" y2="164"/>
+  <line class="line" x1="228" y1="88" x2="228" y2="164"/>
+  <line class="line" x1="396" y1="88" x2="396" y2="164"/>
+  <line class="off" x1="564" y1="88" x2="564" y2="164"/>
+  <line class="line" x1="732" y1="88" x2="732" y2="164"/>
+  <line class="line" x1="900" y1="88" x2="900" y2="164"/>
+  <text class="t s" x="60" y="182" text-anchor="middle">tick n</text>
+  <text class="t s" x="228" y="182" text-anchor="middle">n + 1</text>
+  <text class="t s" x="396" y="182" text-anchor="middle">n + 2</text>
+  <text class="t s" x="564" y="182" text-anchor="middle">n + 3 (same domain)</text>
+  <text class="t s" x="732" y="182" text-anchor="middle">n + 4</text>
+  <text class="t s" x="900" y="182" text-anchor="middle">n + 5</text>
+
+  <line class="off" x1="226" y1="190" x2="330" y2="262"/>
+  <line class="off" x1="230" y1="190" x2="640" y2="262"/>
+
+  <text class="t h" x="30" y="236">One change of domain, enlarged</text>
+  <rect class="user" x="60" y="262" width="270" height="56"/>
+  <text class="t" x="195" y="295" text-anchor="middle">a task of domain 1 runs</text>
+  <rect class="kernel" x="330" y="262" width="180" height="56"/>
+  <text class="t" x="420" y="295" text-anchor="middle">switch work</text>
+  <rect class="kernel" x="510" y="262" width="130" height="56"/>
+  <text class="t" x="575" y="295" text-anchor="middle">hold</text>
+  <rect class="user" x="640" y="262" width="260" height="56"/>
+  <text class="t" x="770" y="295" text-anchor="middle">a task of domain 0 runs</text>
+
+  <line class="line" x1="330" y1="318" x2="330" y2="354"/>
+  <line class="line" x1="640" y1="318" x2="640" y2="354"/>
+  <line class="line" x1="330" y1="338" x2="640" y2="338"/>
+  <text class="t s" x="485" y="356" text-anchor="middle">guard: 1/40 of a tick (25 ms)</text>
+  <text class="t s" x="322" y="374" text-anchor="end">timer interrupt, taken early</text>
+  <text class="t s" x="648" y="374">tick instant: the next domain starts</text>
+
+  <text class="t s" x="30" y="412">Switch work: the tick rule is applied to the running task and it is parked in its own queue, the TLB is flushed,</text>
+  <text class="t s" x="30" y="432">the due waiters of the next domain are woken and its first task is installed. Then the kernel holds.</text>
+</svg>

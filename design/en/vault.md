@@ -110,7 +110,7 @@ The operator can neither get a signature nor deliver a seed. A call without a ba
 
 The kernel derives 32 bytes for the root task with SHA-256 under its own domain string from the DTB entropy, the counter and, when the CPU has RNDR, four fresh RNDR words (`k0_boot::derive_root_seed`). It is independent of the PAC keys by domain separation. The seed is as good as its inputs and no better.
 
-The seed is delivered in the root task's entry registers `x0` to `x3`. `x4` holds how many `rng-seed` bytes were used (bits 15 to 0), and bit 16 says that RNDR contributed. It is not in the bootinfo page, and `bootinfo::VERSION` is 4. The root task prints only `root: boot seed from rng-seed bytes 0x... and rndr` or `... without rndr`, never the seed. It then gives the seed to a vault with `INIT`, which only delivers it. The key is made later by `KEYGEN`.
+The seed is delivered in the root task's entry registers `x0` to `x3`. `x4` holds how many `rng-seed` bytes were used (bits 15 to 0), and bit 16 says that RNDR contributed. It is not in the bootinfo page (`bootinfo::VERSION` is 5 today). The root task prints only `root: boot seed from rng-seed bytes 0x... and rndr` or `... without rndr`, never the seed. It then gives the seed to a vault with `INIT`, which only delivers it. The key is made later by `KEYGEN`.
 
 **Seed wipe**: the FDT parser records where the `rng-seed` and `kaslr-seed` values are, and a second `/chosen` node is refused (`DuplicateChosen`, also in the UEFI loader's pre-check, which shares the parser). Right before the kernel enters the root task, it zeroes those bytes. `k0_mm::wipe_ro_alias` switches the read-only alias entry of the page to read-write in place (break-before-make), writes zeros, cleans and invalidates the cache lines, and switches it back. The kernel then reads the bytes back, wipes its own copy in `BootInfo`, prints `k0: dtb seeds wiped <n>B` (40B on QEMU virt) and zeroes the boot stack below the live frames. This is the only write the kernel makes through the DTB mapping, and it happens after the DTB was parsed and validated.
 
@@ -147,7 +147,7 @@ You can build an image with the vault as follows:
 $ cargo build -p k0-kernel --features console,vault-ed25519
 ```
 
-`crates/k0-boot/build.rs` forwards the feature to the nested build of the root task. The vault's code is part of the root task image, which is checked by SHA-256 at boot like before. Nothing is loaded after boot. With Ed25519 the image has 24 frames of 4 KiB (the limit is 78).
+`crates/k0-boot/build.rs` forwards the feature to the nested build of the root task. The vault's code is part of the root task image, which is checked by SHA-256 at boot like before. Nothing is loaded after boot. With Ed25519 the image has 28 frames of 4 KiB (the limit is 77).
 
 ## How it is tested
 
@@ -156,7 +156,7 @@ $ cargo build -p k0-kernel --features console,vault-ed25519
 - always: `badges_map_to_fixed_roles_and_frames`, `each_role_may_do_exactly_its_operations`, `no_frame_is_touched_for_a_request_that_cannot_have_a_body`, `a_request_that_claims_a_body_it_cannot_have_is_refused`, `the_status_word_packs_state_algorithm_and_what_is_built`, `a_call_without_a_known_badge_is_denied`, `malformed_requests_are_refused_whole`, `a_seed_without_real_entropy_makes_no_key`, `the_seed_is_taken_once_and_zeroize_is_final`, `fetch_clamps_the_length_and_publish_writes_header_and_body`, and `without_an_algorithm_the_vault_takes_no_seed_and_serves_nothing` (the last one without the algorithm only).
 - with Ed25519: `the_self_test_passes_and_is_reported`, `key_generation_follows_the_states`, `the_operator_gets_the_public_key_and_never_a_signature`, `a_vault_that_fails_holds_no_secret`, `signatures_verify_and_the_key_follows_the_seed`, `a_public_key_request_carries_no_body`, `unknown_algorithms_are_unsupported`, `nothing_is_served_after_zeroize`, `a_small_order_public_key_is_refused_even_with_a_matching_signature`, `a_failed_vault_refuses_everything_but_status`.
 
-With the other crates, the host suite has 377 tests on an ARM host and 289 on other hosts (without `k0-mm`), and `k0-slice` adds 9 of them.
+With the other crates, the host suite has 415 tests on an ARM host and 327 on other hosts (without `k0-mm`).
 
 **Root task self-test** (`test_oracle` in `userspace/root-task/src/oracle.rs`, only in images built with `vault`). It checks the following:
 
@@ -185,6 +185,7 @@ The marker is `root: oracle tests pass`. The client tasks run one after another 
 - **The terminal and the vault are not restarted**: if they die, they stay dead. The root task is trusted.
 - **Availability is not protected**: clients share one endpoint and must use timeouts on every call (see [ipc.md](ipc.md)). Behind one CPU-bound task, a caller and the vault need 4 ticks per round trip in the scheduler model, where they needed 2. The terminal's calls use a 5 tick timeout, and the fixed image has no CPU-bound task in service mode.
 - **The root task is trusted**: it builds the vault and could read it.
+- **No domain of its own**: the vault is not in a time partition domain of its own yet. The root task deletes the control capability of the time partitions at the end of its self-tests, so the vault, its clients and the terminal all run in the root domain, and what they learn about each other through the scheduler is not limited (see [scheduling.md](scheduling.md#time-partitions)).
 - **No client identity**: all signers share the one key.
 - **Entropy**: the seed is as good as its inputs. The key does not come from an approved random bit generator.
 - **Best-effort wipes**: see the note in the boot seed section.

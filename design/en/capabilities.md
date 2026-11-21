@@ -23,7 +23,7 @@ The related code is in the files of the following table.
 | `crates/k0-abi/src/lib.rs` | numbers and error codes (the source of truth for the ABI) |
 
 > [!IMPORTANT]
-> The system call ABI changed incompatibly with this model (bootinfo version 2, now 4). Read the "Known gaps" section before relying on any of this.
+> The system call ABI changed incompatibly with this model (bootinfo version 2, now 5). Version 5 moved the first untyped slot, so a root task built for an earlier version does not run on this kernel. Read the "Known gaps" section before relying on any of this.
 
 Capability-based isolation covers confidentiality and integrity between tasks. It does not cover availability.
 
@@ -67,6 +67,7 @@ In the following table, each kind is listed with the time it is created and what
 | `CNode` | by `RETYPE`, and at boot for the root CNode | an array of slots, used as a capability space and as a destination for copies and moves |
 | `AddrSpace` | by `RETYPE`, and at boot for the root task | an address space: the right to map into it and to run a task in it |
 | `Console` | at boot | the right to write bytes to the debug output (`W`): the boot log, and the console in an image built with a console driver. With `R` it also grants reading console input in an image built with `console-input` |
+| `PartCtl` | at boot, exactly one | the right to set the time partition table and to put a task that has not run yet in a domain (see [scheduling.md](scheduling.md#time-partitions)). It names no object and cannot be copied |
 
 ### Rights
 
@@ -106,7 +107,7 @@ Both are copies (children) of the capabilities given to `TCB_CONFIGURE` and are 
 
 ## The root CNode and the boot capabilities
 
-The root task's CNode is the root CNode. It has `ROOT_CNODE_SLOTS` (512) slots and lives in the 2 MiB boot frame window, together with the bootinfo page, the root TCB, and the root task's image, stack and page tables. None of these boot objects is untyped, so they can never be retyped. Boot capabilities are originals and each is the root (depth 0) of its own derivation list.
+The root task's CNode is the root CNode. It has `ROOT_CNODE_SLOTS` (1024) slots in every image and lives in the 2 MiB boot frame window, together with the bootinfo page, the root TCB, and the root task's image, stack and page tables. None of these boot objects is untyped, so they can never be retyped. Boot capabilities are originals and each is the root (depth 0) of its own derivation list.
 
 `bootstrap` fills the root CNode in the order of the following table.
 
@@ -117,7 +118,8 @@ The root task's CNode is the root CNode. It has `ROOT_CNODE_SLOTS` (512) slots a
 | 2 | `AddrSpace` of the root task |
 | 3 | `Console`, with `W`. It has `R` only in an image built with `console-input` |
 | 4 | `CNode`, a capability to the root CNode itself, so it can be used as a copy or move destination |
-| 5 and up | `Untyped` capabilities, then one `Frame` capability per mapped granule of the root task image |
+| 5 | `PartCtl`, the control capability of the time partitions |
+| 6 and up | `Untyped` capabilities, then one `Frame` capability per mapped granule of the root task image |
 
 The image `Frame` capabilities have rights fixed by the segment: text is `R|X` (no `W`), read-only data is `R`, data is `R|W` (no `X`). The text frames are the only frames in the system that carry `X`, and their contents are the image whose hash was verified at boot. The root task's own boot mappings are permanent and are not represented by these capabilities.
 
@@ -139,7 +141,7 @@ Running out of slots also stops the boot. A DTB memory region beyond the CPU's p
 
 ## The bootinfo page
 
-Just before the handoff, the kernel writes a description of the root CNode into the bootinfo page, which is mapped read-only for the root task at `bootinfo::VA`. The version is 4 (`bootinfo::VERSION`). The page layout did not change from version 2. Version 3 came because the root task receives a boot seed in its entry registers (the seed in `x0..x3`, its description in `x4`; see [boot.md](boot.md)), and the seed is not in this page. Version 4 came because the `Console` capability now carries rights. A root task that sees another version must not proceed.
+Just before the handoff, the kernel writes a description of the root CNode into the bootinfo page, which is mapped read-only for the root task at `bootinfo::VA`. The version is 5 (`bootinfo::VERSION`). The page layout did not change from version 2. Version 3 came because the root task receives a boot seed in its entry registers (the seed in `x0..x3`, its description in `x4`; see [boot.md](boot.md)), and the seed is not in this page. Version 4 came because the `Console` capability now carries rights. Version 5 came because slot 5 now holds `PartCtl`, so the first untyped capability moved from slot 5 to slot 6. A root task that sees another version must not proceed.
 
 The page starts with a header `{version, frame_size, cap_count, cnode_slots}`, followed by `cap_count` descriptors `{kind, base, size, rights}`. The index of a descriptor is its slot number in the root CNode, and every slot at or beyond `cap_count` is empty. A descriptor is filled in by kind as follows:
 
@@ -147,7 +149,7 @@ The page starts with a header `{version, frame_size, cap_count, cnode_slots}`, f
 - **Image Frame**: `base` is the virtual address where the granule is mapped in the root address space, `size` is the frame size and `rights` the rights bits.
 - **Everything else**: all zero, so kernel object addresses are not exposed. The kernel also no longer prints the root page table's physical address.
 
-The page is a snapshot. Capabilities created later by `RETYPE` do not appear in it, because the caller chooses their slots. `crates/k0-boot/build.rs` fails the build if the root image maps more 4 KiB frames than the page can describe.
+The page is a snapshot. Capabilities created later by `RETYPE` do not appear in it, because the caller chooses their slots. `crates/k0-boot/build.rs` fails the build if the root image maps more 4 KiB frames than the page can describe. The bound is 77 frames: the page holds 127 descriptors, 6 of them are the fixed slots (the null slot included), and at most 44 are untyped.
 
 ## Retype
 
@@ -211,9 +213,9 @@ The depth is capped at `MAX_DEPTH`. A `CAP_COPY` or `RETYPE` that would exceed i
 - `mask` must be a subset of `R|W|X`, otherwise `BAD_PERM`. It is ANDed with the rights of a `Frame` or `Endpoint`. If no rights remain, the result is `NO_RIGHTS`.
 - `badge` follows the rules above.
 - The copy has an empty mapping record, and a copy is never an original.
-- `Untyped` and `PageTable` capabilities cannot be copied (`BAD_CAP`). Copying an untyped would allow retyping the same memory twice, and copying a page table would allow installing it in two address spaces.
+- `Untyped`, `PageTable` and `PartCtl` capabilities cannot be copied (`BAD_CAP`). Copying an untyped would allow retyping the same memory twice, and copying a page table would allow installing it in two address spaces. `PartCtl` stays single so that deleting it seals the partition table for good. The copy rule names every kind one by one, so a kind added later does not compile until its rule is written.
 
-`CAP_MOVE(src, cnode, index)` moves a capability to an empty slot. Its place in the list and its mapping record move with it. A capability bound to a TCB cannot be moved (`BAD_CAP`). `Untyped` and `PageTable` capabilities can be moved, which is the only way to hand them to another CNode.
+`CAP_MOVE(src, cnode, index)` moves a capability to an empty slot. Its place in the list and its mapping record move with it. A capability bound to a TCB cannot be moved (`BAD_CAP`). `Untyped`, `PageTable` and `PartCtl` capabilities can be moved, which is the only way to hand them to another CNode.
 
 `CAP_REVOKE(slot)` removes every descendant of the slot and keeps the slot itself.
 
@@ -236,6 +238,7 @@ When an original capability is removed, its object is finalized by the callbacks
 - **Console**: a task that waits in `CONSOLE_READ` on this capability wakes at once with `REVOKED` when the capability is deleted, revoked or moved (see [ipc.md](ipc.md)).
 - **Tcb** (original), and any capability bound to a task: the task is torn down, see [scheduling.md](scheduling.md) and [ipc.md](ipc.md).
 - **AddrSpace** (original): it is released in the registry (which bumps its generation). If it is installed in TTBR0, TTBR0 is switched to an empty table from the kernel pool.
+- **PartCtl**: there is no object to finalize. Because no other `PartCtl` exists and none can be made, removing it means that the partition table and the domains of tasks can no longer be changed (see [scheduling.md](scheduling.md#the-control-capability-and-the-two-system-calls)).
 
 A **mapping record** is `(asid, generation, va, level)`. The `asid` is the number of the granule that holds the root table of the address space, a `u64` (the same number as in `Cap::AddrSpace`). It is checked when the word is decoded. Unmapping, deleting and revoking only walk a root that the registry confirms is still the same address space, and only clear an entry that still points at that very frame or table. See [user-address-space.md](user-address-space.md).
 
@@ -256,6 +259,8 @@ The following table lists the capabilities and rights each system call requires.
 | `UNMAP` | a `Frame` or `PageTable` that is mapped |
 | `TCB_CONFIGURE` | a `Tcb` in the `Inactive` state, an `AddrSpace` and a `CNode` |
 | `TCB_RESUME` | a `Tcb` in the `Stopped` state |
+| `PART_SET_TABLE` | the `PartCtl` |
+| `PART_SET_DOMAIN` | the `PartCtl`, and a `Tcb` in the `Stopped` state |
 | `SEND`, `CALL` | an `Endpoint` with `W` |
 | `RECV`, `REPLY_RECV` | an `Endpoint` with `R` |
 | `CAP_COPY` | the source, and a `CNode` naming the destination |
@@ -265,7 +270,7 @@ The following table lists the capabilities and rights each system call requires.
 > [!IMPORTANT]
 > There is no implicit authority. The target of `MAP` is always the `AddrSpace` the caller presents, never "the current address space".
 
-`TCB_CONFIGURE` is atomic: both bindings are validated before either is written, and a failure leaves both embedded slots empty. It is accepted only on an `Inactive` TCB, forces the saved state to EL0t, and gives the new task its argument in `x0`.
+`TCB_CONFIGURE` is atomic: both bindings are validated before either is written, and a failure leaves both embedded slots empty. It is accepted only on an `Inactive` TCB, forces the saved state to EL0t, gives the new task its argument in `x0`, and puts it in the time partition domain of the caller.
 
 Because mappings are limited to `RO`, `RW` and `RX`, and `X` exists only on the root task's text frames (without `W`), no physical frame is ever writable in one place and executable in another. The consequence is that new executable code cannot be loaded after boot, and a confined task runs code from the root task image.
 
@@ -298,6 +303,7 @@ The following table lists the error codes for slot problems and their meaning.
   - that bad sources are rejected before any preparation runs
   - that retyped frames never carry execute
   - the copy rules per kind
+  - that `PartCtl` cannot be copied whatever the mask and the badge, that it can be moved, and that a `PartCtl` word carrying anything else does not decode
   - that a move keeps the subtree attached
   - that deleting finalizes only with the original
   - that untyped memory is reused only when nothing is left
@@ -341,7 +347,7 @@ The 16 KiB image boots and passes the boot checks on QEMU `-cpu max`, and it boo
   - All objects are exactly one granule, and an untyped cannot be split.
   - No capability transfer over IPC.
   - No hardware ASIDs: TTBR0 changes flush the whole TLB, as does every unmap, table detach and address space destruction.
-- **Control capabilities**: they are all or nothing. `Tcb`, `CNode` and `AddrSpace` capabilities carry no rights, so there is no reduced copy of one. Whoever holds such a capability has full control of the object, and a task is controlled by whoever holds a capability to its TCB, its CNode or its address space.
+- **Control capabilities**: they are all or nothing. `Tcb`, `CNode` and `AddrSpace` capabilities carry no rights, so there is no reduced copy of one. Whoever holds such a capability has full control of the object, and a task is controlled by whoever holds a capability to its TCB, its CNode or its address space. `PartCtl` is all or nothing as well: one capability covers the table and the domains of all tasks, and it cannot be split into a part that sets the table and a part that places tasks.
 - **New code after boot**: it cannot be loaded. Because of W^X by capability rights, executable memory exists only in the root task image.
 - **Interrupts during revoke**: they are masked. The time of `CAP_REVOKE` and `CAP_DELETE` is proportional to the number of capabilities removed.
 - **Not verified here**: anything in tier 3: any real board, KVM, Firecracker, Cloud Hypervisor, crosvm, the 16550 console driver (never run), GICs with real security extensions on hardware, and CPUs with `HCR_EL2.E2H` fixed to 1 (that path follows Linux and has not run anywhere). Tier 1 (`tools/boot-matrix.sh`, run in CI and locally) and tier 2 (by hand on 2026-11-11 and 2026-11-12, Apple M5 Pro, QEMU HVF) are the supported set. The UEFI rows are listed in [uefi.md](uefi.md).

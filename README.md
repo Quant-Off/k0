@@ -33,6 +33,7 @@ K0 is a small operating system kernel for 64-bit ARM (AArch64) computers. It is 
 - **Wiped before reuse**: memory is filled with zeros every time it is handed out again.
 - **Write or run, never both**: no memory is writable and executable at the same time. The flip side is that no new code can become executable after boot, so programs cannot load new code.
 - **Distrust of boot input**: the hardware description handed over at boot is checked as if an attacker wrote it.
+- **Fixed time partitions**: programs can be put into groups (domains) that run only in their own windows of a repeating timetable, and time that a group does not use is not given to another group. The mechanism is always in the kernel and is tested at every boot, but no image uses more than one domain yet. Machine-checked proofs (Lean 4) come with it. They are about a model of the scheduler, not about the code. See [INTRODUCTION.md](INTRODUCTION.md).
 - **Optional signing oracle**: a build option adds a task that signs messages for other tasks and never gives out its key. It is off by default, the Ed25519 implementation is unvalidated, and it keeps one key in memory only. See [INTRODUCTION.md](INTRODUCTION.md).
 - **Optional operator terminal**: a build option adds a screen on the serial line where a person types commands. It can make the signing oracle's key, read the public key and erase the key, but it cannot sign. It is off by default.
 
@@ -70,6 +71,7 @@ In the following table, you can find the documents in this repository. The desig
 | [USAGE.md](USAGE.md) | Setting up, building, running and testing |
 | [SECURITY.md](SECURITY.md) | Isolation model, known advisories, reporting a vulnerability |
 | [Design notes](design/en/README.md) | How each part of the kernel works and why it was built that way |
+| [Lean proofs](proofs/lean/README.md) | What is proved about a model of the time partition scheduler, what is not, and how to check it |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 
 ## Contributing

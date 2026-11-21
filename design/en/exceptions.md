@@ -6,7 +6,7 @@ English | [한국어](../kr/exceptions_KR.md)
 
 </div>
 
-After the handoff, **kernel code runs only in response to an exception**. This note describes the vector table, how user state is saved and restored, how system calls are dispatched, and how a faulting task is contained. The code is in `crates/k0-arch/src/vectors.S`, `vectors.rs`, `usermode.rs` and `irq.rs`, and in `k0_syscall`, `k0_fault`, `k0_preempt` and `finish` in `kernel/src/syscall.rs`. The note describes the current `main` branch (unreleased).
+After the handoff, **kernel code runs only in response to an exception**. This note describes the vector table, how user state is saved and restored, how system calls are dispatched, and how a faulting task is contained. The code is in `crates/k0-arch/src/vectors.S`, `vectors.rs`, `usermode.rs` and `irq.rs`, and in `k0_syscall`, `k0_fault`, `k0_preempt`, `k0_leave`, `finish` and `wait_for_work` in `kernel/src/syscall.rs`. The note describes the current `main` branch (unreleased).
 
 The following figure shows the path that the kernel follows for each kind of exception.
 
@@ -43,7 +43,7 @@ The fatal vector path above is for exceptions the CPU raises. `k0_arch::fatal` i
 
 ### Interrupts while in the kernel
 
-An IRQ taken at EL1 saves the caller-saved registers on the kernel stack, calls the handler and returns. While the kernel handles an exception it keeps interrupts masked, with one exception: the idle wait in `idle_until_ready` (see [The finish path](#the-finish-path)). The kernel itself is never preempted.
+An IRQ taken at EL1 saves the caller-saved registers on the kernel stack, calls the handler and returns. While the kernel handles an exception it keeps interrupts masked, with one exception: the idle wait in `wait_for_work` (see [The finish path](#the-finish-path)). The kernel itself is never preempted.
 
 The idle wait opens only the I bit, for one pending interrupt, by `k0_arch::irq::wait_for_interrupt` (`wfi` with IRQs masked, then a short unmask). This is safe for three reasons. First, the whole EL0 context, including `ELR_EL1` and `SPSR_EL1`, is already saved in the TCB, so the nested EL1 IRQ may overwrite both registers without losing anything. Second, the handler runs on the kernel stack, which has plenty of room because the exception entry starts at the top of it. Third, the mask is set again right after the interrupt, so no other kernel code runs with interrupts open.
 
@@ -68,7 +68,7 @@ The thread pointer registers are saved too, so that one task's thread pointer ne
 
 The handler receives a mutable reference to this context and may change it: write return values, advance the program counter, or point `__current_context` at another task. When the handler returns, execution falls through into `__user_restore`. It loads `__current_context` again and restores the user state from whatever context it now names. That is why **a task switch is just a pointer change** (see [scheduling.md](scheduling.md)).
 
-The very first entry to EL0 at handoff uses the same restore path. That entry, `enter_user`, masks all of DAIF before it loads `ELR_EL1` and `SPSR_EL1`. At boot the timer is already running, and an interrupt between those register writes and the `eret` would overwrite both registers with EL1 values. On the normal path through an exception entry the mask is already set.
+The very first entry to EL0 at handoff uses the same restore path. That entry, `enter_user`, masks all of DAIF before it loads `ELR_EL1` and `SPSR_EL1`. At boot the timer is already running, and an interrupt between those register writes and the `eret` would overwrite both registers with EL1 values. On the normal path through an exception entry the mask is already set. `k0_sched::handoff` masks interrupts even earlier, before the scheduler reads the tick number for the first time. A tick that was counted between that read and the entry to EL0 would leave the scheduler one tick behind the timer. A tick that becomes pending while the mask is set is taken right after the entry to EL0 as an ordinary tick.
 
 FP/SIMD registers are not part of the context. They do not need to be, because every FP/SIMD instruction at EL0 traps (see [hardening.md](hardening.md)).
 
@@ -77,7 +77,7 @@ FP/SIMD registers are not part of the context. They do not need to be, because e
 `el0_sync` reads `ESR_EL1` and decides by exception class as follows:
 
 - **System call**: an `SVC` from AArch64 goes to `k0_syscall`. The CPU has already set the return address to the instruction after `svc`.
-- **Skipped instruction**: a trapped `WFI` or `WFE` is skipped. The return address moves past the instruction and the task continues.
+- **Skipped instruction**: a trapped `WFI` or `WFE` is skipped. The return address moves past the instruction and the task continues. The scheduler state does not change, but this path passes the exit check like every other (see [The exit check](#the-exit-check)).
 - **Fault**: everything else is a fault: aborts, undefined instructions, trapped system register accesses, FP/SIMD use, alignment faults, `brk` and the rest. It goes to `k0_fault` together with `FAR_EL1`.
 
 ## System calls
@@ -103,6 +103,8 @@ The system call number is in `x8`. Arguments are in `x0` to `x5`, and the result
 | 14 | `CAP_DELETE` | delete a capability and everything derived from it |
 | 15 | `CAP_REVOKE` | delete everything derived from a capability and keep the capability |
 | 16 | `CONSOLE_READ` | read one byte of console input (only in an image built with `console-input`, see below); needs a `Console` capability with the read right |
+| 17 | `PART_SET_TABLE` | set the time partition table; needs the `PartCtl` capability (see [scheduling.md](scheduling.md#the-control-capability-and-the-two-system-calls)) |
+| 18 | `PART_SET_DOMAIN` | put a task that has not run yet in a time partition domain; needs the `PartCtl` capability |
 
 > [!IMPORTANT]
 > An unknown number is not just an error code. K0 treats it as a sign that the task is broken or hostile, prints `k0: unknown syscall N, killing task`, and terminates the caller.
@@ -123,31 +125,44 @@ It then calls `kill_current`, which runs the teardown described in [scheduling.m
 
 Every system call and every fault ends in `finish`, which runs after the handler and after all capability cleanup. A handler can kill the calling task without a fault: `EXIT`, deleting its own CNode, address space or TCB, or revoking the untyped it came from. So `finish` decides what happens to the context only once everything else is done:
 
-1. **The current task is Dead**: no return value is written into its context. The context is zeroed, so no register of a dead task survives, and the kernel switches to the next ready task. If none is ready, it calls `idle_until_ready` (see below).
+1. **The current task is Dead**: no return value is written into its context. The context is zeroed, so no register of a dead task survives, and the kernel switches to the next ready task of the same domain. If none is ready, it calls `wait_for_work` (see below).
 2. **Any other case**: the return value is written to `x0`. IPC calls that block write their results later, when the partner acts.
 
 Cleanup comes before the switch because a revoke can destroy the very address space or CNode the task was using. The next task must not run on top of half-finished cleanup.
 
-When no task is ready (for example the last runnable task died, or every task is blocked), `idle_until_ready` **keeps the kernel idle instead of stopping it**. In a loop it waits for the next interrupt with `k0_arch::irq::wait_for_interrupt`, calls `k0_ipc::expire_timeouts` so that every IPC waiter whose deadline has passed is woken, and switches to a ready task if there is one. Timer ticks keep being counted and handled while the kernel idles. The nested EL1 IRQ is explained in [Interrupts while in the kernel](#interrupts-while-in-the-kernel). The function prints two lines, each at most once per boot:
+When the running domain has no ready task (for example its last runnable task died, or every task is blocked), `wait_for_work` **keeps the kernel idle instead of stopping it**. In a loop it waits for the next interrupt with `k0_arch::irq::wait_for_interrupt` and then asks the scheduler (`k0_sched::poll`). The scheduler follows the time partition table if the tick number went up, wakes the waiters of the running domain that are due (console input first, then IPC timeouts through `k0_ipc::expire_timeouts`), and installs a ready task of that domain if there is one. A ready task of another domain is not run in its place (see [scheduling.md](scheduling.md#windows)). The same loop is used when a tick cut the running task at the end of its window and the incoming domain is empty. Timer ticks keep being counted and handled while the kernel idles. The nested EL1 IRQ is explained in [Interrupts while in the kernel](#interrupts-while-in-the-kernel). With no table set, the function prints two lines, each at most once per boot:
 
 | Line | When |
 | --- | --- |
 | `k0: idle (waiting for a timeout)` | the first time the kernel idles while at least one waiter has a deadline |
 | `k0: all tasks stopped (none ready, no timeout pending)` | the first time the kernel idles while no waiter has a deadline |
 
-In the second state nothing can wake a task today, because there are no notification objects and no device interrupts for tasks other than console input. The machine stays idle. In an image with `console-input`, a task that waits for console input counts as a waiter: when that is the only thing left to wait for, the kernel prints nothing, which is the normal state of a terminal image. The second line is printed only when there is neither a timed waiter nor a console waiter. `tools/qemu-boot-test.sh` treats any line that starts with `k0: all tasks` as a failure.
+In the second state nothing can wake a task today, because there are no notification objects and no device interrupts for tasks other than console input. The machine stays idle. In an image with `console-input`, a task that waits for console input counts as a waiter: when that is the only thing left to wait for, the kernel prints nothing, which is the normal state of a terminal image. The second line is printed only when there is neither a timed waiter nor a console waiter. While a table that names a domain other than the root domain is set or pending, the first line is not printed, and the second is printed only when no domain has a ready task or a timed waiter and no task waits for console input. `tools/qemu-boot-test.sh` treats any line that starts with `k0: all tasks` as a failure.
+
+### The exit check
+
+Every return from an exception to EL0 passes one function, `k0_leave`: the end of `k0_syscall`, the end of `k0_fault`, the end of the IRQ path whatever the interrupt was, and the skipped `WFI` or `WFE`. It does two things:
+
+1. It checks that the task about to be resumed is `Running` and belongs to the domain that is running now. If not, the scheduler state is broken, and the kernel halts with `k0: FATAL returning to a task outside its window` and does not run a task outside its window.
+2. It spins until the instant of the last processed tick (`k0_arch::irq::hold_until_due`). That instant is in the future only when the tick was taken early, which happens before a change of domain. Otherwise it returns at once.
+
+[scheduling.md](scheduling.md#the-guard-and-the-hold) explains what the early tick and the hold are for. The first entry to EL0 at handoff does not pass this function.
 
 ## Timer interrupts from EL0
 
 The interrupt the kernel always enables is **the EL1 virtual timer**. An image built with `console-input` takes a second one, the console UART's receive interrupt (see below). Its interrupt number comes from the DTB, and the kernel uses no physical timer. The interrupt controller is GICv2 or GICv3, whichever the DTB says is the timer's interrupt parent. Before it writes anything, the driver checks the identification registers against that description and refuses to boot if they differ. See [dtb.md](dtb.md).
 
-An IRQ taken from EL0 is saved the same way as a system call. The handler acknowledges the interrupt. If it was the timer, it re-arms the timer for one second, and prints `k0: tick N`. In an image built with a console driver, the line also goes to the console; only the first 4 tick lines are logged. Then it calls `k0_preempt`. That function first expires the IPC timeouts that are due (`k0_ipc::expire_timeouts`), so a waiter whose deadline has passed is ready before the round-robin switch, and then calls `k0_sched::on_tick`. That call moves the current task to the end of the ready queue and runs the next ready task only if the slice rule says this tick cuts the current task, see [scheduling.md](scheduling.md#the-slice-rule). Spurious interrupt numbers 1020 to 1023 are ignored. Any other interrupt number, or any FIQ, cannot happen by design, so the kernel prints `k0: UNEXPECTED ...` and parks.
+An IRQ taken from EL0 is saved the same way as a system call. The handler acknowledges the interrupt. If it was the timer, it works out the tick number from the counter, arms the next tick at its fixed instant and prints `k0: tick N`. In an image built with a console driver, the line also goes to the console; only the first 4 tick lines are logged. A timer interrupt that arrives before the instant it was armed for is not a tick: the handler arms the same instant again and nothing else happens. A handler that runs more than a period late skips the tick numbers in between (see [scheduling.md](scheduling.md#the-tick-clock-and-skipped-ticks)).
+
+For a tick the handler then calls `k0_preempt`, which calls `k0_sched::on_tick`. Inside a window of the time partition table, the scheduler first wakes the waiters of the running domain that are due (`k0_ipc::expire_timeouts` for IPC timeouts), so a waiter whose deadline has passed is ready before the round-robin switch. It then moves the current task to the end of its domain's ready queue and runs the next ready task of that domain only if the slice rule says this tick cuts the current task, see [scheduling.md](scheduling.md#the-slice-rule). At the end of a window it parks the current task and enters the next domain. If that domain has no ready task, `k0_preempt` does not return to EL0 and waits in `wait_for_work`. With no table set there is one domain and every tick is a tick inside its window.
+
+Spurious interrupt numbers 1020 to 1023 are ignored. Any other interrupt number, or any FIQ, cannot happen by design, so the kernel prints `k0: UNEXPECTED ...` and parks.
 
 Once a tick has been counted, the handler also drains the console receive ring (an image with `console-input`), and after a task has started reading console input it stops printing the periodic tick lines (see [boot.md](boot.md)). Ticks, preemption and timeouts are unchanged.
 
 ## Console interrupt
 
-An image built with `console-input` takes one more interrupt: the console UART's receive interrupt. The dispatcher tells the two apart by interrupt number (the timer's, then the console's), in the same function for IRQs taken at EL0 and at EL1. Anything else is still `k0: UNEXPECTED ...`. The console branch drains the UART into a ring of 256 bytes and never interprets a byte. It reports to the kernel binary through `k0_console_event`, a policy function like `k0_preempt`, which wakes a waiting `CONSOLE_READ` caller. The woken task goes to the end of the ready queue, so input does not preempt a running task.
+An image built with `console-input` takes one more interrupt: the console UART's receive interrupt. The dispatcher tells the two apart by interrupt number (the timer's, then the console's), in the same function for IRQs taken at EL0 and at EL1. Anything else is still `k0: UNEXPECTED ...`. The console branch drains the UART into a ring of 256 bytes and never interprets a byte. It reports to the kernel binary through `k0_console_event`, a policy function like `k0_preempt`, which wakes a waiting `CONSOLE_READ` caller. The woken task goes to the end of its domain's ready queue, so input does not preempt a running task. Under a time partition table the byte is handed over only while the reader's domain runs. Otherwise it stays in the ring until the next tick at which that domain runs (see [scheduling.md](scheduling.md#console-input-under-a-table)).
 
 The interrupt is bounded by the reader. When the ring is full the kernel masks the UART's receive interrupt itself and reopens it after the reader has taken half of the ring. A character with a break, framing or parity error uses no place in the ring, so it is counted by itself: after 256 of them in one tick the kernel masks the receive interrupt until the next tick. The same drain also runs once per tick, so input still arrives, up to a tick late, when the interrupt does not. A line that fires without a UART cause is switched off after 8 entries with `k0: console input off (interrupt N fired without a uart cause)`. The cut-off is covered only by host tests. Receive interrupts stay off until a task first reads console input with the read right.
 

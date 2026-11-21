@@ -64,7 +64,7 @@
   <text class="t s" x="254" y="332">시스템 콜과 같은 방식</text>
   <rect class="kernel" x="446" y="282" width="228" height="110" rx="8"/>
   <text class="t h" x="462" y="308">인터럽트 확인</text>
-  <text class="t s" x="462" y="332">타이머: 1초 뒤 재설정, tick</text>
+  <text class="t s" x="462" y="332">타이머: 다음 틱 설정, tick</text>
   <text class="m" x="462" y="352">k0_preempt</text>
   <text class="t s" x="462" y="372">먼저 타임아웃 만료</text>
   <line class="line" x1="206" y1="337" x2="236" y2="337" marker-end="url(#arrow)"/>

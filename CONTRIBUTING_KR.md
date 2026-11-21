@@ -94,9 +94,9 @@ $ cargo build -p k0-kernel --features console --offline
 $ tools/qemu-boot-test.sh   # QEMU 부팅과 자가 테스트 확인
 ```
 
-`tools/host-test.sh`는 `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi`, `k0-conin`, `k0-slice`, `k0-vault`, `k0-term`의 테스트를 어느 호스트에서나 실행합니다(AArch64 호스트에서 377개, 그 밖에서 289개). `k0-slice`는 9개이며, 틱이 실행 중인 태스크를 끊을지 정하는 규칙을 스케줄러 모델로 검사합니다. `k0-vault`는 알고리즘 feature `vault-ed25519`를 포함한 경우와 포함하지 않은 경우로 두 번 실행하며, 각각 20개와 11개입니다. `k0-term`도 `vault` feature를 포함한 경우와 포함하지 않은 경우로 실행하며, 각각 24개와 21개입니다. `k0-mm` 테스트는 AArch64 인라인 어셈블리를 포함하기 때문에 AArch64 호스트(Apple Silicon 또는 Linux arm64)에서만 실행되며, 스크립트가 4 KiB와 16 KiB 그래뉼 두 구성으로 모두 돌립니다.
+`tools/host-test.sh`는 `k0-abi`, `k0-cap`, `k0-boot`, `k0-efi`, `k0-conin`, `k0-slice`, `k0-part`, `k0-vault`, `k0-term`의 테스트를 어느 호스트에서나 실행합니다(AArch64 호스트에서 415개, 그 밖에서 327개). `k0-slice`는 9개이며, 틱이 실행 중인 태스크를 끊을지 정하는 규칙을 스케줄러 모델로 검사합니다. `k0-part`는 36개입니다. 시간 분할 표가 있을 때의 스케줄러 판정을 커널 모델 위에서 실행하고, 틱 시각의 산술을 검사하고, Rust 코드를 Lean 모델의 기록된 결과와 비교합니다(뒤의 "스케줄러 코어를 바꿀 때" 참고). `k0-vault`는 알고리즘 feature `vault-ed25519`를 포함한 경우와 포함하지 않은 경우로 두 번 실행하며, 각각 20개와 11개입니다. `k0-term`도 `vault` feature를 포함한 경우와 포함하지 않은 경우로 실행하며, 각각 24개와 21개입니다. `k0-mm` 테스트는 AArch64 인라인 어셈블리를 포함하기 때문에 AArch64 호스트(Apple Silicon 또는 Linux arm64)에서만 실행되며, 스크립트가 4 KiB와 16 KiB 그래뉼 두 구성으로 모두 돌립니다.
 
-`tools/qemu-boot-test.sh`는 디버그 커널을 부팅하고 부팅 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 표식이 하나라도 나오면 실패하고, 루트 태스크가 `root: sched tests pass`를 출력하면 곧바로 QEMU를 종료합니다. 통과 줄 외에도 `k0: untyped ` 줄보다 앞의 `k0: kernel reserve `, `root: teardown tests pass` 뒤의 `k0: idle (waiting for a timeout)`와 `root: timeout tests pass`, `root: revocation tests pass` 뒤의 `root: kernel reserve tests pass`를 기대합니다. `k0: all tasks`로 시작하는 줄은 모두 실패입니다. `root: teardown tests pass`와 `root: timeout tests pass` 사이의 타이머 틱 줄도 세어 4개 이상을 요구하는데, EL0에는 시계가 없어서 이것이 타임아웃의 하한을 확인하는 방법이기 때문입니다. 타임아웃 테스트는 실제 틱을 기다리므로 부팅 한 번이 이전보다 약 4초 더 걸립니다. 시간 조각 테스트는 두 번(`YIELD`로 CPU를 받은 태스크, 기다림으로 받은 태스크) 실행해 합계 약 4초가 걸리며, 이를 대신한 이전 선점 테스트는 약 1초가 걸렸습니다. `root: preempt test pass`보다 앞에 `root: slice test yield pass`와 `root: slice test block pass`가 이 순서로 나오는 것도 기대합니다. 느린 환경에서는 `K0_BOOT_TIMEOUT`(초)을 늘려 주세요. 직렬 포트를 읽기 때문에 콘솔 드라이버가 있는 이미지가 필요합니다. 콘솔 없는 이미지를 시험하려면 [USAGE_KR.md](USAGE_KR.md#콘솔-없는-이미지-시험)의 "콘솔 없는 이미지 시험"에 설명된 `K0_BOOT_MEMLOG`, `K0_BOOT_SERIAL=empty`, `K0_BOOT_CONSOLE_PAGE`를 사용하세요.
+`tools/qemu-boot-test.sh`는 디버그 커널을 부팅하고 부팅 로그를 정해진 순서대로 한 줄씩 확인합니다. 에러 표식이 하나라도 나오면 실패하고, 루트 태스크가 `root: sched tests pass`를 출력하면 곧바로 QEMU를 종료합니다. 통과 줄 외에도 `k0: untyped ` 줄보다 앞의 `k0: kernel reserve `, `root: teardown tests pass` 뒤의 `k0: idle (waiting for a timeout)`와 `root: timeout tests pass`, `root: revocation tests pass` 뒤의 `root: kernel reserve tests pass`를 기대합니다. `k0: all tasks`로 시작하는 줄은 모두 실패입니다. `root: teardown tests pass`와 `root: timeout tests pass` 사이의 타이머 틱 줄도 세어 4개 이상을 요구하는데, EL0에는 시계가 없어서 이것이 타임아웃의 하한을 확인하는 방법이기 때문입니다. 타임아웃 테스트는 실제 틱을 기다리므로 부팅 한 번이 이전보다 약 4초 더 걸립니다. 시간 조각 테스트는 두 번(`YIELD`로 CPU를 받은 태스크, 기다림으로 받은 태스크) 실행해 합계 약 4초가 걸리며, 이를 대신한 이전 선점 테스트는 약 1초가 걸렸습니다. `root: preempt test pass`보다 앞에 `root: slice test yield pass`와 `root: slice test block pass`가 이 순서로 나오는 것도 기대합니다. 그 뒤에 `root: partition refusal pass`와 `root: partition window pass`가 나오고, `root: partition sealed`는 `root: sched tests pass`보다 앞에 나옵니다. 시간 분할 테스트는 9틱짜리 표를 한 바퀴 돌리므로 부팅마다 약 15초를 더합니다. 그 도중에 호스트가 QEMU를 1초 넘게 멈춰 세우면 테스트가 한 번 더 실행되고, 스크립트는 실패로 처리하지 않고 `boot-test: partition window retries: 1`을 보고합니다. `tools/boot-matrix.sh`는 그런 부팅 행을 다시 실행하고, 두 번째 실행에서도 재시도가 필요했으면 그 행을 실패로 처리합니다. 느린 환경에서는 `K0_BOOT_TIMEOUT`(초)을 늘려 주세요. 직렬 포트를 읽기 때문에 콘솔 드라이버가 있는 이미지가 필요합니다. 콘솔 없는 이미지를 시험하려면 [USAGE_KR.md](USAGE_KR.md#콘솔-없는-이미지-시험)의 "콘솔 없는 이미지 시험"에 설명된 `K0_BOOT_MEMLOG`, `K0_BOOT_SERIAL=empty`, `K0_BOOT_CONSOLE_PAGE`를 사용하세요.
 
 서명 오라클이 있는 이미지(`vault` 또는 `vault-ed25519`)는 일부러 일으키는 폴트가 두 번 더 있어 `k0: task fault` 줄이 6개가 아니라 8개이므로 `K0_BOOT_FAULTS=8`이 필요하고, `root: oracle tests pass`를 `K0_BOOT_REQUIRE`로 요구하세요. 부팅 매트릭스에는 이를 위한 행 `vault`, `vault-max`, `vault-el2`, `vault-16k`, `vault-no-alg`, `hvf-vault`와 정적 검사 `vault-symbols`가 있으며, 행렬은 HVF가 있는 Mac에서 82행, CI에서 71행입니다. 행 `input-*`와 `term-*`는 콘솔 입력과 터미널을 다룹니다. 터미널 이미지는 `k0: task fault` 줄이 두 개 더 나오며(볼트 없이 8개, 볼트와 함께 10개), `tools/term-test.py <이미지>`가 정해진 직렬 세션을 실행합니다. 행의 내용은 [USAGE_KR.md](USAGE_KR.md)에 있습니다.
 
@@ -132,6 +132,7 @@ $ tools/qemu-boot-test.sh target/aarch64-unknown-none-softfloat/debug/k0-kernel.
 | `k0-efi` UEFI 메모리 맵에서의 메모리 계획, DTB 재작성, 독립 검증, ACPI 테이블 읽기와 트리 합성 | 있음, 퍼징 포함 | 있음, 부팅 매트릭스의 `uefi-*` 행으로 |
 | `loader` (UEFI 애플리케이션: 펌웨어 호출, 캐시 비우기, MMU 끄기, 점프) | 없음 | 있음, `uefi-*` 행과 정적 검사 `tools/pe-check.py`로 |
 | `k0-mm` 페이지 테이블과 W^X 속성 | AArch64 호스트에서 있음 | 있음 |
+| `k0-slice` 틱 규칙, `k0-part` 스케줄링 판정과 표 디코딩과 틱 산술 | 있음, Lean 모델의 기록된 결과와의 비교 포함 | 있음, 시간 조각 테스트와 시간 분할 테스트로, 사건의 순서만으로 |
 | `k0-arch`, `k0-task`, `k0-sched`, `k0-ipc` | 없음 | 있음 |
 
 `k0-arch`는 ELF 전용 어셈블러 지시어를 사용하고 스케줄러와 IPC 경로는 시스템 레지스터를 읽기 때문에 부팅으로만 검증됩니다. 이 부분을 바꿨다면 `userspace/root-task/src/main.rs`의 자가 테스트를 늘리고, 새 통과 줄을 `tools/qemu-boot-test.sh`의 기대 목록에 추가해 주세요.
@@ -155,6 +156,15 @@ $ K0_FUZZ_ITERS=5000000 cargo test --release --offline --target "$host" -p k0-bo
 
 `K0_FUZZ_ITERS`, `K0_FUZZ_SEED`, `K0_FUZZ_CASE`는 세 퍼저 모두에 똑같이 적용됩니다. `K0_FUZZ_SEED`로 기준 시드를 바꿀 수 있습니다. 기준 시드가 다르면 케이스 열이 서로 무관합니다. 케이스가 실패하면 테스트가 `K0_FUZZ_CASE=0x...` 값을 출력합니다. 같은 명령에 이 변수를 지정하면 그 케이스만 재현하고 입력을 덤프합니다.
 
+### 스케줄러 코어를 바꿀 때
+
+`crates/k0-part`에는 모든 스케줄링 판정(`Core`)과 틱 시각의 산술(`clock`)이 있습니다. `proofs/lean`에는 그 모델에 대한 Lean 4 증명이 있고, `crates/k0-part/src/model_vectors.txt`에는 사건 스크립트 1600개와 각 스크립트에 대해 모델이 낸 결과가 있습니다. 호스트 테스트 `core_gives_the_lines_of_the_lean_model_on_every_recorded_script`는 이 스크립트들을 실제 `Core`에 넣어 실행하고, 둘이 다르면 실패합니다. CI는 이 테스트를 실행합니다. CI는 증명을 실행하지 않습니다.
+
+> [!IMPORTANT]
+> `Core`가 하는 일을 바꾼다면 `proofs/lean/K0Part.lean`에도 같은 변경을 하고, `lake build`가 다시 통과하게 한 뒤, 모델에서 해시를 다시 만들어 주세요. 테스트를 통과시키려고 해시를 손으로 고치면 안 됩니다. 절차는 [proofs/lean/README.md](proofs/lean/README.md)(영문)의 "When the Rust code or the model changes on purpose"에 있습니다.
+
+증명은 모델에 대한 것이지 Rust 코드에 대한 것이 아닙니다. Lean 파일이 빌드된다는 이유로 변경이 증명됐다고 설명하지 마세요. `k0-sched`, `k0-ipc`, 커널 바이너리에는 호스트 테스트가 없습니다. 보호 구간, EL0로 돌아가기 전의 대기, 도메인이 바뀔 때의 TLB 비우기는 어떤 테스트도 보지 못합니다. 그래서 이 부분을 바꾸는 변경에는 꼼꼼한 리뷰와, 어떻게 확인했는지에 대한 설명이 필요합니다.
+
 ### CI와 같은 방식으로 실행
 
 CI는 `ci/Dockerfile`로 컨테이너 이미지를 빌드한 뒤 네트워크를 끊은 컨테이너 안에서 테스트를 돌립니다. 빌드와 테스트에 저장소 밖의 무엇도 필요하지 않다는 것을 이 방식으로 증명합니다.
@@ -167,11 +177,13 @@ $ docker run --rm --network none k0-ci tools/host-test.sh
 $ docker run --rm --network none k0-ci tools/boot-matrix.sh
 ```
 
+CI 작업의 제한 시간은 45분입니다. 모든 부팅에 시간 분할 테스트가 들어가면서 한 번 실행에 약 30분이 걸릴 것으로 추정합니다. 이는 추정이며 CI에서 측정한 값이 아닙니다.
+
 빌드 컨텍스트는 작업 디렉터리이므로 **깨끗한 체크아웃에서 실행**해 주세요. 이미지는 다음과 같이 만들어집니다.
 
 - **베이스 이미지**: 멀티 아키텍처 인덱스의 다이제스트(`debian:bookworm@sha256:...`)로 고정되어 있습니다.
 - **Rust 툴체인**: 이미지에서는 rustup을 사용하지 않습니다. `ci/install-toolchain.py`가 Rust 1.89.0 채널 매니페스트의 SHA-256을 고정해 두고, 설치하는 모든 패키지(rustc, cargo, 호스트용과 `aarch64-unknown-none-softfloat`·`aarch64-unknown-uefi`용 rust-std, rust-src, llvm-tools)를 그 매니페스트의 해시와 대조합니다. 하나라도 다르면 이미지 빌드가 실패합니다.
-- **빌드 컨텍스트**: `.dockerignore`는 허용 목록이므로, 목록에 없는 것은 이미지에 들어가지 않습니다. 빌드나 테스트에 필요한 **새 최상위 파일 또는 디렉터리**는 이 목록에 추가해야 합니다. `.git`은 이미지에 포함됩니다.
+- **빌드 컨텍스트**: `.dockerignore`는 허용 목록이므로, 목록에 없는 것은 이미지에 들어가지 않습니다. 빌드나 테스트에 필요한 **새 최상위 파일 또는 디렉터리**는 이 목록에 추가해야 합니다. `.git`은 이미지에 포함됩니다. `proofs/`는 목록에 없으므로 Lean 파일은 이미지에 들어가지 않습니다.
 
 > [!NOTE]
 > 모든 것이 고정되어 있지는 않습니다. Debian 패키지의 버전은 고정되지 않았고(apt는 고정된 베이스 이미지 안의 아카이브 키로 검증합니다), GitHub 러너 이미지도 마찬가지입니다. 워크플로가 사용하는 GitHub Actions는 커밋 해시로 고정되어 있습니다.
