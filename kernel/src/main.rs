@@ -766,6 +766,7 @@ fn write_bootinfo(frame_pa: u64, cnode: &k0_cap::CNodeRef, count: u64, image: &I
                     ..plain(cap_kind::CONSOLE)
                 },
                 Some(Cap::CNode { .. }) => plain(cap_kind::CNODE),
+                Some(Cap::PartCtl) => plain(cap_kind::PART_CTL),
                 Some(Cap::PageTable { .. }) => plain(cap_kind::PAGE_TABLE),
                 Some(Cap::Endpoint { .. }) => plain(cap_kind::ENDPOINT),
                 Some(Cap::Untyped { base, size, .. }) => CapDesc {

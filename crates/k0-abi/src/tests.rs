@@ -30,6 +30,8 @@ fn syscall_numbers_are_unique_and_dense() {
         syscall::CAP_DELETE,
         syscall::CAP_REVOKE,
         syscall::CONSOLE_READ,
+        syscall::PART_SET_TABLE,
+        syscall::PART_SET_DOMAIN,
     ];
     assert_unique(&nrs.map(i128::from));
     for (i, nr) in nrs.iter().enumerate() {
@@ -64,6 +66,8 @@ fn error_codes_are_unique_and_negative() {
         err::BAD_FLAGS,
         err::BUSY,
         err::NO_DEVICE,
+        err::BAD_TABLE,
+        err::BAD_DOMAIN,
     ];
     assert_unique(&errs.map(i128::from));
     for e in errs {
@@ -107,7 +111,7 @@ fn rights_are_distinct_bits() {
 #[test]
 fn fixed_boot_slots_skip_the_null_slot() {
     use bootinfo::slot::*;
-    let slots = [TCB, ADDR_SPACE, CONSOLE, CNODE];
+    let slots = [TCB, ADDR_SPACE, CONSOLE, CNODE, PART_CTL];
     assert_unique(&slots.map(i128::from));
     for (i, s) in slots.iter().enumerate() {
         assert_eq!(*s, i as u64 + 1);
@@ -150,7 +154,7 @@ fn console_read_flag_bits_are_all_accounted_for() {
 
 #[test]
 fn bootinfo_layout_is_stable() {
-    assert_eq!(bootinfo::VERSION, 4);
+    assert_eq!(bootinfo::VERSION, 5);
     assert_eq!(bootinfo::SEED_RNG_SEED_BYTES & bootinfo::SEED_RNDR, 0);
     assert_eq!(size_of::<bootinfo::Header>(), 32);
     assert_eq!(offset_of!(bootinfo::Header, version), 0);
@@ -175,7 +179,7 @@ fn bootinfo_page_is_aligned_for_both_granules() {
 fn cap_kinds_are_unique() {
     use bootinfo::cap_kind::*;
     let kinds = [
-        EMPTY, TCB, ADDR_SPACE, UNTYPED, FRAME, PAGE_TABLE, ENDPOINT, CONSOLE, CNODE,
+        EMPTY, TCB, ADDR_SPACE, UNTYPED, FRAME, PAGE_TABLE, ENDPOINT, CONSOLE, CNODE, PART_CTL,
     ];
     assert_unique(&kinds.map(i128::from));
     assert_eq!(EMPTY, 0);

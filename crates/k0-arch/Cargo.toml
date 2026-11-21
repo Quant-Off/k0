@@ -19,4 +19,5 @@ console-input = ["dep:k0-conin"]
 
 [dependencies]
 k0-abi = { path = "../k0-abi" }
+k0-part = { path = "../k0-part" }
 k0-conin = { path = "../k0-conin", optional = true }

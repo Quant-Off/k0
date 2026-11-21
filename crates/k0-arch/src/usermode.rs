@@ -80,6 +80,12 @@ unsafe extern "C" {
     /// `ctx`는 `__current_context`가 가리키는 유효한 컨텍스트이고 `esr` /
     /// `far`는 벡터 진입 직후 읽은 신드롬입니다.
     fn k0_fault(ctx: &mut Context, esr: u64, far: u64);
+
+    /// EL0로 돌아가기 직전의 마지막 확인, 커널 바이너리가 정의함 (링크 계약)
+    ///
+    /// # Safety
+    /// EL0에서 진입한 예외의 핸들러가 할 일을 전부 마친 뒤에만 호출됩니다.
+    fn k0_leave();
 }
 
 /// 벡터가 저장/복원할 현재 태스크 컨텍스트를 지정하는 함수입니다.
@@ -132,7 +138,13 @@ extern "C" fn el0_sync(ctx: &mut Context) {
         // SAFETY: ctx는 벡터가 방금 저장한 현재 컨텍스트
         0x15 => unsafe { k0_syscall(ctx) },
         // EL0의 WFI/WFE 트랩(SCTLR nTWI/nTWE=0): 양보로 취급하고 다음 명령으로
-        0x01 => ctx.elr += 4,
+        // 스케줄러의 상태는 바뀌지 않지만, EL0로 돌아가는 길은 하나도 빠짐없이
+        // 마지막 확인을 지나게 함
+        0x01 => {
+            ctx.elr += 4;
+            // SAFETY: 벡터가 컨텍스트 저장을 마친 EL0 동기 예외의 끝임
+            unsafe { k0_leave() };
+        }
         // 그 외 동기 예외(폴트)는 그 태스크의 결함이므로 커널의 격리 정책으로
         _ => {
             let far: u64;

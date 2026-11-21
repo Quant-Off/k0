@@ -110,6 +110,13 @@ pub const TCB_SLOTS: usize = 3;
 /// 큐에 선 채로 이 목록에도 들어 있습니다. 태스크가 깨어나거나 종료되면
 /// 스케줄러가 목록에서 빼고 `deadline`을 0으로 되돌립니다.
 ///
+/// `domain`은 이 태스크가 속한 시간 분할 도메인의 번호입니다. 0이 루트
+/// 도메인이고, 소거된 프레임이 그대로 루트 도메인의 TCB입니다. 구성
+/// (TCB_CONFIGURE) 때 구성한 태스크의 도메인을 물려받고, 시작하기 전에만
+/// 제어 케이퍼빌리티로 바꿀 수 있습니다. 준비 큐와 기한 목록이 도메인마다
+/// 따로 있으므로, TCB가 어느 목록에든 들어 있는 동안에는 이 값이 바뀌지
+/// 않아야 합니다.
+///
 /// `slots`는 이 태스크에 묶인 케이퍼빌리티입니다. [TCB_SLOT_CSPACE]의
 /// CNode가 이 태스크의 시스템 콜이 슬롯 번호를 해석하는 유일한 장소이고,
 /// [TCB_SLOT_VSPACE]의 AddrSpace가 이 태스크가 실행되는 주소 공간입니다.
@@ -125,6 +132,7 @@ pub struct Tcb {
     pub ctx: Context,
     pub ttbr0_pa: u64,
     pub state: TaskState,
+    pub domain: u8,
     pub next: u64,
     pub prev: u64,
     pub reply_to: u64,
@@ -184,6 +192,9 @@ impl Tcb {
 const _: () = assert!(size_of::<Tcb>() <= 4096);
 // 재분류된 TCB는 그래뉼 프레임 하나에 들어가야 함
 const _: () = assert!(size_of::<Tcb>() <= GRANULE);
+// domain은 state 바로 뒤의 채움 바이트에 들어가 TCB의 크기를 바꾸지 않음
+const _: () = assert!(core::mem::offset_of!(Tcb, domain) == core::mem::offset_of!(Tcb, state) + 1);
+const _: () = assert!(core::mem::offset_of!(Tcb, next) == core::mem::offset_of!(Tcb, state) + 8);
 
 /// TCB의 intrusive 이중 연결 큐 구조체입니다.
 ///
@@ -218,6 +229,28 @@ impl TcbQueue {
             }
         }
         self.tail = tcb as u64;
+    }
+
+    /// 큐 머리에 TCB를 끼워 넣는 함수입니다.
+    ///
+    /// 창의 경계에서 끊긴 태스크를 자기 도메인 큐의 맨 앞에 세워 둘 때
+    /// 씁니다.
+    ///
+    /// # Safety
+    /// `tcb`는 유효한 커널 VA의 TCB이고 어느 큐에도 없어야 합니다. 큐의
+    /// 링크들이 유효한 TCB를 가리켜야 합니다.
+    pub unsafe fn push_front(&mut self, tcb: *mut Tcb) {
+        // SAFETY: 함수 계약대로 tcb는 유효하고 큐 밖에 있으며 head는 유효함
+        unsafe {
+            (*tcb).prev = 0;
+            (*tcb).next = self.head;
+            if self.head == 0 {
+                self.tail = tcb as u64;
+            } else {
+                (*(self.head as *mut Tcb)).prev = tcb as u64;
+            }
+        }
+        self.head = tcb as u64;
     }
 
     /// 큐 머리를 꺼내는 함수입니다. 비어 있으면 null

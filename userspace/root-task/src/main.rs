@@ -38,6 +38,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "vault")]
 mod oracle;
+mod partition;
 #[cfg(feature = "terminal")]
 mod service;
 mod timeslice;
@@ -320,6 +321,33 @@ fn thread_configure(tcb: i64, entry: u64, stack: u64) -> i64 {
 
 fn tcb_resume(tcb: i64) -> i64 {
     sys1(syscall::TCB_RESUME, tcb as u64) as i64
+}
+
+/// 시간 분할 표의 항목들을 PART_SET_TABLE의 레지스터 넷으로 싸는 함수입니다.
+///
+/// 항목 i는 레지스터 i / 4의 비트 16 * (i % 4)부터 16비트이고 값은
+/// `(틱 수 << 8) | 도메인`입니다. 열여섯 개를 넘는 항목은 싣지 않습니다(항목
+/// 수는 부르는 쪽이 따로 넘기므로 커널이 거부함).
+fn pack_table(entries: &[(u8, u8)]) -> [u64; 4] {
+    let mut regs = [0u64; 4];
+    for (i, &(domain, ticks)) in entries.iter().take(16).enumerate() {
+        regs[i / 4] |= (u64::from(ticks) << 8 | u64::from(domain)) << (16 * (i % 4));
+    }
+    regs
+}
+
+/// 시간 분할 표를 정하는 함수입니다. 항목은 (도메인, 틱 수)입니다.
+fn part_set_table(ctl: i64, entries: &[(u8, u8)]) -> i64 {
+    let r = pack_table(entries);
+    sys(
+        syscall::PART_SET_TABLE,
+        [ctl as u64, entries.len() as u64, r[0], r[1], r[2], r[3]],
+    ) as i64
+}
+
+/// 아직 시작하지 않은 태스크의 도메인을 정하는 함수입니다.
+fn part_set_domain(ctl: i64, tcb: i64, domain: u64) -> i64 {
+    sys(syscall::PART_SET_DOMAIN, [ctl as u64, tcb as u64, domain, 0, 0, 0]) as i64
 }
 
 /// IPC 반환값 묶음 구조체입니다. (x0 = 상태, x1 = 배지, x2-x5 = 수신 MR)
@@ -797,7 +825,7 @@ extern "C" fn _start(s0: u64, s1: u64, s2: u64, s3: u64, seed_info: u64) -> ! {
     );
     check(
         "bootinfo slots",
-        cap_count > slot::CNODE && cnode_slots >= cap_count + 3 * REUSE_SLOTS,
+        cap_count > slot::PART_CTL && cnode_slots >= cap_count + 3 * REUSE_SLOTS,
     );
     NEXT_SLOT.store(cap_count, Ordering::Relaxed);
     REUSE_BASE.store(cnode_slots - REUSE_SLOTS, Ordering::Relaxed);
@@ -809,6 +837,7 @@ extern "C" fn _start(s0: u64, s1: u64, s2: u64, s3: u64, seed_info: u64) -> ! {
     check("slot aspace", desc(slot::ADDR_SPACE).kind == kind::ADDR_SPACE);
     check("slot console", desc(slot::CONSOLE).kind == kind::CONSOLE);
     check("slot cnode", desc(slot::CNODE).kind == kind::CNODE);
+    check("slot part ctl", desc(slot::PART_CTL).kind == kind::PART_CTL);
     let mut b = Boot {
         frame_size,
         ut_main: 0,
@@ -865,6 +894,9 @@ extern "C" fn _start(s0: u64, s1: u64, s2: u64, s3: u64, seed_info: u64) -> ! {
     #[cfg(feature = "vault")]
     oracle::test_oracle(&b, seed_info);
     test_reserve(&b);
+    // 제어 케이퍼빌리티는 입력 검증이 쓰지 않으므로 입력 검증 앞에서 지움(입력
+    // 검증의 표지가 끝의 표지 바로 앞에 끼므로 순서 목록에서 봉인이 뒤처지면 안 됨)
+    partition::seal();
     // 입력을 처음 읽으면 커널이 주기적인 틱 줄을 멈추므로, 틱 줄을 세는 검증이
     // 모두 끝난 뒤인 맨 마지막에 돌림
     #[cfg(feature = "console-input")]
@@ -1663,6 +1695,11 @@ fn test_sched_ipc_fault(b: &Boot) {
     // 태스크가 처음 맞는 틱을 넘기는지. 앞선 검증의 태스크는 모두 종료됐으므로
     // 준비 큐에는 루트뿐임(이 검증의 전제)
     timeslice::test(b);
+
+    // 시간 분할: 거절은 기다림 없이, 창은 위 검증이 틱 바로 뒤에 끝난 자리에서
+    // 시작함(위 검증은 틱 번호가 4 이상에서 끝나므로 처음 네 틱 줄은 이미 찍힘)
+    partition::test_refusals(b);
+    partition::test_windows(b);
 
     // 여기서 만든 태스크는 모두 끝났고 엔드포인트와 스택도 더 쓰지 않음
     release_slots(first_slot);

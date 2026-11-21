@@ -2,7 +2,7 @@
 //!
 //! # Features
 //! k0-arch의 EL0 벡터가 링크 계약으로 부르는 `k0_syscall` / `k0_fault` /
-//! `k0_preempt`를 정의합니다. 격리의 핵심 규칙은 두 가지입니다.
+//! `k0_preempt` / `k0_leave`를 정의합니다. 격리의 핵심 규칙은 두 가지입니다.
 //!
 //! - 모든 슬롯 번호는 호출한 태스크 자신의 CNode(현재 TCB의 내장 슬롯이
 //!   가리키는 것)에서만 해석합니다. 전역 CNode는 없으므로 다른 태스크의
@@ -17,9 +17,18 @@
 //! 않고 소거만 합니다.
 //!
 //! 실행할 태스크가 없어도 커널은 정지하지 않습니다. 현재 태스크가 블록되거나
-//! 종료됐는데 준비된 태스크가 없으면 [idle_until_ready]가 인터럽트를 받으며
-//! 기다리고, 틱마다 기한이 지난 IPC 대기자를 깨웁니다. 그래서 한 태스크가
-//! 마지막으로 블록되는 것만으로는 나머지 태스크의 타임아웃이 멈추지 않습니다.
+//! 종료됐는데 그 도메인에 준비된 태스크가 없으면 [wait_for_work]가 인터럽트를
+//! 받으며 기다리고, 틱마다 기한이 지난 IPC 대기자를 깨웁니다. 그래서 한
+//! 태스크가 마지막으로 블록되는 것만으로는 나머지 태스크의 타임아웃이 멈추지
+//! 않습니다.
+//!
+//! 태스크는 시간 분할 도메인에 속하고, 분할 표가 정한 틱 동안에는 그 도메인의
+//! 태스크만 실행됩니다(판정은 k0-part, 큐는 k0-sched). 도는 도메인에 준비된
+//! 태스크가 없으면 다른 도메인에 준비된 태스크가 있어도 커널은 기다립니다.
+//! 틱이 실행 중인 태스크를 끊었는데 들어온 도메인이 비어 있는 경우도 같은
+//! 길로 기다립니다. EL0로 돌아가는 모든 길은 마지막에 [k0_leave]를 거칩니다.
+//! 거기서 돌아갈 태스크가 지금 도는 도메인의 실행 중 태스크인지 확인하고, 틱을
+//! 보호 구간만큼 일찍 받았으면 틱의 예정 시각까지 기다립니다.
 //!
 //! 커널을 `console-input`으로 빌드하면 콘솔 입력을 읽는 시스템 콜이 하나
 //! 더 있습니다(CONSOLE_READ). 입력을 기다리며 잠든 태스크는 바이트가 도착했을
@@ -52,6 +61,7 @@ const _: () = {
     assert!(k0_abi::bootinfo::slot::ADDR_SPACE == k0_cap::boot_slot::ADDR_SPACE);
     assert!(k0_abi::bootinfo::slot::CONSOLE == k0_cap::boot_slot::CONSOLE);
     assert!(k0_abi::bootinfo::slot::CNODE == k0_cap::boot_slot::CNODE);
+    assert!(k0_abi::bootinfo::slot::PART_CTL == k0_cap::boot_slot::PART_CTL);
 };
 
 /// EL0 svc 트랩의 시스템 콜 정책 함수입니다. (k0-arch가 링크 계약으로 호출)
@@ -89,6 +99,8 @@ extern "C" fn k0_syscall(ctx: &mut Context) {
         nr::CAP_MOVE => Some(sys_cap_move(a[0], a[1], a[2])),
         nr::CAP_DELETE => Some(sys_cap_delete(a[0])),
         nr::CAP_REVOKE => Some(sys_cap_revoke(a[0])),
+        nr::PART_SET_TABLE => Some(sys_part_set_table(a[0], a[1], [a[2], a[3], a[4], a[5]])),
+        nr::PART_SET_DOMAIN => Some(sys_part_set_domain(a[0], a[1], a[2])),
         // IPC는 블록 경로에서 반환 레지스터를 미래의 상대가 기록하므로
         // 핸들러가 ctx 기록까지 직접 책임짐. false는 호출한 태스크가
         // 블록됐는데 준비된 태스크가 없다는 뜻이고, 그때는 커널이 기다림
@@ -121,6 +133,7 @@ extern "C" fn k0_syscall(ctx: &mut Context) {
         }
     };
     finish(ctx, ret);
+    k0_leave();
 }
 
 /// EL0 동기 폴트의 격리 정책 함수입니다. (k0-arch가 링크 계약으로 호출)
@@ -143,28 +156,77 @@ extern "C" fn k0_fault(ctx: &mut Context, esr: u64, far: u64) {
     );
     kill_current();
     finish(ctx, None);
+    k0_leave();
 }
 
 /// 타이머 틱의 선점 정책 함수입니다. (k0-arch가 EL0 IRQ 경로에서 링크
 /// 계약으로 호출)
 ///
-/// 기한이 지난 IPC 대기자를 먼저 깨운 뒤 현재 태스크를 끊을지 판정합니다. 틱은
-/// 실행 중인 태스크를 끊고 들어왔으므로 현재 태스크는 기한 목록에 없습니다.
+/// 판정은 스케줄러가 합니다(`k0_sched::on_tick`). 도는 도메인이 그대로면 그
+/// 도메인의 기한이 지난 IPC 대기자를 먼저 깨운 뒤 현재 태스크를 끊을지 정하고,
+/// 창의 경계면 현재 태스크를 자기 도메인의 큐에 세워 두고 들어오는 도메인의
+/// 태스크를 실행합니다. 틱은 실행 중인 태스크를 끊고 들어왔으므로 현재 태스크는
+/// 기한 목록에 없습니다.
 ///
 /// 틱이 언제나 다음 태스크로 돌리는 것은 아닙니다. 틱과 틱 사이에 CPU를 받은
-/// 태스크는 처음 맞는 틱 하나를 넘깁니다(`k0_sched::on_tick`). 그래서 틱
-/// 직전에 양보하거나 블록하는 태스크가 뒤에 선 태스크에게 주기의 끝자락만 주는
-/// 일이 없고, CPU를 받은 태스크는 온전한 한 주기 전에는 끊기지 않습니다.
+/// 태스크는 처음 맞는 틱 하나를 넘깁니다. 그래서 틱 직전에 양보하거나 블록하는
+/// 태스크가 뒤에 선 태스크에게 주기의 끝자락만 주는 일이 없고, CPU를 받은
+/// 태스크는 온전한 한 주기 전에는 끊기지 않습니다.
+///
+/// 들어온 도메인에 준비된 태스크가 없으면 EL0로 돌아가지 않고 기다립니다.
+/// 끊긴 태스크는 자기 도메인의 큐에 서 있고, 그 도메인의 다음 창에서
+/// 이어집니다.
 #[unsafe(no_mangle)]
 extern "C" fn k0_preempt() {
-    // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ/FIQ 컨텍스트임
-    unsafe {
-        // 틱이 장치를 들여다보다 가져온 입력이 있으면 기다리는 태스크를 깨움
-        #[cfg(feature = "console-input")]
-        k0_ipc::console::wake(None);
-        k0_ipc::expire_timeouts(k0_arch::irq::ticks(), None);
-        k0_sched::on_tick();
+    // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ/FIQ 컨텍스트이고,
+    //         실행 중이던 태스크는 블록돼 있지 않아 깨울 대상이 아님
+    let running = unsafe { k0_sched::on_tick(&mut |d, now| serve(d, now, None)) };
+    if !running {
+        wait_for_work(None);
     }
+}
+
+/// 도메인 하나의 밀린 일을 하는 함수입니다. 스케줄러가 그 도메인이 도는 틱과
+/// 대기 루프에서 부릅니다.
+///
+/// 틱이 장치를 들여다보다 가져온 입력이 있으면 기다리는 태스크를 깨우고, 그다음
+/// 기한이 지난 IPC 대기자를 깨웁니다. 둘 다 `d`의 태스크만 깨웁니다.
+///
+/// # Arguments
+/// `d` - 지금 도는 도메인
+/// `now` - 지금의 틱 수
+/// `ctx` - 블록된 채 기다리는 현재 태스크의 컨텍스트를 호출자가 쥐고 있으면
+/// 그 참조
+fn serve(d: k0_sched::Domain, now: u64, mut ctx: Option<&mut Context>) {
+    // SAFETY: 스케줄러의 사건 처리 중(EL0에서 들어온 예외의 핸들러)에만
+    //         불리고, ctx가 Some이면 현재 태스크의 컨텍스트임
+    unsafe {
+        #[cfg(feature = "console-input")]
+        k0_ipc::console::wake(d, ctx.as_deref_mut());
+        k0_ipc::expire_timeouts(d, now, ctx.as_deref_mut());
+    }
+}
+
+/// EL0로 돌아가기 직전의 마지막 확인 함수입니다. (시스템 콜과 폴트의 끝에서,
+/// 그리고 k0-arch가 EL0 IRQ 경로의 끝에서 링크 계약으로 호출)
+///
+/// 돌아갈 태스크가 실행 중 상태이고 지금 도는 도메인의 태스크인지 확인합니다.
+/// 아니면 커널의 상태가 어긋난 것이므로 정지합니다(창 밖의 태스크를 조용히
+/// 실행하지 않음). 그다음 마지막으로 처리한 틱의 예정 시각까지 기다립니다.
+/// 도메인이 바뀌는 틱은 보호 구간만큼 일찍 받으므로, 전환 작업이 그 안에
+/// 끝났다면 다음 도메인은 언제나 틱의 예정 시각에 시작합니다. 그 밖의 경우에는
+/// 이미 지난 시각이라 기다리지 않습니다.
+#[unsafe(no_mangle)]
+extern "C" fn k0_leave() {
+    // SAFETY: 핸들러의 일이 끝난 예외 컨텍스트라 스케줄러 접근이 배타적이고
+    //         current는 유효한 TCB임
+    unsafe {
+        let cur = k0_sched::current();
+        if (*cur).state != TaskState::Running || k0_sched::domain_of(cur) != k0_sched::running_domain() {
+            k0_arch::fatal("returning to a task outside its window");
+        }
+    }
+    k0_arch::irq::hold_until_due();
 }
 
 /// 콘솔 입력이 도착했을 때의 정책 함수입니다. (k0-arch가 EL0 IRQ 경로에서
@@ -172,12 +234,14 @@ extern "C" fn k0_preempt() {
 ///
 /// 입력을 기다리는 태스크가 있으면 바이트를 전달하고 준비 큐의 끝에 넣습니다.
 /// 실행 중이던 태스크는 그대로 이어서 실행됩니다(입력이 선점을 일으키지 않음).
+/// 기다리는 태스크가 지금 도는 도메인의 태스크가 아니면 바이트는 버퍼에 남고,
+/// 그 태스크의 도메인이 도는 틱에서 전달됩니다.
 #[cfg(feature = "console-input")]
 #[unsafe(no_mangle)]
 extern "C" fn k0_console_event() {
     // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ 컨텍스트라 스케줄러
     //         접근이 배타적이고, 실행 중이던 태스크는 대기자가 아님
-    unsafe { k0_ipc::console::wake(None) };
+    unsafe { k0_ipc::console::wake(k0_sched::running_domain(), None) };
 }
 
 /// 핸들러가 끝난 뒤의 공통 종료 경로 함수입니다.
@@ -199,7 +263,7 @@ fn finish(ctx: &mut Context, ret: Option<i64>) {
             // 태스크의 컨텍스트이고 그 TCB 프레임은 아직 재사용 전임
             *ctx = Context::zeroed();
             if !k0_sched::block_and_switch() {
-                idle_until_ready(ctx);
+                wait_for_work(Some(ctx));
             }
             return;
         }
@@ -229,38 +293,58 @@ fn kill_current() {
 /// `switched` - IPC 처리 함수의 반환값(false = 블록됐고 전환할 태스크가 없음)
 fn ipc_or_idle(ctx: &mut Context, switched: bool) -> Option<i64> {
     if !switched {
-        idle_until_ready(ctx);
+        wait_for_work(Some(ctx));
     }
     None
 }
 
-/// 준비된 태스크가 생길 때까지 인터럽트를 받으며 기다리는 함수입니다.
+/// 실행할 태스크가 생길 때까지 인터럽트를 받으며 기다리는 함수입니다.
 ///
-/// 현재 태스크가 블록됐거나 종료됐는데 준비 큐가 비었을 때 부릅니다. 코어를
-/// 세우지 않고 다음 인터럽트까지 재웠다가, 틱이 지나면 기한이 지난 IPC
-/// 대기자를 깨우고 준비된 태스크로 전환합니다. 깨어나는 태스크는 블록된 채
-/// 기다리던 현재 태스크 자신일 수도 있습니다. 지금 태스크를 깨울 수 있는
-/// 것은 타임아웃과 (입력 경로가 있는 이미지에서는) 콘솔 입력뿐이라서, 기한을
-/// 건 대기자도 입력을 기다리는 태스크도 없으면 이 함수는 돌아오지
-/// 않습니다(틱은 계속 처리함).
+/// 세 경우에 부릅니다. 현재 태스크가 블록됐는데, 또는 종료됐는데 그 도메인에
+/// 준비된 태스크가 없을 때, 그리고 틱이 실행 중이던 태스크를 끊었는데 들어온
+/// 도메인에 준비된 태스크가 없을 때입니다. 코어를 세우지 않고 다음
+/// 인터럽트까지 재웠다가 스케줄러에 묻습니다(`k0_sched::poll`). 틱이 지났으면
+/// 스케줄러가 분할 표를 따라 도메인을 옮기고, 도는 도메인의 기한이 지난 IPC
+/// 대기자를 깨우고, 준비된 태스크로 전환합니다. 깨어나는 태스크는 블록된 채
+/// 기다리던 현재 태스크 자신일 수도 있습니다. 다른 도메인에 준비된 태스크가
+/// 있어도 그 도메인의 창이 올 때까지는 실행하지 않습니다.
 ///
-/// 깨어난 태스크가 틱에서 깨어났는지 틱 사이에 깨어났는지를 스케줄러에 알려
-/// 줍니다. 틱에서 깨어난 태스크는 주기의 처음에 들어오므로 다음 틱에서 끊길 수
-/// 있고, 콘솔 입력으로 틱 사이에 깨어난 태스크는 처음 맞는 틱 하나를 넘깁니다.
-/// 기다리는 동안 틱과 입력이 함께 왔으면 틱으로 봅니다.
+/// 지금 태스크를 깨울 수 있는 것은 타임아웃과 (입력 경로가 있는 이미지에서는)
+/// 콘솔 입력, 그리고 분할 표가 여는 다른 도메인의 창뿐입니다. 셋 다 없으면 이
+/// 함수는 돌아오지 않습니다(틱은 계속 처리함).
+///
+/// 깨어난 태스크가 틱에서 들어오는지 틱 사이에 들어오는지는 스케줄러가 틱
+/// 번호를 보고 판단합니다.
 ///
 /// # Arguments
-/// `ctx` - 이번 진입을 일으킨 태스크(스케줄러의 현재 태스크)의 컨텍스트
-fn idle_until_ready(ctx: &mut Context) {
+/// `ctx` - 블록됐거나 종료된 현재 태스크의 컨텍스트. 틱이 끊은 태스크를 두고
+/// 기다리는 경우에는 `None`(그 태스크는 블록돼 있지 않아 깨울 대상이 아님)
+fn wait_for_work(mut ctx: Option<&mut Context>) {
     static WAITING: AtomicBool = AtomicBool::new(false);
     static STOPPED: AtomicBool = AtomicBool::new(false);
     let mut con = EarlyCon;
+    // SAFETY: 예외 컨텍스트라 스케줄러 접근이 배타적이고 current는 유효한
+    //         TCB임
+    if ctx.is_none() && unsafe { (*k0_sched::current()).state } != TaskState::Ready {
+        // 컨텍스트 없이 기다리는 것은 틱이 끊은 태스크가 큐에 서 있을 때뿐임
+        k0_arch::fatal("waiting without a context while a task is not parked");
+    }
     loop {
         // 대기에 들어갈 때마다 찍으면 로그를 채우므로 종류마다 처음 한 번만
         // 알림. 기한을 건 대기자가 없는 쪽은 회복할 길이 없는 상태이므로
-        // 예전의 정지 메시지와 같은 머리말을 써서 눈에 띄게 함
-        // SAFETY: 시스템 콜/폴트 컨텍스트라 스케줄러 접근이 배타적임
-        if unsafe { k0_sched::has_timed() } {
+        // 예전의 정지 메시지와 같은 머리말을 써서 눈에 띄게 함. 분할 중에는
+        // 빈 창에서 기다리는 것이 정상이므로 기다린다는 줄은 찍지 않음. 다만
+        // 어느 도메인에도 준비된 태스크와 기한을 건 대기자가 없고 입력을
+        // 기다리는 태스크도 없으면 다른 창이 와도 실행할 것이 없으므로, 그
+        // 정지만은 분할 중에도 알림
+        // SAFETY: 시스템 콜/폴트/IRQ 컨텍스트라 스케줄러 접근이 배타적임
+        if unsafe { k0_sched::partitioned() } {
+            // SAFETY: 위와 같음
+            let alive = unsafe { k0_sched::has_ready() || k0_sched::has_timed() } || console_waiting();
+            if !alive && !STOPPED.swap(true, Ordering::Relaxed) {
+                let _ = writeln!(con, "k0: all tasks stopped (none ready, no timeout pending)");
+            }
+        } else if unsafe { k0_sched::has_timed() } {
             if !WAITING.swap(true, Ordering::Relaxed) {
                 let _ = writeln!(con, "k0: idle (waiting for a timeout)");
             }
@@ -272,18 +356,11 @@ fn idle_until_ready(ctx: &mut Context) {
         }
         // SAFETY: EL0에서 진입한 예외의 핸들러 안이라 사용자 컨텍스트가 TCB에
         //         저장돼 있고, 커널 스택은 최상단에서 시작해 여유가 있음.
-        //         ctx는 현재 태스크의 컨텍스트이며, 기한이 지난 현재 태스크의
-        //         반환값은 이 참조로만 기록됨
+        //         ctx가 Some이면 현재 태스크의 컨텍스트이며, 기한이 지났거나
+        //         입력을 받은 현재 태스크의 반환값은 이 참조로만 기록됨
         unsafe {
-            let before = k0_arch::irq::ticks();
             k0_arch::irq::wait_for_interrupt();
-            // 방금의 인터럽트가 입력을 가져왔으면 기다리는 태스크를 깨움.
-            // 대기자가 블록된 현재 태스크 자신일 수 있어 ctx를 넘김
-            #[cfg(feature = "console-input")]
-            k0_ipc::console::wake(Some(&mut *ctx));
-            let now = k0_arch::irq::ticks();
-            k0_ipc::expire_timeouts(now, Some(&mut *ctx));
-            if k0_sched::resume_from_idle(now != before) {
+            if k0_sched::poll(&mut |d, now| serve(d, now, ctx.as_deref_mut())) {
                 return;
             }
         }
@@ -691,7 +768,7 @@ fn console_recheck() {
     //         부른 실행 중인 태스크는 대기자가 아님
     #[cfg(feature = "console-input")]
     unsafe {
-        k0_ipc::console::wake(None)
+        k0_ipc::console::wake(k0_sched::running_domain(), None)
     };
 }
 
@@ -777,7 +854,81 @@ fn sys_tcb_configure(slot: u64, entry: u64, stack: u64, aspace: u64, cnode: u64,
             t.ctx.spsr = 0; // EL0t, DAIF 언마스크, 커널이 강제
             t.ctx.x[0] = arg;
             t.ttbr0_pa = root_pa;
+            // 새 태스크는 구성한 태스크의 도메인에 속함. 다른 도메인에 두려면
+            // 제어 케이퍼빌리티가 필요함(PART_SET_DOMAIN)
+            t.domain = k0_sched::domain_of(k0_sched::current()).id();
             t.state = TaskState::Stopped;
+        }
+        Ok(())
+    })())
+}
+
+/// 슬롯에 시간 분할 제어 케이퍼빌리티가 있는지 확인하는 함수입니다.
+///
+/// # Errors
+/// 슬롯이 비었거나 범위 밖이면 BAD_SLOT, 다른 종류면 BAD_CAP
+fn part_ctl(cn: &CNodeRef, slot: u64) -> Result<(), i64> {
+    let (_, e) = lookup(cn, slot)?;
+    match e.cap {
+        Cap::PartCtl => Ok(()),
+        _ => Err(err::BAD_CAP),
+    }
+}
+
+/// PART_SET_TABLE 시스템 콜 처리 함수입니다.
+///
+/// 표의 형식 검사는 k0-part가 합니다. 호출한 태스크 자신의 도메인이 표에
+/// 없으면 거부합니다(실수로 자기 자신을 영영 멈추는 표를 막음). 표는 지금 틱의
+/// 두 틱 뒤에 0번 항목부터 효력이 생깁니다.
+///
+/// # Arguments
+/// `ctl` - PartCtl 슬롯(x0)
+/// `count` - 항목 수(x1)
+/// `regs` - 항목을 담은 레지스터 넷(x2-x5)
+fn sys_part_set_table(ctl: u64, count: u64, regs: [u64; 4]) -> i64 {
+    done((|| {
+        let cn = cspace()?;
+        part_ctl(&cn, ctl)?;
+        let table = k0_sched::Table::decode(count, regs).map_err(|_| err::BAD_TABLE)?;
+        // SAFETY: 시스템 콜 컨텍스트라 접근이 배타적이고 current는 유효한 TCB임
+        unsafe {
+            if !table.contains(k0_sched::domain_of(k0_sched::current())) {
+                return Err(err::BAD_TABLE);
+            }
+            k0_sched::set_table(table);
+        }
+        Ok(())
+    })())
+}
+
+/// PART_SET_DOMAIN 시스템 콜 처리 함수입니다.
+///
+/// 구성을 마치고 아직 시작하지 않은(Stopped) TCB의 도메인만 바꿉니다. 그
+/// 상태의 TCB는 준비 큐에도 대기 큐에도 기한 목록에도 없으므로, 도메인마다
+/// 따로 있는 목록과 어긋날 일이 없습니다. 도메인이 표에 있는지는 보지
+/// 않습니다(표에 없는 도메인의 태스크는 실행되지 않을 뿐임).
+///
+/// # Arguments
+/// `ctl` - PartCtl 슬롯(x0)
+/// `slot` - TCB 슬롯(x1)
+/// `domain` - 새 도메인(x2)
+fn sys_part_set_domain(ctl: u64, slot: u64, domain: u64) -> i64 {
+    done((|| {
+        let cn = cspace()?;
+        part_ctl(&cn, ctl)?;
+        let d = u8::try_from(domain).ok().and_then(k0_sched::Domain::new).ok_or(err::BAD_DOMAIN)?;
+        let (_, e) = lookup(&cn, slot)?;
+        let Cap::Tcb { base } = e.cap else {
+            return Err(err::BAD_CAP);
+        };
+        let t = kva(base) as *mut Tcb;
+        // SAFETY: t는 TCB 케이퍼빌리티가 가리키는 전용 프레임의 별칭이고,
+        //         Stopped인 TCB는 어느 목록에도 없음
+        unsafe {
+            if (*t).state != TaskState::Stopped {
+                return Err(err::BAD_STATE);
+            }
+            k0_sched::assign(t, d);
         }
         Ok(())
     })())

@@ -1,0 +1,9 @@
+[package]
+name = "k0-part"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+k0-slice = { path = "../k0-slice" }

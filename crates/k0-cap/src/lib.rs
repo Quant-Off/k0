@@ -39,12 +39,9 @@ pub const SLOT_SIZE: usize = 64;
 
 /// 루트 CNode의 슬롯 수
 ///
-/// 자가 검증 뒤에 서비스(볼트와 터미널)를 새로 띄우는 이미지는 주소 공간 둘을
-/// 더 만들 슬롯이 필요하므로 feature `root-cnode-1024`로 두 배를 받습니다.
-/// 그 밖의 이미지는 그대로입니다.
-#[cfg(not(feature = "root-cnode-1024"))]
-pub const ROOT_CNODE_SLOTS: usize = 512;
-#[cfg(feature = "root-cnode-1024")]
+/// 모든 이미지가 같은 값을 씁니다. 자가 검증이 쓰는 슬롯은 루트 태스크
+/// 이미지의 프레임 수에 비례해 늘어나므로, 이미지가 커져도 모자라지 않게
+/// 넉넉히 잡습니다.
 pub const ROOT_CNODE_SLOTS: usize = 1024;
 
 /// 파생 깊이 상한, 초과하는 복사는 거부됩니다
@@ -79,6 +76,7 @@ const KIND_ENDPOINT: u64 = 5;
 const KIND_CNODE: u64 = 6;
 const KIND_ADDR_SPACE: u64 = 7;
 const KIND_CONSOLE: u64 = 8;
+const KIND_PART_CTL: u64 = 9;
 
 /// 물리 메모리 구간 하나를 나타내는 구조체입니다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +145,9 @@ pub enum Cap {
     /// 커널 콘솔에 대한 권한(오브젝트 없음), `rights`의 W가 출력이고 R이
     /// 입력 읽기
     Console { rights: u8 },
+    /// 시간 분할 제어 권한(오브젝트 없음). 분할 표와 태스크의 도메인을 정할 수
+    /// 있고 복사할 수 없음
+    PartCtl,
 }
 
 /// 재분류로 만들 수 있는 커널 오브젝트 종류를 나타내는 열거형입니다.
@@ -293,6 +294,7 @@ fn encode(cap: &Cap) -> [u64; 4] {
         Cap::CNode { base, slots } => [base | KIND_CNODE, *slots, 0, 0],
         Cap::AddrSpace { root_pa, asid } => [root_pa | KIND_ADDR_SPACE, *asid, 0, 0],
         Cap::Console { rights } => [KIND_CONSOLE | (u64::from(*rights) << RIGHTS_SHIFT), 0, 0, 0],
+        Cap::PartCtl => [KIND_PART_CTL, 0, 0, 0],
     }
 }
 
@@ -414,6 +416,13 @@ fn decode(w: &[u64; 4]) -> Result<Option<Entry>, CapError> {
                 return Err(CapError::Corrupt);
             }
             Cap::Console { rights }
+        }
+        KIND_PART_CTL => {
+            let tail_zero = w[1] == 0 && w[2] == 0 && w[3] == 0;
+            if rights != 0 || mapped || base != 0 || !tail_zero {
+                return Err(CapError::Corrupt);
+            }
+            Cap::PartCtl
         }
         _ => return Err(CapError::Corrupt),
     };
@@ -787,7 +796,9 @@ unsafe fn plan_copy(
         return Err(CapError::Occupied);
     }
     let cap = match e.cap {
-        Cap::Untyped { .. } | Cap::PageTable { .. } => return Err(CapError::NotCopyable),
+        Cap::Untyped { .. } | Cap::PageTable { .. } | Cap::PartCtl => {
+            return Err(CapError::NotCopyable)
+        }
         Cap::Frame { base, rights, .. } => {
             if badge != 0 {
                 return Err(CapError::BadBadge);
@@ -834,7 +845,9 @@ unsafe fn plan_copy(
             }
             Cap::Console { rights }
         }
-        other => {
+        // 종류를 하나씩 적음. 새 종류를 더하면 여기서 컴파일이 멈추므로 복사
+        // 규칙을 정하지 않은 채 복사 가능해지는 일이 없음
+        other @ (Cap::Tcb { .. } | Cap::CNode { .. } | Cap::AddrSpace { .. }) => {
             // 배지는 엔드포인트 전용. 다른 종류의 워드에 사용자 값이 섞이면
             // asid나 매핑 기록을 위조하는 길이 됨
             if badge != 0 {
@@ -1111,8 +1124,10 @@ pub mod boot_slot {
     pub const ADDR_SPACE: u64 = 2;
     pub const CONSOLE: u64 = 3;
     pub const CNODE: u64 = 4;
+    /// 시간 분할 제어
+    pub const PART_CTL: u64 = 5;
     /// untyped가 시작되는 슬롯
-    pub const FIRST_DYNAMIC: u64 = 5;
+    pub const FIRST_DYNAMIC: u64 = 6;
 }
 
 /// 부트스트랩이 루트 CNode에 넣을 고정 오브젝트들을 담는 구조체입니다.
@@ -1184,6 +1199,7 @@ pub unsafe fn bootstrap(
                 slots: cnode.len() as u64,
             },
         ),
+        (boot_slot::PART_CTL, Cap::PartCtl),
     ];
     for (index, cap) in fixed {
         let slot = cnode.slot(index).ok_or(CapError::OutOfSlots)?;

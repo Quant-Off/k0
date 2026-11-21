@@ -18,9 +18,19 @@
 //! 틱 주기는 1초입니다. 틱은 선점 신호이면서 IPC 타임아웃의 단위이고, EL0가
 //! 얻을 수 있는 유일한 시간 정보입니다(EL0는 카운터와 타이머 레지스터를 읽지
 //! 못함). 주기를 줄이면 EL0에 더 정밀한 시계를 주게 되므로, 주기를 바꾸는
-//! 것은 성능 조정이 아니라 사이드 채널에 관한 결정입니다. 틱은 처리된 횟수를
-//! 세는 것이지 흐른 시간을 재는 것이 아닙니다. 커널이 인터럽트를 막은 채
-//! 한 주기보다 오래 실행되면 그 사이의 틱은 한 번으로 셉니다.
+//! 것은 성능 조정이 아니라 사이드 채널에 관한 결정입니다.
+//!
+//! 틱 n의 시각은 부팅 때 읽은 카운터 값에 n 주기를 더한 값으로 정해져 있고,
+//! 타이머는 그 절대 시각에 맞춰 겁니다. 그래서 틱의 시각은 핸들러가 얼마나
+//! 늦게 돌았는지와 무관하고 밀리지 않습니다. 틱 번호도 카운터가 정합니다.
+//! 커널이 인터럽트를 막은 채 한 주기보다 오래 실행되면 지나간 번호는
+//! 건너뛰고, 스케줄러는 도착한 번호 하나만 봅니다. 이 산술은 k0-part의
+//! `clock` 모듈에 있고 호스트에서 시험합니다.
+//!
+//! 시간 분할에서 도메인이 바뀌는 틱은 보호 구간만큼 일찍 인터럽트를 겁니다
+//! ([guard_next]). 전환 작업을 그 구간 안에서 마치고 [hold_until_due]가 틱의
+//! 예정 시각까지 기다린 뒤에 다음 도메인이 실행되므로, 구간보다 짧은 커널
+//! 경로는 다음 도메인의 시작 시각을 움직이지 못합니다.
 //!
 //! # Errors
 //! 하드웨어가 기술과 다르거나, 타이머 PPI를 이 보안 상태에서 쓸 수 없거나,
@@ -87,6 +97,12 @@ static GICC: AtomicUsize = AtomicUsize::new(0);
 static TIMER_INTID: AtomicU32 = AtomicU32::new(0);
 static TIMER_HZ: AtomicU64 = AtomicU64::new(0);
 static TICKS: AtomicU64 = AtomicU64::new(0);
+/// 틱 0의 시각(초기화 때 읽은 카운터 값). 틱 n은 여기에 n 주기를 더한 시각
+static T0: AtomicU64 = AtomicU64::new(0);
+/// 다음 틱의 비교값을 예정 시각보다 얼마나 일찍 걸었는지(0이면 제때)
+static EARLY: AtomicU64 = AtomicU64::new(0);
+/// 분할 표가 기본이 아닌 동안에는 틱 줄을 내지 않음(틱 처리 시간을 줄임)
+static PARTITIONED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 /// 디스트리뷰터 레지스터의 가상 주소(콘솔의 SPI를 켜고 끄는 데 씀)
 #[cfg(feature = "console-input")]
 static GICD: AtomicUsize = AtomicUsize::new(0);
@@ -668,22 +684,54 @@ pub fn counter_hz(dt_hz: u32) -> Result<u64, IrqError> {
     }
 }
 
-fn timer_arm(interval: u64) {
-    // SAFETY: EL1 가상 타이머 재장전과 활성화 (IMASK=0)
+/// 가상 카운터의 지금 값을 읽는 함수입니다.
+fn counter_now() -> u64 {
+    let now: u64;
+    // SAFETY: CNTVCT_EL0 읽기는 부작용이 없음. 앞의 isb는 그 앞 명령들이
+    //         끝난 뒤의 값을 읽게 함
+    unsafe { asm!("isb", "mrs {}, cntvct_el0", out(reg) now, options(nomem, nostack)) };
+    now
+}
+
+/// 타이머를 절대 시각에 거는 함수입니다.
+fn timer_set(cval: u64) {
+    // SAFETY: EL1 가상 타이머의 비교값 설정과 활성화 (IMASK=0). 비교값이
+    //         앞으로 가면 레벨 인터럽트의 원인이 사라지고, 뒤의 isb가 그
+    //         결과를 완료 통지 전에 반영함
     unsafe {
         asm!(
-            "msr cntv_tval_el0, {i}",
+            "msr cntv_cval_el0, {v}",
             "msr cntv_ctl_el0, {c}",
-            i = in(reg) interval,
+            "isb",
+            v = in(reg) cval,
             c = in(reg) 1u64,
             options(nomem, nostack),
         );
     }
 }
 
-fn timer_tick() {
-    let n = TICKS.load(Ordering::Relaxed) + 1;
+/// 타이머 인터럽트를 처리하는 함수입니다. 틱이었으면 true를 줍니다.
+///
+/// 걸어 둔 시각보다 이른 인터럽트는 틱으로 세지 않고 같은 시각을 다시 겁니다.
+fn timer_tick() -> bool {
+    use k0_part::clock;
+    let hz = TIMER_HZ.load(Ordering::Relaxed);
+    let t0 = T0.load(Ordering::Relaxed);
+    let last = TICKS.load(Ordering::Relaxed);
+    let early = EARLY.load(Ordering::Relaxed);
+    let n = match clock::fire(counter_now(), t0, hz, last, early) {
+        clock::Fire::Spurious => {
+            timer_set(clock::due(t0, hz, last.saturating_add(1)).saturating_sub(early));
+            return false;
+        }
+        clock::Fire::Tick(n) => n,
+    };
     TICKS.store(n, Ordering::Relaxed);
+    // 다음 틱을 먼저 검(레벨 인터럽트의 원인 제거도 겸함). 뒤에 하는 일의
+    // 길이가 다음 틱의 시각에 영향을 주지 않음. 보호 구간은 스케줄러가 이
+    // 틱을 처리한 뒤에 guard_next로 다시 정함
+    EARLY.store(0, Ordering::Relaxed);
+    timer_set(clock::due(t0, hz, n.saturating_add(1)));
     // 수신 인터럽트가 오지 않는 UART(수신 타임아웃이 없거나 번호가 조용히
     // 틀린 경우)에서도 입력이 늦게나마 도착하게 틱마다 한 번 들여다봄. 오류
     // 문자를 버릴 만큼 버려 막아 둔 수신 인터럽트도 여기서 다시 열림. 닫혀
@@ -696,22 +744,75 @@ fn timer_tick() {
     let quiet = QUIET_TICKS.load(Ordering::Relaxed);
     #[cfg(not(feature = "console-input"))]
     let quiet = false;
-    // 틱은 끝없이 이어지므로 처음 몇 줄만 로그에 남김
-    if quiet {
-    } else if n <= LOGGED_TICKS {
-        let _ = writeln!(EarlyCon, "k0: tick {n}");
-    } else {
-        // 콘솔 드라이버가 없는 빌드에는 쓸 곳이 없으므로 서식 작업도 하지 않음
+    if !quiet {
+        // 처음 몇 틱은 로그에 남김. 번호를 건너뛰었어도 빠짐없이 적음
+        let mut k = last.saturating_add(1);
+        while k <= n && k <= LOGGED_TICKS {
+            let _ = writeln!(EarlyCon, "k0: tick {k}");
+            k += 1;
+        }
+        // 틱은 끝없이 이어지므로 그 뒤로는 콘솔에만 냄. 콘솔 드라이버가 없는
+        // 빌드에는 쓸 곳이 없으므로 서식 작업도 하지 않음
         #[cfg(any(feature = "console-pl011", feature = "console-16550"))]
-        let _ = writeln!(ConsoleOnly, "k0: tick {n}");
+        if n > LOGGED_TICKS && !PARTITIONED.load(Ordering::Relaxed) {
+            let _ = writeln!(ConsoleOnly, "k0: tick {n}");
+        }
     }
-    // 1초 주기 재장전 (레벨 인터럽트의 원인 제거도 겸함)
-    timer_arm(TIMER_HZ.load(Ordering::Relaxed));
+    true
 }
 
-/// 부팅 뒤로 지나간 타이머 틱 수를 주는 함수입니다.
+/// 다음 틱의 인터럽트를 보호 구간만큼 일찍 걸지 정하는 함수입니다.
 ///
-/// IPC 타임아웃의 기한이 이 값을 기준으로 정해집니다.
+/// 스케줄러가 틱 하나를 처리한 뒤와 분할 표가 바뀐 뒤에 부릅니다. 다음 틱에서
+/// 도메인이 바뀌면 `true`를 넘깁니다.
+///
+/// # Arguments
+/// `early` - 다음 틱을 일찍 걸지 여부
+pub fn guard_next(early: bool) {
+    use k0_part::clock;
+    let hz = TIMER_HZ.load(Ordering::Relaxed);
+    let by = if early { clock::guard(hz) } else { 0 };
+    let next = TICKS.load(Ordering::Relaxed).saturating_add(1);
+    EARLY.store(by, Ordering::Relaxed);
+    timer_set(clock::due(T0.load(Ordering::Relaxed), hz, next).saturating_sub(by));
+}
+
+/// 마지막으로 처리한 틱의 예정 시각이 될 때까지 기다리는 함수입니다.
+///
+/// EL0로 돌아가기 직전에 부릅니다. 틱을 일찍 받은 경우가 아니면 이미 지난
+/// 시각이므로 곧바로 돌아옵니다.
+pub fn hold_until_due() {
+    use k0_part::clock;
+    let hz = TIMER_HZ.load(Ordering::Relaxed);
+    let t0 = T0.load(Ordering::Relaxed);
+    let n = TICKS.load(Ordering::Relaxed);
+    while !clock::reached(counter_now(), t0, hz, n) {
+        core::hint::spin_loop();
+    }
+}
+
+/// 분할 표가 기본이 아닌지를 알려 두는 함수입니다. 그동안에는 틱 줄을 내지
+/// 않습니다.
+///
+/// # Arguments
+/// `on` - 분할 표가 기본이 아니면 true
+pub fn set_partitioned(on: bool) {
+    PARTITIONED.store(on, Ordering::Relaxed);
+}
+
+/// 이 코어의 인터럽트를 전부 막는 함수입니다. 다시 열지 않습니다.
+///
+/// 루트 태스크로 넘어가기 직전에 스케줄러가 부릅니다. 그 뒤로 커널은 예외로만
+/// 실행되고 예외 진입은 마스크된 채 시작하므로, 막힌 동안 걸린 틱은 EL0에
+/// 들어간 직후에 평소의 틱 사건으로 들어옵니다.
+pub fn mask_all() {
+    // SAFETY: DAIF의 마스크 비트를 세우는 것은 메모리와 스택을 건드리지 않음
+    unsafe { asm!("msr DAIFSet, #0xf", options(nomem, nostack)) };
+}
+
+/// 마지막으로 처리한 타이머 틱의 번호를 주는 함수입니다.
+///
+/// IPC 타임아웃의 기한과 분할 표의 위치가 이 값을 기준으로 정해집니다.
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
@@ -876,8 +977,12 @@ pub unsafe fn init(_vectors: &Vectors, gic: &Gic, intid: u32, hz: u64) -> Result
         },
     }
     TIMER_INTID.store(intid, Ordering::Relaxed);
+    // 주기와 틱 0의 시각을 먼저 적고 첫 틱을 검. 마스크를 여는 것은 그 뒤임
     TIMER_HZ.store(hz, Ordering::Relaxed);
-    timer_arm(hz);
+    let t0 = counter_now();
+    T0.store(t0, Ordering::Relaxed);
+    EARLY.store(0, Ordering::Relaxed);
+    timer_set(k0_part::clock::due(t0, hz, 1));
     // SAFETY: 벡터와 GIC가 준비된 뒤의 IRQ + SError(A) 언마스크
     //         SError를 계속 마스크하면 커널 실행 중의 시스템 오류가 조용히
     //         pending으로 쌓였다가 EL0 진입 후 엉뚱한 문맥에서 터짐
@@ -918,6 +1023,12 @@ unsafe extern "C" {
     /// 마친 뒤에만 호출됩니다.
     fn k0_preempt();
 
+    /// EL0로 돌아가기 직전의 마지막 확인, 커널 바이너리가 정의함 (링크 계약)
+    ///
+    /// # Safety
+    /// [k0_preempt]와 같고, 핸들러가 할 일을 전부 마친 뒤에 호출됩니다.
+    fn k0_leave();
+
     /// 콘솔 입력이 도착했을 때 기다리는 태스크를 깨우는 정책, 커널 바이너리가
     /// 정의함 (링크 계약)
     ///
@@ -948,9 +1059,13 @@ fn dispatch_irq() -> u8 {
             let iar = gicv3::ack();
             match iar & 0xFF_FFFF {
                 id if id == timer => {
-                    timer_tick();
+                    let tick = timer_tick();
                     gicv3::eoi(iar);
-                    EV_TICK
+                    if tick {
+                        EV_TICK
+                    } else {
+                        0
+                    }
                 }
                 #[cfg(feature = "console-input")]
                 id if id == console => {
@@ -968,10 +1083,14 @@ fn dispatch_irq() -> u8 {
             let iar = unsafe { read32(cpu + gicv2::GICC_IAR) };
             match u64::from(iar & 0x3FF) {
                 id if id == timer => {
-                    timer_tick();
+                    let tick = timer_tick();
                     // SAFETY: 승인에서 받은 값 그대로 완료 통지
                     unsafe { write32(cpu + gicv2::GICC_EOIR, iar) };
-                    EV_TICK
+                    if tick {
+                        EV_TICK
+                    } else {
+                        0
+                    }
                 }
                 #[cfg(feature = "console-input")]
                 id if id == console => {
@@ -1014,7 +1133,8 @@ extern "C" fn fiq_current() {
 ///
 /// 타이머 틱이면 커널의 선점 정책을 부릅니다. 복귀는 벡터의
 /// `__user_restore`가 (선점 정책이 갱신했을 수 있는) 현재 컨텍스트를
-/// 복원하며 수행합니다.
+/// 복원하며 수행합니다. 어떤 인터럽트였든 돌아가기 직전에 커널의 마지막
+/// 확인을 거칩니다.
 #[unsafe(no_mangle)]
 extern "C" fn irq_lower(_ctx: &mut crate::usermode::Context) {
     let events = dispatch_irq();
@@ -1027,6 +1147,8 @@ extern "C" fn irq_lower(_ctx: &mut crate::usermode::Context) {
         // SAFETY: 벡터가 사용자 컨텍스트 저장을 마친 EL0 IRQ 경로임
         unsafe { k0_preempt() };
     }
+    // SAFETY: 같은 경로이고 핸들러의 일이 끝남
+    unsafe { k0_leave() };
 }
 
 /// 사용자 공간(EL0) 실행 중 FIQ 벡터가 사용하는 디스패처 함수입니다.

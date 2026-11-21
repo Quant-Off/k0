@@ -38,7 +38,7 @@ console = ["console-pl011", "console-16550"]
 #   terminal       루트 태스크 이미지에 운영자 터미널을 넣음(자가 검증 뒤에
 #                  서비스로 시작). console-input을 함께 켬
 console-input = ["k0-arch/console-input", "k0-ipc/console-input", "k0-task/console-input", "k0-boot/console-input"]
-terminal = ["console-input", "k0-boot/terminal", "k0-cap/root-cnode-1024"]
+terminal = ["console-input", "k0-boot/terminal"]
 # 루트 태스크 이미지에 키 볼트(서명 오라클)를 넣음. 알고리즘은 따로 더함
 #   vault          볼트 서비스와 그 자가 검증(서명 알고리즘 없음)
 #   vault-ed25519  위에 Ed25519를 더함

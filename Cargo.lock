@@ -121,6 +121,7 @@ version = "0.1.0"
 dependencies = [
  "k0-abi",
  "k0-conin",
+ "k0-part",
 ]
 
 [[package]]
@@ -190,12 +191,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "k0-part"
+version = "0.1.0"
+dependencies = [
+ "k0-slice",
+]
+
+[[package]]
 name = "k0-sched"
 version = "0.1.0"
 dependencies = [
  "k0-arch",
  "k0-mm",
- "k0-slice",
+ "k0-part",
  "k0-task",
 ]
 

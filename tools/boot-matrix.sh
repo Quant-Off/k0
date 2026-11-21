@@ -86,13 +86,28 @@ pass() {
     name="$1"; elf="$2"; shift 2
     want "$name" $only || return 0
     ran=$((ran + 1))
-    if env "$@" K0_BOOT_LOG="$root/target/matrix-$name.log" tools/qemu-boot-test.sh "$elf" > "target/matrix-$name.out" 2>&1; then
-        echo "matrix: $name pass"
-    else
-        echo "matrix: $name FAIL"
-        show "target/matrix-$name.out"
-        failed="$failed $name"
-    fi
+    tries=0
+    while :; do
+        tries=$((tries + 1))
+        if ! env "$@" K0_BOOT_LOG="$root/target/matrix-$name.log" tools/qemu-boot-test.sh "$elf" > "target/matrix-$name.out" 2>&1; then
+            echo "matrix: $name FAIL"
+            show "target/matrix-$name.out"
+            failed="$failed $name"
+            return 0
+        fi
+        # 시간 분할 창 검증이 한 번 다시 돈 실행은 호스트의 멈춤일 수도, 부팅 뒤 첫
+        # 표에서만 드러나는 결함일 수도 있음. 행을 한 번 더 돌려 또 다시 돌면 실패로
+        # 봄(멈춤은 되풀이되기 어렵고 결함은 늘 되풀이됨)
+        grep -q '^boot-test: partition window retries: [1-9]' "target/matrix-$name.out" || break
+        if [ "$tries" -ge 2 ]; then
+            echo "matrix: $name FAIL (the window test needed its retry in two runs)"
+            show "target/matrix-$name.out"
+            failed="$failed $name"
+            return 0
+        fi
+        echo "matrix: $name ran the window test twice, running the row again"
+    done
+    echo "matrix: $name pass"
 }
 
 # 터미널 행: 이름, 이미지, 그 뒤는 환경 변수 대입들. 이미지를 부팅해 직렬

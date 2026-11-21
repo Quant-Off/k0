@@ -409,9 +409,12 @@ pub fn sys_reply_recv(ctx: &mut Context) -> bool {
 /// 응답을 기다리고 있었으면 응답을 쥔 태스크의 자격을 지우고 REPLY_TIMEOUT
 /// 으로 깨웁니다. 그 태스크의 뒤늦은 응답은 받을 상대가 없어 건너뜁니다.
 /// 링크가 상태와 맞지 않으면 종료 처리와 똑같이 손상으로 보고 정지합니다.
-/// 틱마다 한 번 부릅니다.
+/// 그 도메인이 도는 틱마다 한 번 부릅니다. 다른 도메인의 대기자는 건드리지
+/// 않으며, 그 도메인이 도는 틱에서 깨어납니다(기한보다 늦을 수는 있어도 이를
+/// 수는 없음).
 ///
 /// # Arguments
+/// `d` - 지금 도는 도메인
 /// `now` - 지금의 틱 수
 /// `current_ctx` - 현재 태스크의 컨텍스트에 대한 참조를 호출자가 쥐고 있으면
 /// 그 참조. 실행할 태스크가 없어 대기 중일 때는 현재 태스크 자신이 기한을
@@ -421,12 +424,12 @@ pub fn sys_reply_recv(ctx: &mut Context) -> bool {
 /// # Safety
 /// EL0에서 진입한 예외의 핸들러(단일 코어, DAIF 마스크)에서만 호출해야 하고,
 /// `current_ctx`가 `Some`이면 현재 태스크의 컨텍스트여야 합니다.
-pub unsafe fn expire_timeouts(now: u64, mut current_ctx: Option<&mut Context>) {
+pub unsafe fn expire_timeouts(d: k0_sched::Domain, now: u64, mut current_ctx: Option<&mut Context>) {
     // SAFETY: 함수 계약대로 접근이 배타적이고, 기한 목록에는 블록된 태스크만
     //         있으며 그 상태가 말하는 큐와 링크는 이 크레이트가 유지함
     unsafe {
         let cur = k0_sched::current();
-        k0_sched::expired(now, |t| {
+        k0_sched::expired(d, now, |t| {
             let status = match (*t).state {
                 TaskState::BlockedSend | TaskState::BlockedRecv | TaskState::BlockedCall => {
                     let ep = (*t).blocked_on as *mut Endpoint;

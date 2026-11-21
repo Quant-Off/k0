@@ -3,6 +3,8 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 const G: u64 = 4096;
+/// 첫 untyped가 들어가는 슬롯
+const UT: usize = boot_slot::FIRST_DYNAMIC as usize;
 
 const BOOT: BootObjects = BootObjects {
     tcb: 0x7000_0000,
@@ -174,7 +176,7 @@ fn malformed_words_are_rejected_not_interpreted() {
     let bad: [[u64; 4]; 14] = [
         [0, 1, 0, 0],
         [0, 0, 0, 9],
-        [9, 0, 0, 0],
+        [10, 0, 0, 0],
         [15, 0, 0, 0],
         [KIND_TCB | 1 << 11, 0, 0, 0],
         [KIND_TCB | 1 << 48, 0, 0, 0],
@@ -262,9 +264,10 @@ fn fixed_slots_come_first() {
             slots: 64
         }
     );
+    assert_eq!(cap_at(c, 5), Cap::PartCtl);
     assert_eq!(untypeds(c, 64), vec![(0x4000_0000, 0x10_0000, 0)]);
-    assert_eq!(next, 6);
-    for i in 1..6 {
+    assert_eq!(next, 7);
+    for i in 1..7 {
         let e = get(c, i).unwrap();
         assert!(e.original && !e.bound);
         unsafe {
@@ -422,7 +425,7 @@ fn slot_lookup_rejects_null_and_out_of_range() {
 #[test]
 fn retype_carves_aligned_objects_in_order() {
     let (c, next) = filled(&[r(0x4000_0000, 8 * G)], &[]);
-    let ut = unsafe { c.add(5) };
+    let ut = unsafe { c.add(UT) };
     let mut seen = Vec::new();
     let kinds = [
         ObjKind::Frame,
@@ -476,7 +479,7 @@ fn retype_carves_aligned_objects_in_order() {
 #[test]
 fn retyped_frames_never_carry_execute() {
     let (c, next) = filled(&[r(0x4000_0000, 8 * G)], &[]);
-    unsafe { retype(c.add(5), c.add(next as usize), ObjKind::Frame, G, ok_prep) }.unwrap();
+    unsafe { retype(c.add(UT), c.add(next as usize), ObjKind::Frame, G, ok_prep) }.unwrap();
     let Cap::Frame { rights: got, .. } = cap_at(c, next as usize) else {
         panic!()
     };
@@ -493,7 +496,7 @@ fn retyped_frames_never_carry_execute() {
 fn retype_rounds_unaligned_watermark_up() {
     let (c, next) = filled(&[r(0x1800, 0x4000)], &[]);
     let n = next as usize;
-    let ut = unsafe { c.add(5) };
+    let ut = unsafe { c.add(UT) };
     let mut at = 0;
     unsafe {
         retype(ut, c.add(n), ObjKind::Frame, G, |pa| {
@@ -519,7 +522,7 @@ fn retype_rounds_unaligned_watermark_up() {
 fn failed_prep_leaves_state_unchanged() {
     let (c, next) = filled(&[r(0x10000, 4 * G)], &[]);
     let n = next as usize;
-    let ut = unsafe { c.add(5) };
+    let ut = unsafe { c.add(UT) };
     assert_eq!(
         unsafe { retype(ut, c.add(n), ObjKind::Tcb, G, |_| None) },
         Err(CapError::PrepFailed)
@@ -542,18 +545,18 @@ fn failed_prep_leaves_state_unchanged() {
 fn retype_rejects_bad_sources_and_destinations_without_prep() {
     let (c, next) = filled(&[r(0x10000, 4 * G)], &[]);
     let n = next as usize;
-    unsafe { retype(c.add(5), c.add(n), ObjKind::Frame, G, ok_prep) }.unwrap();
+    unsafe { retype(c.add(UT), c.add(n), ObjKind::Frame, G, ok_prep) }.unwrap();
     let never = |_| -> Option<u64> { panic!("prep must not run") };
-    for src in [1, 2, 3, 4, n, n + 1] {
+    for src in [1, 2, 3, 4, boot_slot::PART_CTL as usize, n, n + 1] {
         assert_eq!(
             unsafe { retype(c.add(src), c.add(n + 2), ObjKind::Frame, G, never) },
             Err(CapError::NotUntyped),
             "source {src}"
         );
     }
-    for dest in [1, 5, n] {
+    for dest in [1, 5, UT, n] {
         assert_eq!(
-            unsafe { retype(c.add(5), c.add(dest), ObjKind::Frame, G, never) },
+            unsafe { retype(c.add(UT), c.add(dest), ObjKind::Frame, G, never) },
             Err(CapError::Occupied),
             "dest {dest}"
         );
@@ -611,7 +614,7 @@ fn random_retypes_never_overlap() {
                 .map(|i| r(i * 0x100_0000 + rng.below(4) * 0x800, granule * (1 + rng.below(12))))
                 .collect();
             let (c, next) = filled(&memory, &[]);
-            let sources: Vec<usize> = (5..next as usize).collect();
+            let sources: Vec<usize> = (UT..next as usize).collect();
             let mut dest = next as usize;
             let mut carved: Vec<u64> = Vec::new();
             for _ in 0..40 {
@@ -681,6 +684,48 @@ fn console_rights_only_shrink() {
 }
 
 #[test]
+fn the_partition_control_cannot_be_copied() {
+    let (c, _) = filled(&[r(0x4000_0000, 16 * G)], &[]);
+    let at = boot_slot::PART_CTL as usize;
+    unsafe {
+        assert_eq!(cap_at(c, at), Cap::PartCtl);
+        // 권한을 어떻게 고르든, 배지가 있든 없든 복사본은 생기지 않음
+        for mask in [0, rights::R, rights::W, rights::ALL] {
+            for badge in [0, 7] {
+                assert_eq!(copy(c.add(at), c.add(30), mask, badge, false), Err(CapError::NotCopyable));
+            }
+        }
+        assert_eq!(get(c, 30), None);
+        // 이동은 되고, 옮겨 간 자리에서도 복사는 안 됨
+        move_cap(c.add(at), c.add(31)).unwrap();
+        assert_eq!(get(c, at), None);
+        assert_eq!(cap_at(c, 31), Cap::PartCtl);
+        assert_eq!(copy(c.add(31), c.add(30), rights::ALL, 0, false), Err(CapError::NotCopyable));
+        // 삭제하면 어디에도 남지 않음
+        let mut log = Log::default();
+        delete(c.add(31), &mut log).unwrap();
+        for i in 1..48 {
+            assert!(get(c, i).is_none_or(|e| e.cap != Cap::PartCtl));
+        }
+    }
+}
+
+#[test]
+fn a_partition_control_word_carries_nothing_else() {
+    let w = [KIND_PART_CTL, 0, 0, 0];
+    assert_eq!(decode(&w).unwrap().unwrap().cap, Cap::PartCtl);
+    // 권한 비트, 오브젝트 주소, 매핑 기록, 꼬리 워드가 있으면 손상으로 봄
+    for rights in 1u64..8 {
+        assert_eq!(decode(&[w[0] | rights << RIGHTS_SHIFT, 0, 0, 0]), Err(CapError::Corrupt));
+    }
+    assert_eq!(decode(&[w[0] | 0x1000, 0, 0, 0]), Err(CapError::Corrupt));
+    assert_eq!(decode(&[w[0] | FLAG_MAPPED, 0, 0, 0]), Err(CapError::Corrupt));
+    assert_eq!(decode(&[w[0], 1, 0, 0]), Err(CapError::Corrupt));
+    assert_eq!(decode(&[w[0], 0, 1, 0]), Err(CapError::Corrupt));
+    assert_eq!(decode(&[w[0], 0, 0, 1]), Err(CapError::Corrupt));
+}
+
+#[test]
 fn a_console_word_without_rights_or_with_execute_is_corrupt() {
     for rights in [0u64, 4, 5, 6, 7] {
         assert_eq!(decode(&[KIND_CONSOLE | rights << RIGHTS_SHIFT, 0, 0, 0]), Err(CapError::Corrupt));
@@ -700,7 +745,7 @@ fn a_console_word_without_rights_or_with_execute_is_corrupt() {
 fn copy_rules_per_kind() {
     let (c, next) = filled(&[r(0x4000_0000, 16 * G)], &[]);
     let n = next as usize;
-    let ut = unsafe { c.add(5) };
+    let ut = unsafe { c.add(UT) };
     unsafe {
         retype(ut, c.add(n), ObjKind::Frame, G, ok_prep).unwrap();
         retype(ut, c.add(n + 1), ObjKind::PageTable, G, ok_prep).unwrap();
@@ -759,7 +804,7 @@ fn a_copy_never_inherits_the_mapping_record() {
         level: 3,
     });
     unsafe {
-        retype(c.add(5), c.add(n), ObjKind::Frame, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n), ObjKind::Frame, G, ok_prep).unwrap();
         update(
             c.add(n),
             Cap::Frame {
@@ -787,8 +832,8 @@ fn update_only_changes_watermark_and_mapping() {
     let (c, next) = filled(&[r(0x4000_0000, 16 * G)], &[]);
     let n = next as usize;
     unsafe {
-        retype(c.add(5), c.add(n), ObjKind::Frame, G, ok_prep).unwrap();
-        retype(c.add(5), c.add(n + 1), ObjKind::Endpoint, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n), ObjKind::Frame, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n + 1), ObjKind::Endpoint, G, ok_prep).unwrap();
         let frame = |base, rights| Cap::Frame {
             base,
             rights,
@@ -814,8 +859,8 @@ fn update_only_changes_watermark_and_mapping() {
             size: 16 * G,
             used,
         };
-        assert_eq!(update(c.add(5), ut(17 * G)), Err(CapError::Corrupt));
-        update(c.add(5), ut(3 * G)).unwrap();
+        assert_eq!(update(c.add(UT), ut(17 * G)), Err(CapError::Corrupt));
+        update(c.add(UT), ut(3 * G)).unwrap();
         assert_eq!(untypeds(c, 64), vec![(0x4000_0000, 16 * G, 3 * G)]);
     }
 }
@@ -826,7 +871,7 @@ fn move_keeps_the_subtree_attached() {
     let n = next as usize;
     let other = node(16);
     unsafe {
-        retype(c.add(5), c.add(n), ObjKind::Endpoint, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n), ObjKind::Endpoint, G, ok_prep).unwrap();
         copy(c.add(n), c.add(20), rights::ALL, 1, false).unwrap();
         copy(c.add(20), c.add(21), rights::ALL, 0, false).unwrap();
         // 가운데 노드를 다른 CNode로 옮김
@@ -834,7 +879,7 @@ fn move_keeps_the_subtree_attached() {
         assert_eq!(move_cap(c.add(20), other.add(4)), Err(CapError::Empty));
         assert_eq!(move_cap(c.add(n), other.add(3)), Err(CapError::Occupied));
         // untyped도 옮길 수는 있고, 옮긴 뒤에도 자손이 붙어 있음
-        move_cap(c.add(5), other.add(5)).unwrap();
+        move_cap(c.add(UT), other.add(5)).unwrap();
         assert!(has_descendants(other.add(5)));
 
         let mut log = Log::default();
@@ -856,7 +901,7 @@ fn delete_removes_descendants_and_finalizes_only_with_the_original() {
     let (c, next) = filled(&[r(0x4000_0000, 16 * G)], &[]);
     let n = next as usize;
     unsafe {
-        retype(c.add(5), c.add(n), ObjKind::Endpoint, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n), ObjKind::Endpoint, G, ok_prep).unwrap();
         copy(c.add(n), c.add(20), rights::ALL, 0, false).unwrap();
         copy(c.add(20), c.add(21), rights::ALL, 0, false).unwrap();
         copy(c.add(n), c.add(22), rights::ALL, 0, false).unwrap();
@@ -882,7 +927,7 @@ fn delete_removes_descendants_and_finalizes_only_with_the_original() {
         assert!(!log.removed[2].1);
         assert!(log.removed[3].1, "the original is the last cap of its object");
         assert_eq!(get(c, 22), None);
-        assert!(!has_descendants(c.add(5)));
+        assert!(!has_descendants(c.add(UT)));
     }
 }
 
@@ -892,26 +937,26 @@ fn revoking_an_ancestor_may_report_the_original_before_its_copies() {
     let n = next as usize;
     let mut log = Log::default();
     unsafe {
-        retype(c.add(5), c.add(n), ObjKind::Endpoint, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n), ObjKind::Endpoint, G, ok_prep).unwrap();
         copy(c.add(n), c.add(20), rights::ALL, 3, false).unwrap();
         copy(c.add(20), c.add(21), rights::ALL, 0, false).unwrap();
         // 조상(untyped)의 회수는 리스트 순서대로 지움: 원본이 먼저, 복사본이 나중.
         // 콜백 구현은 이 순서를 견뎌야 하고, 반환 시점에는 전부 사라져 있어야 함
-        revoke(c.add(5), &mut log).unwrap();
+        revoke(c.add(UT), &mut log).unwrap();
     }
     let order: Vec<bool> = log.removed.iter().map(|x| x.1).collect();
     assert_eq!(order, vec![true, false, false]);
     for i in [n, 20, 21] {
         assert_eq!(get(c, i), None);
     }
-    assert!(!unsafe { has_descendants(c.add(5)) });
+    assert!(!unsafe { has_descendants(c.add(UT)) });
 }
 
 #[test]
 fn untyped_memory_is_reused_only_when_nothing_is_left() {
     let (c, next) = filled(&[r(0x4000_0000, 4 * G)], &[]);
     let n = next as usize;
-    let ut = unsafe { c.add(5) };
+    let ut = unsafe { c.add(UT) };
     let mut log = Log::default();
     unsafe {
         for i in 0..4 {
@@ -954,8 +999,8 @@ fn destroying_a_cnode_deletes_what_it_holds() {
     let mut log = Log::default();
     unsafe {
         // 첫 untyped에서 CNode, 둘째 untyped에서 엔드포인트
-        retype(c.add(5), c.add(n), ObjKind::CNode, G, ok_prep).unwrap();
-        retype(c.add(6), c.add(n + 1), ObjKind::Endpoint, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n), ObjKind::CNode, G, ok_prep).unwrap();
+        retype(c.add(UT + 1), c.add(n + 1), ObjKind::Endpoint, G, ok_prep).unwrap();
         log.containers.insert(0x4000_0000, (inner, 64));
         // 엔드포인트의 원본을 CNode 안으로 옮기고 바깥에 복사본을 둠
         move_cap(c.add(n + 1), inner.add(9)).unwrap();
@@ -965,7 +1010,7 @@ fn destroying_a_cnode_deletes_what_it_holds() {
 
         // 첫 untyped만 회수: CNode가 종료되면서 안에 든 케이퍼빌리티가 전부
         // 삭제되고, 그중 원본이던 엔드포인트도 종료되어 바깥 복사본이 사라짐
-        revoke(c.add(5), &mut log).unwrap();
+        revoke(c.add(UT), &mut log).unwrap();
         assert_eq!(get(c, n), None);
         assert_eq!(get(c, 30), None);
         for i in 0..64 {
@@ -974,7 +1019,7 @@ fn destroying_a_cnode_deletes_what_it_holds() {
         }
         assert!(get(c, 3).is_some(), "the console original outside survives");
         assert!(!has_descendants(c.add(3)));
-        assert!(!has_descendants(c.add(6)), "the endpoint in the other untyped is gone");
+        assert!(!has_descendants(c.add(UT + 1)), "the endpoint in the other untyped is gone");
         let originals: Vec<Cap> = log.removed.iter().filter(|x| x.1).map(|x| x.0).collect();
         assert_eq!(originals.len(), 2);
         assert!(matches!(originals[0], Cap::CNode { .. }));
@@ -989,7 +1034,7 @@ fn bound_copies_are_reported_and_cannot_move() {
     let tcb = node(3);
     let mut log = Log::default();
     unsafe {
-        retype(c.add(5), c.add(n), ObjKind::CNode, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n), ObjKind::CNode, G, ok_prep).unwrap();
         copy(c.add(n), tcb.add(1), rights::ALL, 0, true).unwrap();
         assert!(get(tcb, 1).unwrap().bound);
         assert_eq!(move_cap(tcb.add(1), c.add(40)), Err(CapError::NotCopyable));
@@ -1011,9 +1056,9 @@ fn a_pair_copy_is_all_or_nothing() {
     let n = next as usize;
     let tcb = node(3);
     unsafe {
-        retype(c.add(5), c.add(n), ObjKind::CNode, G, ok_prep).unwrap();
-        retype(c.add(5), c.add(n + 1), ObjKind::AddrSpace, G, ok_prep).unwrap();
-        retype(c.add(5), c.add(n + 2), ObjKind::PageTable, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n), ObjKind::CNode, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n + 1), ObjKind::AddrSpace, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n + 2), ObjKind::PageTable, G, ok_prep).unwrap();
 
         // 둘째가 복사 불가, 비어 있음, 깊이 초과인 경우 첫째도 들어가지 않음
         assert_eq!(
@@ -1063,9 +1108,9 @@ fn derivation_depth_is_bounded() {
         (*c.add(3)).depth = MAX_DEPTH;
         assert_eq!(copy(c.add(3), c.add(20), rights::ALL, 0, false), Err(CapError::TooDeep));
         assert_eq!(get(c, 20), None);
-        (*c.add(5)).depth = MAX_DEPTH;
+        (*c.add(UT)).depth = MAX_DEPTH;
         assert_eq!(
-            retype(c.add(5), c.add(20), ObjKind::Frame, G, |_| panic!("prep must not run")),
+            retype(c.add(UT), c.add(20), ObjKind::Frame, G, |_| panic!("prep must not run")),
             Err(CapError::TooDeep)
         );
         (*c.add(3)).depth = u64::MAX;
@@ -1079,7 +1124,7 @@ fn broken_links_stop_the_operation() {
     let n = next as usize;
     let mut log = Log::default();
     unsafe {
-        retype(c.add(5), c.add(n), ObjKind::Endpoint, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n), ObjKind::Endpoint, G, ok_prep).unwrap();
         copy(c.add(n), c.add(20), rights::ALL, 0, false).unwrap();
         // 자식의 역링크를 망가뜨림
         (*c.add(20)).prev = c.add(3) as u64;
@@ -1097,7 +1142,7 @@ fn a_container_whose_null_slot_is_used_is_refused() {
     let inner = node(8);
     let mut log = Log::default();
     unsafe {
-        retype(c.add(5), c.add(n), ObjKind::CNode, G, ok_prep).unwrap();
+        retype(c.add(UT), c.add(n), ObjKind::CNode, G, ok_prep).unwrap();
         (*inner).aux = 1;
         log.containers.insert(0x4000_0000, (inner, 8));
         assert_eq!(delete(c.add(n), &mut log), Err(CapError::Corrupt));
@@ -1180,6 +1225,7 @@ fn ident(cap: &Cap) -> (u8, u64) {
     match *cap {
         Cap::Untyped { base, .. } => (0, base),
         Cap::Console { .. } => (1, 0),
+        Cap::PartCtl => (3, 0),
         Cap::Frame { base, .. }
         | Cap::PageTable { base, .. }
         | Cap::Tcb { base }
@@ -1703,7 +1749,7 @@ fn self_holding(granule: u64) -> (World, *mut Slot, *mut Slot, *mut Slot, u64, u
     let mut w = World::with(granule, 16);
     let root = w.root();
     unsafe {
-        let ut = root.add(5);
+        let ut = root.add(UT);
         let (c_pa, c) = w.make(ut, root.add(10), ObjKind::CNode);
         copy(root.add(10), root.add(11), rights::ALL, 0, false).unwrap();
         move_cap(root.add(10), c.add(3)).unwrap();
@@ -1766,20 +1812,20 @@ fn a_cnode_holding_its_own_original_delete_first_and_other_orders() {
             assert!(w.objs.contains(&(2, c_pa)), "orphaned self-holding CNode is still alive");
             assert!(w.torn.contains(&(t as u64)));
             let root = w.root();
-            revoke(root.add(5), &mut w).unwrap();
+            revoke(root.add(UT), &mut w).unwrap();
             w.check();
             assert!(!w.objs.contains(&(2, c_pa)) && !w.objs.contains(&(2, e_pa)));
-            assert!(!has_descendants(root.add(5)));
+            assert!(!has_descendants(root.add(UT)));
         }
         // 모든 것이 살아 있는 채로 untyped를 바로 회수
         let (mut w, _c, _c_copy, _e_copy, c_pa, _e_pa, _t) = self_holding(g);
         unsafe {
             let root = w.root();
-            revoke(root.add(5), &mut w).unwrap();
+            revoke(root.add(UT), &mut w).unwrap();
             w.check();
             assert!(!w.objs.contains(&(2, c_pa)));
             // 그 메모리는 처음부터 다시 나감
-            let (pa, _) = w.make(root.add(5), root.add(20), ObjKind::Frame);
+            let (pa, _) = w.make(root.add(UT), root.add(20), ObjKind::Frame);
             assert_eq!(pa, 0x4000_0000);
             w.check();
         }
@@ -1787,10 +1833,10 @@ fn a_cnode_holding_its_own_original_delete_first_and_other_orders() {
         let (mut w, _c, _c_copy, _e_copy, c_pa, _e_pa, _t) = self_holding(g);
         unsafe {
             let root = w.root();
-            delete(root.add(5), &mut w).unwrap();
+            delete(root.add(UT), &mut w).unwrap();
             w.check();
             assert!(!w.objs.contains(&(2, c_pa)));
-            assert!(read(root.add(5)).unwrap().is_none());
+            assert!(read(root.add(UT)).unwrap().is_none());
         }
     }
 }
@@ -1801,10 +1847,10 @@ fn an_untyped_parked_inside_a_cnode_carved_from_it() {
         let mut w = World::with(g, 16);
         let root = w.root();
         unsafe {
-            let (c_pa, c) = w.make(root.add(5), root.add(10), ObjKind::CNode);
-            let (f_pa, _) = w.make(root.add(5), root.add(11), ObjKind::Frame);
+            let (c_pa, c) = w.make(root.add(UT), root.add(10), ObjKind::CNode);
+            let (f_pa, _) = w.make(root.add(UT), root.add(11), ObjKind::Frame);
             // untyped 자신을, 거기서 떼어 만든 CNode 안에 넣음
-            move_cap(root.add(5), c.add(7)).unwrap();
+            move_cap(root.add(UT), c.add(7)).unwrap();
             w.check();
             // 그 슬롯으로 회수: CNode가 죽고, 그 안을 비우면서 untyped 케이퍼빌리티도 삭제됨
             revoke(c.add(7), &mut w).unwrap();
@@ -1816,8 +1862,8 @@ fn an_untyped_parked_inside_a_cnode_carved_from_it() {
         let mut w = World::with(g, 16);
         let root = w.root();
         unsafe {
-            let (c_pa, c) = w.make(root.add(5), root.add(10), ObjKind::CNode);
-            move_cap(root.add(5), c.add(7)).unwrap();
+            let (c_pa, c) = w.make(root.add(UT), root.add(10), ObjKind::CNode);
+            move_cap(root.add(UT), c.add(7)).unwrap();
             move_cap(root.add(10), c.add(8)).unwrap();
             w.check();
             delete(c.add(7), &mut w).unwrap();
@@ -1833,8 +1879,8 @@ fn two_cnodes_holding_each_others_original() {
         let mut w = World::with(4096, 16);
         let root = w.root();
         unsafe {
-            let (a_pa, a) = w.make(root.add(5), root.add(10), ObjKind::CNode);
-            let (b_pa, b) = w.make(root.add(5), root.add(11), ObjKind::CNode);
+            let (a_pa, a) = w.make(root.add(UT), root.add(10), ObjKind::CNode);
+            let (b_pa, b) = w.make(root.add(UT), root.add(11), ObjKind::CNode);
             copy(root.add(10), root.add(12), rights::ALL, 0, false).unwrap();
             copy(root.add(11), root.add(13), rights::ALL, 0, false).unwrap();
             // A의 원본은 B에, B의 원본은 A에 둠
@@ -1852,13 +1898,13 @@ fn two_cnodes_holding_each_others_original() {
                     w.check();
                     // 둘 다 루트에서 닿지 않음. untyped로만 되찾을 수 있음
                     assert!(w.objs.contains(&(2, a_pa)) && w.objs.contains(&(2, b_pa)));
-                    revoke(root.add(5), &mut w).unwrap()
+                    revoke(root.add(UT), &mut w).unwrap()
                 }
                 _ => {
                     delete(root.add(12), &mut w).unwrap();
                     delete(root.add(13), &mut w).unwrap();
                     w.check();
-                    revoke(root.add(5), &mut w).unwrap()
+                    revoke(root.add(UT), &mut w).unwrap()
                 }
             }
             w.check();
@@ -1874,7 +1920,7 @@ fn cnodes_nested_through_cnodes_with_tcbs_bound_across_levels() {
         let mut w = World::with(4096, 3 * DEPTH as u64 + 8);
         let root = w.root();
         unsafe {
-            let ut = root.add(5);
+            let ut = root.add(UT);
             // i번째 층: CNode_i의 원본은 CNode_{i-1}의 1번 슬롯에 있음. CNode_i의 2번
             // 슬롯에는 TCB의 원본이 있고, 그 TCB의 묶인 슬롯에는 CNode_i와 CNode_i의
             // 3번 슬롯에 있는 주소 공간의 사본이 있음

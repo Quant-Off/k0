@@ -164,7 +164,14 @@ pub fn waiting() -> bool {
 /// 대기자가 그사이 케이퍼빌리티를 잃었으면 바이트를 쓰지 않고 REVOKED로
 /// 깨웁니다. 깨울 까닭이 없으면 아무 일도 하지 않습니다.
 ///
+/// 바이트는 대기자의 도메인이 도는 동안에만 전달합니다. 다른 도메인이 도는
+/// 중이면 바이트는 버퍼에 남고, 대기자의 도메인이 도는 틱에서 전달됩니다.
+/// 그래서 입력이 언제 들어왔는지가 다른 도메인의 창 안에서 대기자의 큐를
+/// 바꾸지 않습니다. 케이퍼빌리티를 잃었거나 입력 경로가 꺼진 것은 바이트가
+/// 아니라 상태의 변화이므로 어느 도메인이 돌든 곧바로 알립니다.
+///
 /// # Arguments
+/// `window` - 지금 도는 도메인
 /// `current_ctx` - 현재 태스크의 컨텍스트가 살아 있는 참조. 대기 루프에서는
 ///                 블록된 현재 태스크가 대기자일 수 있고, 그때는 반환값을 이
 ///                 참조로 써야 함. 실행 중이던 태스크를 끊고 들어온 문맥에서는
@@ -173,7 +180,7 @@ pub fn waiting() -> bool {
 /// # Safety
 /// 스케줄러에 배타적으로 접근할 수 있는 커널 문맥(시스템 콜, EL0에서 들어온
 /// 인터럽트의 끝, 대기 루프)에서만 불러야 합니다.
-pub unsafe fn wake(mut current_ctx: Option<&mut Context>) {
+pub unsafe fn wake(window: k0_sched::Domain, mut current_ctx: Option<&mut Context>) {
     let t = waiter();
     if t.is_null() {
         return;
@@ -190,6 +197,8 @@ pub unsafe fn wake(mut current_ctx: Option<&mut Context>) {
             Some((err::REVOKED as u64, 0, 0))
         } else if off {
             Some((err::NO_DEVICE as u64, 0, 0))
+        } else if k0_sched::domain_of(t) != window {
+            None
         } else {
             conin::pop().map(|(b, lost)| (0, u64::from(b), if lost { flag::LOST } else { 0 }))
         };
